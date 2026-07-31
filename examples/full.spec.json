@@ -1,0 +1,63 @@
+{
+  "_comment": "전체 예시 — 영역·레이어·ETL 흐름·문서 메타를 모두 쓴 형태. 전부 선택 항목이라 필요한 것만 골라 쓰면 된다. 여러 DB를 합쳤다면 테이블 키가 '<라벨>.<테이블>' 이 된다(ERD_LABEL 참고).",
+
+  "areas": [
+    ["A", "회원 · 인증", "public", ["users", "user_profiles", "user_sessions"]],
+    ["B", "상품 마스터", "public", ["products", "product_options", "categories"]],
+    ["C", "주문 · 결제", "public", ["orders", "order_items", "payments"]],
+    ["D", "분석 마트", "mart", ["mart_daily_sales", "mart_user_ltv"]]
+  ],
+
+  "layer_of": {
+    "users": "MASTER", "user_profiles": "MASTER", "user_sessions": "MASTER",
+    "products": "MASTER", "product_options": "MASTER", "categories": "MASTER",
+    "orders": "TX", "order_items": "TX", "payments": "TX",
+    "mart_daily_sales": "MART", "mart_user_ltv": "MART"
+  },
+
+  "layers": {
+    "MASTER": ["#1E3A3D", "#2B5A5E", "#4FA3A3", "마스터 · 기준 정보"],
+    "TX":     ["#25324D", "#35507D", "#4A80C0", "트랜잭션 · 거래"],
+    "MART":   ["#33294A", "#4A3A6B", "#8A6BB0", "분석 마트 (파생)"]
+  },
+
+  "roles": {
+    "users": "회원 계정",
+    "user_profiles": "회원 부가 정보",
+    "user_sessions": "로그인 세션",
+    "products": "상품",
+    "product_options": "상품 옵션 (SKU)",
+    "categories": "상품 분류",
+    "orders": "주문 헤더",
+    "order_items": "주문 상세 (상품 단위)",
+    "payments": "결제 · 환불",
+    "mart_daily_sales": "일자별 매출 집계",
+    "mart_user_ltv": "회원 생애가치 집계"
+  },
+
+  "derives": [
+    ["orders", "mart_daily_sales", "일 배치 집계"],
+    ["payments", "mart_daily_sales", "일 배치 집계"],
+    ["orders", "mart_user_ltv", "일 배치 집계"]
+  ],
+
+  "doc": {
+    "title": "쇼핑몰 DB 스키마 정의서",
+    "meta": [
+      ["버전", "v1.0"],
+      ["작성일", "2026-07-31"],
+      ["작성", "홍길동"],
+      ["대상", "shop-service PostgreSQL"]
+    ],
+    "intro": "운영 DB를 그대로 추출한 최신본이다. 각 테이블에 <b>역할</b>과 <b>컬럼 설명</b>을 붙였다.",
+    "db_names": {
+      "shop": "shop — 운영 DB · port 5432"
+    },
+    "area_desc": {
+      "A": "로그인·권한과 회원 정보. 모든 주문은 users.id 를 참조한다.",
+      "B": "판매 대상 상품과 옵션. 가격은 옵션 단위로 관리한다.",
+      "C": "주문과 결제. 결제 실패분도 남기므로 주문 ≠ 매출이다.",
+      "D": "야간 배치로 만드는 집계 테이블. 원본은 C 영역이다."
+    }
+  }
+}

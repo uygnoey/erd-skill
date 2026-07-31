@@ -1,0 +1,8 @@
+# erd 스킬 파이썬 의존성
+#   pip3 install -r requirements.txt
+#
+# 이 둘이 전부다. psql(또는 docker)과 한글 폰트는 pip 밖의 준비물이라
+# install.sh 가 따로 확인한다.
+
+python-docx>=1.1.0     # docx 문서 생성 (import 이름은 docx)
+pillow>=10.0.0         # PNG 렌더링
