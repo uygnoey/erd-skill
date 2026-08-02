@@ -91,10 +91,41 @@ PALETTE = [
 ]
 
 
-def _prefix(name):
-    """테이블명 접두어 — 첫 두 토큰까지 본다 (order_item_options → order_item)."""
+def _prefix(name, depth=2):
+    """테이블명 접두어. depth=2 면 order_item_options → order_item, 1 이면 order."""
     parts = name.split('_')
-    return '_'.join(parts[:2]) if len(parts) > 2 else parts[0]
+    return '_'.join(parts[:depth]) if len(parts) > depth else parts[0]
+
+
+def _split(tables, schema_name, max_areas, min_size=3):
+    """테이블을 이름 접두어로 묶어 영역 후보를 만든다.
+
+    좁은 접두어(2토큰)로 먼저 묶고, 거기서 남은 것들을 넓은 접두어(1토큰)로 한 번 더
+    묶는다. 두 번 묶는 이유는 한 번만 하면 '기타' 가 비대해지기 때문이다 — 80개
+    테이블에서 39개가 기타로 몰리면 그 영역은 세로로 한없이 길어져 못 쓴다.
+
+    반환: [(영역명, [테이블…]), …]
+    """
+    keep, rest = [], list(tables)
+    for depth in (2, 1):
+        groups = {}
+        for t in rest:
+            groups.setdefault(_prefix(t, depth), []).append(t)
+        rest = []
+        for gname, gts in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+            same = next((k for k in keep if k[0] == gname), None)
+            if same:                     # 넓은 접두어가 앞 라운드와 같은 이름이 되면 합친다
+                same[1].extend(gts)      # (feature_standard + feature → feature 하나로)
+            elif len(gts) >= min_size and len(keep) < max_areas:
+                keep.append((gname, list(gts)))
+            else:
+                rest += gts
+        if not rest:
+            break
+
+    if rest:
+        keep.append((f'{schema_name} 기타', sorted(rest)))
+    return keep or [(schema_name, sorted(tables))]
 
 
 def load_spec(schema):
@@ -118,28 +149,13 @@ def load_spec(schema):
         for t in tables:
             by_schema.setdefault(schema[t].get('schema', 'public'), []).append(t)
         areas, code = [], ord('A')
-        max_areas = int(os.environ.get('ERD_MAX_AREAS', 7))
+        max_areas = int(os.environ.get('ERD_MAX_AREAS', 12))
         for sch, ts in sorted(by_schema.items()):
             if len(ts) <= 8:                      # 작은 스키마는 통째로 한 영역
                 areas.append([chr(code), sch, sch, sorted(ts)])
                 code += 1
                 continue
-            groups = {}
-            for t in ts:
-                groups.setdefault(_prefix(t), []).append(t)
-            # 큰 그룹부터 살리고, 작은 것들(2개 이하)과 상한 초과분은 '기타' 로 합친다
-            ordered = sorted(groups.items(), key=lambda kv: -len(kv[1]))
-            keep, rest = [], []
-            for gname, gts in ordered:
-                if len(gts) >= 3 and len(keep) < max_areas:
-                    keep.append((gname, gts))
-                else:
-                    rest += gts
-            if rest:
-                keep.append((f'{sch} 기타', sorted(rest)))
-            if not keep:
-                keep = [(sch, sorted(ts))]
-            for gname, gts in keep:
+            for gname, gts in _split(ts, sch, max_areas):
                 areas.append([chr(code), gname, sch, sorted(gts)])
                 code += 1
 
