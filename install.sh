@@ -68,7 +68,8 @@ if [ "$MODE" = user ] || [ "$MODE" = project ]; then
     fi
     if [ ! -e "$DEST" ]; then
       cp -R "$SRC" "$DEST"
-      rm -rf "$DEST/__pycache__" "$DEST/scripts/__pycache__"
+      # 저장소를 clone 해서 설치하는 경우가 많다 — 스킬 폴더에 .git 을 들고 갈 이유가 없다
+      rm -rf "$DEST/.git" "$DEST/__pycache__" "$DEST/scripts/__pycache__"
       ok "복사 완료: $DEST"
     fi
   fi
