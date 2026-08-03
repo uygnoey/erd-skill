@@ -348,7 +348,7 @@ def layout_area(tnames, with_desc=True, max_cols=None, hgap=210, vgap=95):
     """
     boxes = {n: measure(n, with_desc) for n in tnames}
     if max_cols is None:
-        max_cols = 1 if len(tnames) <= 2 else min(4, max(2, round(len(tnames) ** 0.5)))
+        max_cols = 1 if len(tnames) <= 2 else min(8, max(2, round(len(tnames) ** 0.5)))
     order = sorted(tnames, key=lambda n: -boxes[n]['h'])
     cols = [[] for _ in range(max(1, min(max_cols, len(tnames))))]
     heights = [0] * len(cols)
@@ -409,7 +409,7 @@ def layout_overview(hgap=230, vgap=76):
     return pos, boxes, groups
 
 
-def layout_global(hgap=230, vgap=100, area_gap=150, want_cols=4):
+def layout_global(hgap=230, vgap=100, area_gap=150, want_cols=None):
     """전체 상세 레이아웃 — 열 높이가 고르도록 영역을 열에 묶는다.
 
     영역(=그룹 박스) 단위는 쪼개지 않는다. 작은 영역은 한 열에 세로로 이어 쌓고,
@@ -418,6 +418,11 @@ def layout_global(hgap=230, vgap=100, area_gap=150, want_cols=4):
     boxes = {n: measure(n, with_desc=True) for a in AREAS for n in a[3]}
     area_h = {a[0]: sum(boxes[n]['h'] + vgap for n in a[3]) for a in AREAS}
     total = sum(area_h.values())
+    if want_cols is None:
+        # 열 수를 4로 고정해 두면 테이블이 아주 많을 때 다시 세로로 길어진다.
+        # 한 열의 높이가 전체 폭의 1.6배쯤 되도록 열 수를 잡는다.
+        avg_w = sum(b['w'] for b in boxes.values()) / max(1, len(boxes))
+        want_cols = int(max(4, min(8, round((total / (1.6 * (avg_w + hgap))) ** 0.5))))
     # 목표 높이를 가장 큰 영역에 맞추면, 영역이 하나뿐일 때 그 영역이 통째로 한 열이
     # 되어 그림이 세로로 한없이 길어진다(이름 규칙 없는 DB 에서 실제로 그렇게 된다).
     # 큰 영역은 아래에서 서브열로 나누므로 목표는 전체를 열 수로 나눈 값으로 잡는다.
@@ -443,7 +448,7 @@ def layout_global(hgap=230, vgap=100, area_gap=150, want_cols=4):
             ts = tables_of[code]
             # 영역 하나가 목표 높이를 크게 넘으면 그 안에서 서브열로 나눈다.
             # 그룹 박스는 노드 범위를 감싸므로 나뉜 서브열까지 함께 묶인다.
-            n_sub = max(1, min(4, round(area_h[code] / target))) if area_h[code] > target * 1.4 else 1
+            n_sub = max(1, min(8, round(area_h[code] / target))) if area_h[code] > target * 1.4 else 1
             if n_sub > 1:
                 per, subs, cur, cur_h = area_h[code] / n_sub, [], [], 0
                 for n in ts:
@@ -990,7 +995,9 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
         if edge_labels:
             flush_labels()               # 라벨은 노드 위에 — 가려지지 않도록 마지막에
 
-        return edges, placed
+        # 자기참조 루프도 검증 대상이다. 그리기만 하고 재지 않아서, 루프가 옆 테이블을
+        # 지나가도 선↔테이블 0 이 찍혔다.
+        return edges + [(pts, color, label, False) for pts, color, label in self_loops], placed
 
     # ① 측정 — 1×1 더미 캔버스에 그려 좌표만 수집한다 (캔버스 밖도 정확히 추적)
     probe = Tracker(ImageDraw.Draw(Image.new('RGB', (1, 1))))
@@ -1054,9 +1061,12 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
     def overlaps(segs):
         """같은 자리에 겹쳐 그려진 구간을 센다.
 
-        한쪽 끝을 공유하는 것은 '같은 컬럼으로 모이는 합류' 라 제외하는데, 그 예외가
-        너무 넓었다 — 끝점 하나만 같으면 나머지가 아무리 길게 겹쳐도 넘어갔다.
-        합류로 봐줄 만한 짧은 구간(<=24px)까지만 예외로 둔다.
+        같은 지점으로 모여드는 선(한 컬럼 행으로 들어가는 여러 FK)은 겹쳐 보이는 것이
+        정상이라 세지 않는다. 판별은 세그먼트에 달아 둔 그 선의 양 끝으로 한다 —
+        예전엔 좌표가 우연히 같기만 해도 합류로 넘어갔다.
+
+        다만 이 예외는 길이를 따지지 않는다. 같은 행으로 모여드는 두 선이 아주 길게
+        나란히 달려도 '합류' 로 넘어간다. 다발로 보이는 것이 자연스러워서 그렇게 두었다.
         """
         n = 0
         for i, (a, s0, s1, ea) in enumerate(segs):
