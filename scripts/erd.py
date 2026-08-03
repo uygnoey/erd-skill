@@ -18,11 +18,20 @@ from PIL import Image, ImageDraw, ImageFont
 Image.MAX_IMAGE_PIXELS = None      # 우리가 만드는 그림이라 폭탄 검사 불필요
 MAX_PIXELS = 160_000_000           # 이보다 커지면 배율을 낮춘다
 
-from config import OUT, SCHEMA_JSON, load_spec
+from config import OUT, SCHEMA_JSON, clean, excluded, load_spec
 from i18n import LANG, t as T
 from svg_canvas import SvgCanvas
 
-SCHEMA = json.loads(SCHEMA_JSON.read_text())
+SCHEMA = {k: v for k, v in json.loads(SCHEMA_JSON.read_text()).items() if not excluded(k)}
+# 제외 규칙은 spec 쪽에서만 걸러지고 있어서, 그리는 쪽은 없는 테이블을 찾다 죽었다.
+# 여기서 한 번에 걷어내고, 사라진 테이블을 가리키던 FK 도 같이 떨군다.
+if not SCHEMA:
+    raise SystemExit(T('err.no_schema_tables', path=SCHEMA_JSON))
+for _t in SCHEMA.values():
+    _t['fks'] = [fk for fk in _t.get('fks', []) if fk.get('ref_table') in SCHEMA]
+    for _c in _t.get('columns', []):
+        _c['comment'] = clean(_c.get('comment'))
+    _t['note'] = clean(_t.get('note'))
 
 # PNG 옆에 같은 그림을 SVG 로도 남긴다. ERD_SVG=0 이면 끈다.
 SVG_OUT = os.environ.get('ERD_SVG', '1') not in ('0', 'false', 'no')
@@ -117,16 +126,25 @@ def _face(entry):
     return entry if isinstance(entry, tuple) else (entry, 0)
 
 
+def _usable(path, index=0):
+    """실제로 열리는 폰트인지 본다 — 파일이 있다고 폰트인 것은 아니다."""
+    try:
+        ImageFont.truetype(str(path), 10, index=index)
+        return True
+    except Exception:
+        return False
+
+
 def _pick_font(env, candidates, kind):
     """(regular, bold) 를 고른다. 볼드 파일이 없으면 regular 로 대신한다."""
     reg, bold = os.environ.get(env), os.environ.get(env + '_BOLD')
     if reg:
-        if not Path(reg).exists():
+        if not Path(reg).exists() or not _usable(reg):
             raise SystemExit(T('err.font_env', env=env, path=reg))
         return (reg, 0), ((bold, 0) if bold and Path(bold).exists() else (reg, 0))
     for r, b in candidates:
         rp, ri = _face(r)
-        if not Path(rp).exists():
+        if not Path(rp).exists() or not _usable(rp, ri):
             continue
         bp, bi = _face(b)
         return (rp, ri), ((bp, bi) if Path(bp).exists() else (rp, ri))

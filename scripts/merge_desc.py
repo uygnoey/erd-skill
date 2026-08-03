@@ -9,7 +9,7 @@ import re
 from html import unescape
 from pathlib import Path
 
-from config import MODEL_DIR, SCHEMA_JSON
+from config import MODEL_DIR, SCHEMA_JSON, clean
 from i18n import t as T
 
 SCHEMA = SCHEMA_JSON
@@ -119,19 +119,20 @@ def main():
             key = f"{base}.{c['name']}"
             # 수기 사전이 최우선 — DDL 주석이 '필수' 처럼 너무 짧은 경우를 덮어쓴다
             if key in MANUAL:
-                c['comment'], src = MANUAL[key], 'manual'
+                c['comment'], src = clean(MANUAL[key]), 'manual'
                 filled['manual'] += 1
             elif c['comment']:
+                c['comment'] = clean(c['comment'])
                 filled['ddl'] += 1
                 src = 'ddl'
             elif key in doc:                 # 이전 판 문서에서 물려받은 설명
-                c['comment'], src = doc[key], 'doc'
+                c['comment'], src = clean(doc[key]), 'doc'
                 filled['doc'] += 1
             elif key in orm:
-                c['comment'], src = orm[key], 'orm'
+                c['comment'], src = clean(orm[key]), 'orm'
                 filled['orm'] += 1
             elif c['name'] in COMMON:
-                c['comment'], src = COMMON[c['name']], 'common'
+                c['comment'], src = clean(COMMON[c['name']]), 'common'
                 filled['common'] += 1
             else:
                 src = 'none'

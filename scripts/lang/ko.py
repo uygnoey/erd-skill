@@ -172,17 +172,25 @@ M = {
     # ── 오류 ──────────────────────────────────────────────────────────────
     'err.no_conn': 'DB 접속 정보가 없다. 둘 중 하나를 지정할 것.',
     'err.no_conn_db': "'컨테이너:계정:DB'        # docker 경유",
+    'err.no_schema_tables': '그릴 테이블이 없다. {path} 가 비었거나 ERD_EXCLUDE 가 전부 걸러 냈다.',
     'err.no_tables': '테이블을 하나도 읽지 못했다. '
                      'ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE 를 확인할 것.',
-    'err.font_env': '{env} 로 지정한 폰트가 없다: {path}',
+    'err.font_env': '{env} 로 지정한 폰트를 쓸 수 없다: {path}',
     'err.font_none': '{kind} 폰트를 찾지 못했다. install.sh 를 돌리거나 {env} 로 직접 '
                      '지정한다.\n  찾아본 곳: {looked}',
     'err.merge_usage': '사용법: python3 merge_schemas.py <라벨> <라벨> …',
     'err.merge_missing': '{path} 가 없다. ERD_LABEL={label} 로 introspect.py 를 먼저 돌릴 것.',
     'err.no_sql_dir': 'DDL 디렉토리가 없다: {path}  (ERD_SQL_DIR 로 지정)',
+    'err.spec_no_area': '{path} 의 areas 에 실제로 있는 테이블이 하나도 없다.',
+    'err.spec_layer': '레이어 {key} 의 형식이 잘못됐다: {value}\n'
+                      '  [채움, 헤더, 테두리, 라벨] 이어야 하고 색은 #rrggbb 다',
+    'err.spec_json': '{path} 가 올바른 JSON 이 아니다: {err}',
 
     # ── 진행 출력 ─────────────────────────────────────────────────────────
     'log.query_fail': '  [경고] DB 조회 실패: {err}',
+    'log.spec_empty': '  [경고] 쓸 테이블이 없는 영역을 건너뛴다: {list}',
+    'log.spec_dup': '  [경고] 테이블 {n}개가 여러 영역에 겹친다 — 처음 영역에만 둔다: {list}',
+    'log.spec_missing': '  [경고] spec 이 가리키는 테이블 {n}개가 스키마에 없다: {list}',
     'log.introspected': '테이블 {tables} · 컬럼 {columns} · FK {fks} → {path}',
     'log.desc_from_db': '  DB 코멘트로 채워진 컬럼 설명 {n}/{total}',
     'log.desc_rest': '  → merge_desc.py 로 나머지를 채울 것',

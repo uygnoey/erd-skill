@@ -183,18 +183,26 @@ M = {
     # ── errores ───────────────────────────────────────────────────────────
     'err.no_conn': 'No hay conexión a la base de datos configurada. Debe definirse una de las dos.',
     'err.no_conn_db': "'contenedor:usuario:bd'        # vía docker",
+    'err.no_schema_tables': 'No queda ninguna tabla que dibujar. {path} está vacío, o ERD_EXCLUDE lo excluyó todo.',
     'err.no_tables': 'No se pudo leer ninguna tabla. '
                      'Compruebe ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE.',
-    'err.font_env': 'la fuente indicada en {env} no existe: {path}',
+    'err.font_env': 'no se puede usar la fuente indicada en {env}: {path}',
     'err.font_none': 'No se encontró ninguna fuente {kind}. Ejecute install.sh o defina '
                      '{env} manualmente.\n  Rutas revisadas: {looked}',
     'err.merge_usage': 'uso: python3 merge_schemas.py <etiqueta> <etiqueta> …',
     'err.merge_missing': '{path} no existe. Ejecute antes introspect.py con '
                          'ERD_LABEL={label}.',
     'err.no_sql_dir': 'no existe el directorio de DDL: {path}  (defínalo con ERD_SQL_DIR)',
+    'err.spec_no_area': 'las áreas de {path} no nombran ninguna tabla existente.',
+    'err.spec_layer': 'la capa {key} está mal formada: {value}\n'
+                      '  se espera [relleno, cabecera, borde, etiqueta] con colores #rrggbb',
+    'err.spec_json': '{path} no es JSON válido: {err}',
 
     # ── salida de progreso ────────────────────────────────────────────────
     'log.query_fail': '  [aviso] falló la consulta a la base de datos: {err}',
+    'log.spec_empty': '  [aviso] áreas sin ninguna tabla utilizable, omitidas: {list}',
+    'log.spec_dup': '  [aviso] {n} tablas aparecen en más de un área — se quedan en la primera: {list}',
+    'log.spec_missing': '  [aviso] el spec nombra {n} tablas que no están en el esquema: {list}',
     'log.introspected': 'tablas: {tables} · columnas: {columns} · FK: {fks} → {path}',
     'log.desc_from_db': '  descripciones de columna tomadas de comentarios de la BD: {n}/{total}',
     'log.desc_rest': '  → complete el resto con merge_desc.py',

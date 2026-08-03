@@ -14,7 +14,7 @@ import json
 import os
 
 from i18n import t as T
-from config import EXCLUDE, SCHEMA_JSON, SCHEMAS, SEP, excluded, psql
+from config import EXCLUDE, SCHEMA_JSON, SCHEMAS, SEP, clean, excluded, psql
 
 LABEL = os.environ.get('ERD_LABEL', '')
 
@@ -157,7 +157,7 @@ def main():
             'default': default,
             # GENERATED … AS IDENTITY 는 기본값이 비어 있다 — is_identity 를 같이 본다
             'identity': identity == 'YES' or 'nextval' in default,
-            'comment': comment, 'added': False,
+            'comment': clean(comment), 'added': False,
         })
         t.setdefault('rows', None)
         t.setdefault('size', '')
@@ -177,7 +177,7 @@ def main():
 
     for sch, tname, note in rows(q(Q_TABLE_NOTE), 3):
         if key(tname, sch) in tables and note:
-            tables[key(tname, sch)]['note'] = note
+            tables[key(tname, sch)]['note'] = clean(note)
 
     # ── 문서용 부가정보 — 조회에 실패해도 ERD 생성은 계속한다 ──
     for sch, tname, n_rows, size in rows(q(Q_STATS), 4):

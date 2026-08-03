@@ -35,6 +35,7 @@ def _p(env, default):
 
 
 PROJ = _p('ERD_PROJ', Path.cwd())
+PROJ.mkdir(parents=True, exist_ok=True)     # 없는 경로를 줬다고 마지막 단계에서 죽지 않게
 WORK = _p('ERD_WORK', PROJ / 'erd-build')
 WORK.mkdir(parents=True, exist_ok=True)
 OUT = WORK / 'out'
@@ -45,9 +46,36 @@ SPEC_JSON = _p('ERD_SPEC', WORK / 'erd.spec.json')
 SQL_DIR = _p('ERD_SQL_DIR', PROJ / 'sql')
 MODEL_DIR = _p('ERD_MODEL_DIR', PROJ / 'models')
 
-DOCNAME = os.environ.get('ERD_DOCNAME', 'ERD')
+def _docname():
+    """파일명으로 쓸 수 있게 다듬는다.
+
+    슬래시가 섞이면 어떤 스크립트는 죽고 어떤 스크립트는 하위 디렉토리를 만들어 엉뚱한
+    자리에 쓴다. 빈 값이면 '.html' 같은 숨김 파일이 되어 찾지 못한다.
+    """
+    raw = os.environ.get('ERD_DOCNAME', '')
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', raw).strip('. ')
+    return name or 'ERD'
+
+
+DOCNAME = _docname()
 SCHEMAS = [s.strip() for s in os.environ.get('ERD_SCHEMAS', 'public').split(',') if s.strip()]
 EXCLUDE = os.environ.get('ERD_EXCLUDE', '')
+
+
+_CTRL = {c: ' ' for c in range(32)}
+_CTRL[0x7f] = ' '
+
+
+def clean(s):
+    """사람이 읽을 한 줄로 만든다. 설명·역할명은 전부 여기를 지난다.
+
+    개행이 든 문자열은 PIL 이 폭을 재지 못해 그리다 죽고(다이어그램이 통째로 안 나온다),
+    제어문자는 GraphML·SVG 를 XML 로서 깨뜨려 yEd 가 파일 열기를 거부한다. DB 코멘트는
+    조회 단계에서 걸러도, 수기 사전(MANUAL)과 손으로 고친 schema.json 은 안 걸린다.
+    """
+    if not s:
+        return ''
+    return ' '.join(str(s).translate(_CTRL).split())
 
 
 def psql_cmd():
@@ -91,6 +119,10 @@ PALETTE = [
     ('#2C3A28', '#415A3B', '#7DA86E'),   # 녹색
     ('#3D2A2E', '#5C3F45', '#A9707C'),   # 자주
 ]
+
+
+def _is_color(c):
+    return isinstance(c, str) and re.fullmatch(r'#[0-9A-Fa-f]{6}', c.strip()) is not None
 
 
 def _prefix(name, depth=2):
@@ -140,18 +172,48 @@ def load_spec(schema):
       roles    {테이블: 한글 역할명}
       derives  [[원천, 대상, 라벨], …]                  ETL 흐름 (FK 아님)
     """
-    spec = json.loads(SPEC_JSON.read_text()) if SPEC_JSON.exists() else {}
+    try:
+        spec = json.loads(SPEC_JSON.read_text()) if SPEC_JSON.exists() else {}
+    except json.JSONDecodeError as e:
+        raise SystemExit(T('err.spec_json', path=SPEC_JSON, err=e))
     tables = [t for t in schema if not excluded(t)]
 
     # ── 그룹 나누기: 스키마 → (테이블이 많으면) 접두어 ──
     if spec.get('areas'):
-        areas = [list(a) for a in spec['areas']]
+        # spec 은 사람이 손으로 쓴다. 오타 하나에 traceback 을 뱉는 대신, 무엇이
+        # 이상한지 말해 주고 그릴 수 있는 만큼 그린다.
+        areas, seen, missing, dup, empty = [], set(), [], [], []
+        for raw in spec['areas']:
+            a = (list(raw) + ['', '', '', []])[:4]
+            code, name, sch, ts = a[0], a[1], a[2] or 'public', list(a[3] or [])
+            ok = []
+            for t in ts:
+                if t not in schema:
+                    missing.append(t)
+                elif t in seen:
+                    dup.append(t)          # 한 테이블을 두 영역에 두면 문서에 두 번 나온다
+                else:
+                    seen.add(t)
+                    ok.append(t)
+            if ok:
+                areas.append([code, name, sch, ok])
+            else:
+                empty.append(str(code))
+        if missing:
+            print(T('log.spec_missing', n=len(missing), list=', '.join(missing[:6])))
+        if dup:
+            print(T('log.spec_dup', n=len(dup), list=', '.join(dup[:6])))
+        if empty:
+            print(T('log.spec_empty', list=', '.join(empty[:6])))
+        if not areas:
+            raise SystemExit(T('err.spec_no_area', path=SPEC_JSON))
     else:
         by_schema = {}
         for t in tables:
             by_schema.setdefault(schema[t].get('schema', 'public'), []).append(t)
         areas, code = [], ord('A')
-        max_areas = int(os.environ.get('ERD_MAX_AREAS', 12))
+        raw_max = os.environ.get('ERD_MAX_AREAS', '')
+        max_areas = int(raw_max) if raw_max.strip().lstrip('-').isdigit() else 12
         for sch, ts in sorted(by_schema.items()):
             if len(ts) <= 8:                      # 작은 스키마는 통째로 한 영역
                 areas.append([chr(code), sch, sch, sorted(ts)])
@@ -177,7 +239,12 @@ def load_spec(schema):
         label = next((a[1] for a in areas if layer_of.get(a[3][0] if a[3] else '') == k), k)
         layers[k] = (*c, spec.get('layer_labels', {}).get(k, label))
     for k, v in (spec.get('layers') or {}).items():
-        layers[k] = tuple(v)
+        v = list(v)
+        # 색이 하나라도 이상하면 PIL 이 알 수 없는 색이라며 죽는다. HTML 쪽은 그대로
+        # style 에 박아 버려 더 나쁘다 — 여기서 막는다.
+        if len(v) < 4 or not all(_is_color(c) for c in v[:3]):
+            raise SystemExit(T('err.spec_layer', key=k, value=v))
+        layers[k] = tuple(v[:4])
 
     # ── 역할명: spec → DB 테이블 코멘트 → 빈값 ──
     roles = dict(spec.get('roles', {}))

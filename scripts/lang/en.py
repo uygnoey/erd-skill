@@ -181,18 +181,26 @@ M = {
     # ── errors ────────────────────────────────────────────────────────────
     'err.no_conn': 'No database connection configured. Set one of the two.',
     'err.no_conn_db': "'container:user:db'        # via docker",
+    'err.no_schema_tables': 'No tables left to draw. {path} is empty, or ERD_EXCLUDE removed everything.',
     'err.no_tables': 'Not a single table could be read. '
                      'Check ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE.',
-    'err.font_env': 'the font set in {env} does not exist: {path}',
+    'err.font_env': 'the font set in {env} cannot be used: {path}',
     'err.font_none': 'No {kind} font found. Run install.sh, or set {env} yourself.\n'
                      '  Looked in: {looked}',
     'err.merge_usage': 'usage: python3 merge_schemas.py <label> <label> …',
     'err.merge_missing': '{path} does not exist. Run introspect.py with '
                          'ERD_LABEL={label} first.',
     'err.no_sql_dir': 'no DDL directory: {path}  (set it with ERD_SQL_DIR)',
+    'err.spec_no_area': '{path} defines areas, but none of them name a table that exists.',
+    'err.spec_layer': 'layer {key} is malformed: {value}\n'
+                      '  expected [fill, header, border, label] with #rrggbb colors',
+    'err.spec_json': '{path} is not valid JSON: {err}',
 
     # ── progress output ───────────────────────────────────────────────────
     'log.query_fail': '  [warn] database query failed: {err}',
+    'log.spec_empty': '  [warn] areas with no usable table, skipped: {list}',
+    'log.spec_dup': '  [warn] {n} tables appear in more than one area — kept in the first: {list}',
+    'log.spec_missing': '  [warn] spec names {n} tables that are not in the schema: {list}',
     'log.introspected': 'tables {tables} · columns {columns} · FKs {fks} → {path}',
     'log.desc_from_db': '  column descriptions filled from DB comments: {n}/{total}',
     'log.desc_rest': '  → fill in the rest with merge_desc.py',

@@ -172,18 +172,26 @@ M = {
     # ── エラー ────────────────────────────────────────────────────────────
     'err.no_conn': 'DB 接続情報がない。次のいずれかを指定すること。',
     'err.no_conn_db': "'コンテナ:ユーザー:DB'        # docker 経由",
+    'err.no_schema_tables': '描くテーブルがない。{path} が空か、ERD_EXCLUDE が全部除いた。',
     'err.no_tables': 'テーブルを一つも読めなかった。'
                      'ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE を確認すること。',
-    'err.font_env': '{env} で指定したフォントが存在しない: {path}',
+    'err.font_env': '{env} で指定したフォントが使えない: {path}',
     'err.font_none': '{kind}フォントが見つからない。install.sh を実行するか、{env} で'
                      '直接指定すること。\n  探索した場所: {looked}',
     'err.merge_usage': '使い方: python3 merge_schemas.py <ラベル> <ラベル> …',
     'err.merge_missing': '{path} が存在しない。まず ERD_LABEL={label} で '
                          'introspect.py を実行すること。',
     'err.no_sql_dir': 'DDL ディレクトリがない: {path}  (ERD_SQL_DIR で指定)',
+    'err.spec_no_area': '{path} の areas に実在するテーブルが一つもない。',
+    'err.spec_layer': 'レイヤー {key} の形式が不正だ: {value}\n'
+                      '  [塗り, ヘッダ, 枠, ラベル] で、色は #rrggbb でなければならない',
+    'err.spec_json': '{path} が正しい JSON ではない: {err}',
 
     # ── 進行状況の出力 ────────────────────────────────────────────────────
     'log.query_fail': '  [警告] DB クエリ失敗: {err}',
+    'log.spec_empty': '  [警告] 使えるテーブルがない領域を飛ばす: {list}',
+    'log.spec_dup': '  [警告] テーブル {n}件が複数の領域に重複 — 最初の領域だけに置く: {list}',
+    'log.spec_missing': '  [警告] spec が指すテーブル {n}件がスキーマにない: {list}',
     'log.introspected': 'テーブル {tables} · カラム {columns} · FK {fks} → {path}',
     'log.desc_from_db': '  DB コメントから補完したカラム説明 {n}/{total}',
     'log.desc_rest': '  → 残りは merge_desc.py で補完すること',
