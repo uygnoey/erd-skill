@@ -75,6 +75,7 @@ _t_en() { case "$1" in
   mono_ok)    echo 'mono:   %s' ;;
   mono_miss)  echo 'no monospace font — column names will look misaligned' ;;
   mono_hint)  echo '      or:  export ERD_MONO=/path/to/font.ttf' ;;
+  s_selftest) echo '6. Regression test' ;;
   s_result)   echo 'Result' ;;
   done_ok)    echo 'installation complete' ;;
   next)       echo '\n  Next\n    1) start a new Claude Code session (skills are read at startup)\n    2) say "draw the ERD", or call /erd\n\n  Running it yourself\n    cd %s/scripts\n    export ERD_PROJ=/where/documents/go\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'Our Service ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
@@ -124,6 +125,7 @@ _t_ko() { case "$1" in
   mono_ok)    echo '고정폭: %s' ;;
   mono_miss)  echo '고정폭 폰트 없음 — 컬럼명이 어긋나 보인다' ;;
   mono_hint)  echo '      또는:  export ERD_MONO=/폰트/경로.ttf' ;;
+  s_selftest) echo '6. 회귀 시험' ;;
   s_result)   echo '결과' ;;
   done_ok)    echo '설치 완료' ;;
   next)       echo '\n  다음 단계\n    1) Claude Code 를 새로 띄운다 (스킬은 시작할 때 읽는다)\n    2) "ERD 그려줘" 라고 하거나 /erd 를 부른다\n\n  직접 돌릴 때\n    cd %s/scripts\n    export ERD_PROJ=/문서/저장/위치\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'우리서비스 ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
@@ -173,6 +175,7 @@ _t_ja() { case "$1" in
   mono_ok)    echo '等幅:   %s' ;;
   mono_miss)  echo '等幅フォントがない — カラム名がずれて見える' ;;
   mono_hint)  echo '      または:  export ERD_MONO=/フォント/パス.ttf' ;;
+  s_selftest) echo '6. 回帰テスト' ;;
   s_result)   echo '結果' ;;
   done_ok)    echo 'インストール完了' ;;
   next)       echo '\n  次にすること\n    1) Claude Code を起動し直す (スキルは起動時に読まれる)\n    2)「ERD を描いて」と言うか、/erd を呼ぶ\n\n  自分で動かすとき\n    cd %s/scripts\n    export ERD_PROJ=/ドキュメントの/保存先\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'自社サービス ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
@@ -222,6 +225,7 @@ _t_es() { case "$1" in
   mono_ok)    echo 'mono:   %s' ;;
   mono_miss)  echo 'no hay fuente monoespaciada — los nombres de columna se verán desalineados' ;;
   mono_hint)  echo '      o bien:  export ERD_MONO=/ruta/a/la/fuente.ttf' ;;
+  s_selftest) echo '6. Prueba de regresión' ;;
   s_result)   echo 'Resultado' ;;
   done_ok)    echo 'instalación completada' ;;
   next)       echo '\n  Siguiente paso\n    1) abra una sesión nueva de Claude Code (las skills se leen al arrancar)\n    2) diga «dibuja el ERD», o invoque /erd\n\n  Para ejecutarlo a mano\n    cd %s/scripts\n    export ERD_PROJ=/donde/van/los/documentos\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'ERD de nuestro servicio'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
@@ -447,6 +451,26 @@ MONO_F=$(find_font \
 }
 
 # ── 마무리 ──────────────────────────────────────────────────────────────────
+# ── 6. 회귀 시험 (점검 모드에서만) ───────────────────────────────────────────
+# --check 는 진단이다. 준비물이 갖춰졌다고 스킬이 도는 것은 아니므로, 실제로 한 번
+# 돌려 본다. DB 없이 5초쯤 걸린다.
+# DEST 는 설치돼 있던 자리를 가리킬 수 있다 — 지금 손에 든 사본이 더 새것일 때가
+# 많으므로 둘 다 보고 있는 쪽을 쓴다.
+ST=""
+for d in "$SRC" "$DEST"; do
+  [ -f "$d/scripts/selftest.py" ] && { ST="$d/scripts/selftest.py"; break; }
+done
+if [ "$MODE" = check ] && [ "$FAIL" = 0 ] && [ -n "$ST" ]; then
+  step "$(t s_selftest)"
+  if out=$("$PY" "$ST" 2>&1); then
+    ok "$(echo "$out" | tail -1 | sed 's/\x1b\[[0-9;]*m//g')"
+  else
+    bad "$(echo "$out" | tail -1 | sed 's/\x1b\[[0-9;]*m//g')"
+    echo "$out" | grep '✗' | head -5
+    FAIL=1
+  fi
+fi
+
 step "$(t s_result)"
 if [ "$FAIL" = 0 ]; then
   ok "$(t done_ok)"

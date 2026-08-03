@@ -216,6 +216,7 @@ fuente.**
 ```
 install.sh        instalación automatizada (colocación · dependencias · fuentes)
 scripts/
+  selftest.py     prueba de regresión (sin base de datos)
   i18n.py         elige el idioma de la salida
   lang/           catálogos de mensajes (en · ko · ja · es)
   config.py       rutas · conexión a la DB · carga del spec · clasificación automática de áreas

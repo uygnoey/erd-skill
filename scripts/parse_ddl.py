@@ -117,10 +117,13 @@ def split_top_level(body_mc: str, body_ms: str, body_sc: str):
         elif c == ')':
             depth -= 1
         elif c == ',' and depth == 0:
-            # 경계는 콤마가 아니라 그 줄 끝이다. 설명은 `id bigint,  -- 행 식별자` 처럼
-            # 콤마 **뒤** 에 붙으므로, 콤마에서 자르면 주석이 다음 컬럼 것이 된다.
-            j = body_sc.find('\n', i)
-            cuts.append(len(body_sc) if j < 0 else j + 1)
+            # 보통은 콤마에서 자른다. 다만 콤마 뒤 같은 줄에 주석이 붙어 있으면 그
+            # 주석은 앞 컬럼의 설명이므로(`id bigint,  -- 행 식별자`) 줄 끝까지 끌어온다.
+            # 줄 끝까지를 무조건 경계로 삼으면 한 줄에 여러 컬럼을 적은 정의가
+            # 통째로 한 항목이 된다.
+            nl = body_sc.find('\n', i)
+            end = len(body_sc) if nl < 0 else nl
+            cuts.append(end + 1 if '--' in body_ms[i + 1:end] else i + 1)
     cuts.append(len(body_sc) + 1)
 
     items = []

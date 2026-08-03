@@ -190,6 +190,7 @@ SVG는 보는 PC의 폰트로 글자를 그리므로 폰트가 없으면 폭이 
 ```
 install.sh        자동 설치 (배치·의존성·폰트)
 scripts/
+  selftest.py     회귀 시험 (DB 없이 돈다)
   i18n.py         출력 언어 선택
   lang/           문구 카탈로그 (en·ko·ja·es)
   config.py       경로·DB 접속·spec 로딩·영역 자동 분류

@@ -241,6 +241,24 @@ verify erd_area_A.png: label↔table 0 · label↔label 0 · line↔table 0 · v
   arrive at one column row — widen `hgap`, or split that area in the spec.
 - **label↔label** — must be 0. Two labels sitting on top of each other.
 
+## Regression test
+
+`selftest.py` runs the whole skill against synthetic input and checks the result. No
+database, no docker — about five seconds.
+
+```bash
+python3 selftest.py            # everything
+python3 selftest.py parse      # only cases whose name contains 'parse'
+```
+
+Diagram quality is verified on every render, but nothing measured the rest — so each fix
+kept quietly breaking something else. Inline `--` comments spent two releases as empty
+strings, and two self-referencing loops drew on top of each other while the verifier printed
+zeros. Every case in there is something that broke silently at least once.
+
+**When you fix something, leave a case behind that would have caught it.** That is the point
+of the file.
+
 Check the inserted size too:
 
 ```python
@@ -256,6 +274,7 @@ INSTALL.md        installation guide (also .ko / .ja / .es)
 install.sh        automated install (placement · dependencies · fonts)
 requirements.txt  Python dependencies
 scripts/
+  selftest.py     regression test — runs the skill on synthetic input, no DB needed
   i18n.py         picks the output language, resolves message keys
   lang/           message catalogs — en.py · ko.py · ja.py · es.py
   config.py       paths · DB connection · spec loading · automatic area classification

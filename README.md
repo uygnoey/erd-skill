@@ -208,6 +208,7 @@ PIL measured via `textLength`. **The layout does not break on a machine without 
 ```
 install.sh        automated install (placement · dependencies · fonts)
 scripts/
+  selftest.py     regression test (no database needed)
   i18n.py         picks the output language
   lang/           message catalogs (en · ko · ja · es)
   config.py       paths · DB connection · spec loading · automatic area classification

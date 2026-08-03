@@ -195,6 +195,7 @@ SVGは見る側のマシンにあるフォントで文字を描くため、フ�
 ```
 install.sh        自動インストール(配置・依存・フォント)
 scripts/
+  selftest.py     回帰テスト (DB 不要)
   i18n.py         出力言語の選択
   lang/           メッセージカタログ(en · ko · ja · es)
   config.py       パス・DB接続・spec読み込み・領域の自動分類
