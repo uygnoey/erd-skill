@@ -1,5 +1,7 @@
 # erd — PostgreSQL ERD · 스키마 문서 자동 생성 스킬
 
+[English](README.md) · **한국어** · [日本語](README.ja.md) · [Español](README.es.md)
+
 DB에 직접 붙어 실제 스키마를 읽고 **ERD와 스키마 정의서를 통째로 만드는** [Claude Code](https://claude.com/claude-code) 스킬.
 
 손으로 그리지 않으므로 **그림과 DB가 어긋나지 않는다.** 스키마가 바뀌면 다시 돌리면 된다.
@@ -40,7 +42,7 @@ DB 문서는 만들기는 쉬운데 **유지되지 않는다.** 스키마가 바
 ```bash
 ERD_DOC_HTML=이전문서.html python3 merge_desc.py
 #   이전 문서에서 컬럼 설명 1123건 인계: …
-#   설명 출처별 컬럼 수: {'ddl': 268, 'doc': 951, 'manual': 16, 'none': 0}
+#   설명 출처별 컬럼 수: {'ddl': 268, 'doc': 951, 'orm': 0, 'manual': 16, 'common': 0, 'none': 0}
 ```
 
 `none`이 0이 아니면 어느 컬럼이 비었는지 목록으로 알려준다. **설명 없는 컬럼을 남긴 채
@@ -71,7 +73,7 @@ Pretendard 폰트까지 알아서 처리한다. 끝나면 **Claude Code를 새�
 | `bash install.sh --project` | 현재 프로젝트 `./.claude/skills/erd`에 설치 |
 | `bash install.sh --check` | 아무것도 바꾸지 않고 점검만 |
 
-자세한 건 [INSTALL.md](INSTALL.md).
+자세한 건 [INSTALL.ko.md](INSTALL.ko.md).
 
 ### 준비물
 
@@ -88,6 +90,7 @@ export ERD_PROJ=/path/to/project        # 문서 저장 위치
 export ERD_WORK=/tmp/erd-build          # 중간 산출물
 export ERD_PSQL='psql postgresql://user:pass@localhost:5432/mydb'
 export ERD_DOCNAME='우리서비스 스키마 정의서'
+export ERD_LANG=ko                      # en · ko · ja · es
 
 python3 introspect.py    # ① DB → schema.json
 python3 merge_desc.py    # ② 컬럼 설명 채우기
@@ -105,6 +108,18 @@ docker 안의 DB라면 `ERD_PSQL` 대신 `export ERD_DB='컨테이너:계정:DB'
 붙는 테이블이 "기타" 영역으로 모이는데, 80개짜리 DB로 재보니 24%가 거기로 갔다.
 기타가 커질수록 그 그림은 세로로 길어져 읽기 나빠진다. **문서로 낼 거라면 `erd.spec.json`
 으로 영역을 직접 잡는 편이 낫다** — 영역 구분이 곧 문서의 목차가 되기 때문이다.
+
+### 출력 언어
+
+사람이 읽는 것 — 콘솔 출력, HTML·docx 문서, 그림의 범례, 설치 스크립트 — 은
+`ERD_LANG` 을 따른다. **영어·한국어·일본어·스페인어.** 없으면 로케일(`LANG` /
+`LC_ALL`), 그것도 없으면 영어다.
+
+`erd.spec.json` 에 직접 적은 것(영역명·역할명·문서 제목)은 적은 그대로 쓰인다.
+영어 문서에 한국어 영역명을 섞어도 된다.
+
+언어를 늘리는 일은 `scripts/lang/` 에 파일 하나를 놓는 것이 전부다 — 그 폴더에 있는
+것이 곧 지원 언어다. 빠뜨린 키는 영어로 떨어지므로 절반만 번역해도 돌아간다.
 
 ### 여러 DB를 한 문서로
 
@@ -139,10 +154,10 @@ DB 사이에는 물리 FK가 있을 수 없으므로, 두 DB를 잇는 흐름은
 | `derives` | ETL 흐름 — FK가 아닌 데이터 흐름. 갈색 점선 |
 | `doc` | 문서 제목·표지·머리말·영역별 설명 |
 
-예시는 [`examples/minimal.spec.json`](examples/minimal.spec.json)(최소),
-[`examples/full.spec.json`](examples/full.spec.json)(전체).
+예시는 [`examples/minimal.ko.spec.json`](examples/minimal.ko.spec.json)(최소),
+[`examples/full.ko.spec.json`](examples/full.ko.spec.json)(전체).
 
-환경변수 전체 목록은 [SKILL.md](SKILL.md)에 있다.
+환경변수 전체 목록은 [SKILL.ko.md](SKILL.ko.md)에 있다.
 
 ## 그림 규칙
 
@@ -175,6 +190,8 @@ SVG는 보는 PC의 폰트로 글자를 그리므로 폰트가 없으면 폭이 
 ```
 install.sh        자동 설치 (배치·의존성·폰트)
 scripts/
+  i18n.py         출력 언어 선택
+  lang/           문구 카탈로그 (en·ko·ja·es)
   config.py       경로·DB 접속·spec 로딩·영역 자동 분류
   introspect.py   DB → schema.json
   parse_ddl.py    DDL 파싱 → schema.json  (미적용 변경까지 반영할 때)

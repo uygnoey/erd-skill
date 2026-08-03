@@ -1,5 +1,7 @@
 # 설치 가이드
 
+[English](INSTALL.md) · **한국어** · [日本語](INSTALL.ja.md) · [Español](INSTALL.es.md)
+
 ## 한 줄 설치
 
 ```bash
@@ -16,6 +18,9 @@ unzip erd-skill.zip && bash erd/install.sh
 
 끝나면 **Claude Code를 새로 띄운다.** 스킬은 시작할 때 읽으므로 실행 중이던 세션은
 스킬을 못 본다. 그다음 "ERD 그려줘" 라고 하면 된다.
+
+설치 스크립트는 영어·한국어·일본어·스페인어로 말한다. 로케일(`LANG` / `LC_ALL`)을
+따르며, 고정하려면 `ERD_LANG=ko`(또는 `en`·`ja`·`es`)를 준다.
 
 ### 옵션
 
@@ -71,12 +76,30 @@ bash ~/.claude/skills/erd/install.sh --check
 이렇게 나오면 정상이다:
 
 ```
-1. Python 확인          ✓ Python 3.12.13
-2. 스킬 배치            ✓ SKILL.md 확인
-3. 파이썬 패키지        ✓ python-docx  ✓ pillow
-4. DB 접속 수단         ✓ psql / docker
-5. 렌더링 폰트          ✓ 본문: …/Pretendard-Regular.otf   ✓ 고정폭: …/Menlo.ttc
+1. Python 확인
+  ✓ Python 3.12.13  (/usr/bin/python3)
+
+2. 스킬 배치 (건너뜀 — check)
+  ✓ 현재 위치: /path/to/erd-skill
+  ✓ SKILL.md 확인  (~/.claude/skills/erd)
+
+3. 파이썬 패키지
+  ✓ python-docx
+  ✓ pillow
+
+4. DB 접속 수단 (둘 중 하나)
+  ✓ psql   psql (PostgreSQL) 16.2
+
+5. 렌더링 폰트
+  ✓ 본문:   …/Pretendard-Regular.otf
+  ✓ 고정폭: …/Menlo.ttc
+
+결과
+  ✓ 설치 완료
 ```
+
+`--check` 는 아무것도 바꾸지 않으므로 배치는 건너뛴다. 다만 설치됐어야 할 자리에
+`SKILL.md` 가 있는지는 본다 — `/erd` 가 안 뜰 때 제일 먼저 볼 것이 그것이기 때문이다.
 
 ## 첫 실행
 
@@ -97,7 +120,7 @@ python3 build_erd.py && python3 build_docx.py
 DB가 docker 안이면 `ERD_PSQL` 대신 `export ERD_DB='컨테이너명:계정:DB명'`.
 
 `introspect.py` 가 테이블 수를 출력하면 접속 성공이다. 0개면 `ERD_SCHEMAS`(기본
-`public`)를 실제 스키마 이름으로 바꾼다. 나머지 환경변수·spec 작성은 `SKILL.md` 를 본다.
+`public`)를 실제 스키마 이름으로 바꾼다. 나머지 환경변수·spec 작성은 `SKILL.ko.md` 를 본다.
 
 ## 폰트 환경변수
 
@@ -107,8 +130,8 @@ DB가 docker 안이면 `ERD_PSQL` 대신 `export ERD_DB='컨테이너명:계정:
 |---|---|
 | `ERD_FONT` / `ERD_FONT_BOLD` | PNG 본문 폰트 파일 경로 (기본: Pretendard 자동 탐지) |
 | `ERD_MONO` / `ERD_MONO_BOLD` | PNG 고정폭 폰트 파일 경로 |
-| `ERD_DOC_FONT` | docx 본문 **폰트 이름** (기본 `Pretendard`) |
-| `ERD_DOC_MONO` | docx 고정폭 폰트 이름 (기본 `D2Coding`) |
+| `ERD_DOC_FONT` | docx 본문 **폰트 이름** (기본은 `ERD_LANG` 을 따른다 — ko 는 `Pretendard`, en 은 `Calibri`) |
+| `ERD_DOC_MONO` | docx 고정폭 폰트 이름 (ko 는 `D2Coding`, 그 밖은 `Consolas`) |
 
 PNG는 파일 경로, docx는 폰트 이름이다 — docx는 여는 PC에 그 폰트가 있어야 그대로
 보이고, 없으면 Word가 대체한다. 배포처에 Pretendard가 없을 게 확실하면
@@ -137,7 +160,7 @@ PNG는 파일 경로, docx는 폰트 이름이다 — docx는 여는 PC에 그 �
 
 **설명 없는 컬럼 목록이 출력됨**
 정상 동작이다. `merge_desc.py` 의 `MANUAL` 사전에 채우고 다시 돌린다. 자세한 건
-`SKILL.md` 의 "컬럼 설명" 절.
+`SKILL.ko.md` 의 "컬럼 설명" 절.
 
 **산출물이 안 보인다**
 `.graphml` · `.docx` 는 `$ERD_PROJ`, PNG는 `$ERD_WORK/out/` 에 있다.
