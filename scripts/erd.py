@@ -43,6 +43,28 @@ for _n, _t in SCHEMA.items():
         _c.setdefault('type', '')
         _c['comment'] = clean(_c.get('comment'))
     _t['note'] = clean(_t.get('note'))
+    # ── 이름·타입·기본값도 clean() 을 지난다 ──
+    # 설명과 역할명만 씻어 왔다. 그런데 개행이 든 **테이블 이름** 하나면 PIL 이 폭을
+    # 재지 못해 그리다 죽어 산출물이 0개가 되고(그림도 문서도 없다), \x1e 가 든
+    # 이름은 erd 와 html 은 넘어간 뒤 build_docx 가 lxml 에서 죽어 사용자에게 반 벌만
+    # 남긴다. 기본값은 아예 아무도 안 씻어서 raw \x1f 가 HTML 까지 갔다.
+    # 값을 있는 그대로 실어 오는 것은 introspect 의 제 일이다 — 그것을 받고도
+    # 무너지지 않는 것은 쓰는 쪽 몫이라, 소비자가 다 같이 쓰는 이 자리에서 씻는다.
+    _t['name'] = clean(_t.get('name')) or _n
+    for _c in _t['columns']:
+        _c['name'] = clean(_c.get('name'))
+        _c['type'] = clean(_c.get('type'))
+        _c['default'] = clean(_c.get('default'))
+
+# 키도 씻는다 — 상자의 제목으로 **그대로 그려지는 것이 키** 라서, 값만 씻어서는
+# 개행 하나에 여전히 PIL 이 죽는다. 다만 씻은 뒤 두 키가 같아지면 테이블 하나가
+# 소리 없이 사라진다. 조용히 합치느니 손대지 않는 편이 낫다 — 그때는 그대로 둔다.
+_clean_key = {_k: (clean(_k) or _k) for _k in SCHEMA}
+if len(set(_clean_key.values())) == len(_clean_key):
+    SCHEMA = {_clean_key[_k]: _v for _k, _v in SCHEMA.items()}
+    for _t in SCHEMA.values():
+        for _fk in _t['fks']:
+            _fk['ref_table'] = _clean_key.get(_fk['ref_table'], _fk['ref_table'])
 
 # PNG 옆에 같은 그림을 SVG 로도 남긴다. ERD_SVG=0 이면 끈다.
 SVG_OUT = os.environ.get('ERD_SVG', '1') not in ('0', 'false', 'no')
@@ -518,14 +540,25 @@ def draw_key_icon(d, x, y, kind, S):
 
 
 def draw_legend(d, f, x, y, S, max_w=10 ** 6):
-    """범례. 폭을 넘으면 줄을 바꾼다. 사용한 높이(논리 px)를 반환."""
+    """범례. 폭을 넘으면 줄을 바꾼다. (사용한 높이, 필요한 최소 폭) 을 논리 px 로 반환.
+
+    필요 폭까지 돌려주는 이유: 캔버스 측정이 **레이어 라벨** 만 재던 때, 그 아래
+    고정 줄(`extended  existing table · columns…`, `── foreign key (FK) · …`)은 아무도
+    재지 않았다. 줄바꿈은 한 줄에 안 들어가는 항목을 다음 줄로 보낼 뿐 항목 자체를
+    줄이지 못하므로, 그림이 좁으면 그 줄이 오른쪽으로 잘려 나갔다 — 특별한 입력이
+    아니라 테이블 두 개짜리 평범한 스키마에서 en·ko 둘 다 잘렸다.
+    """
     LH, GAP = 27, 30
     cx, cy = x, y
     rows = 1
+    need = 0
 
     def nl(w):
         """다음 항목 폭이 남은 폭을 넘으면 줄바꿈"""
-        nonlocal cx, cy, rows
+        nonlocal cx, cy, rows, need
+        # 항목이 홀로 한 줄을 차지해도 들어가야 하는 폭 (줄바꿈 뒤 시작점 x+74 기준).
+        # GAP 은 다음 항목과의 간격이라 잉크가 아니다.
+        need = max(need, 74 + w - GAP)
         if cx + w > x + max_w:
             cx, cy, rows = x + 74, cy + LH, rows + 1
 
@@ -587,10 +620,11 @@ def draw_legend(d, f, x, y, S, max_w=10 ** 6):
                    fill=EDGE, width=max(1, S))
         label(txt, 38, 0)
         cx += w
-    return (cy - y) + LH
+    return (cy - y) + LH, need
 
 
 VERIFY_LOG = os.environ.get('ERD_VERIFY_LOG', '')
+_LOG_STARTED = False        # 이 판에서 한 줄이라도 썼는가 (첫 줄에서 파일을 비운다)
 
 
 def verify_log(path, checks, tolerate):
@@ -601,15 +635,27 @@ def verify_log(path, checks, tolerate):
     항목이 0 이 아닐 때만 놓치니 시험은 늘 통과했다. 서식이 아니라 값을 보게 한다.
 
     기본값은 꺼짐이라 사용자 출력은 한 글자도 달라지지 않는다.
+
+    한 판에 그리는 그림이 여럿이라 이어 쓰지만, **판이 바뀌면 처음부터 쓴다** —
+    이어 붙이기만 하면 두 번 돌린 뒤 6줄이 남아, 읽는 쪽이 어느 3줄이 이번 것인지
+    알 수 없다. 첫 기록에서 한 번만 비운다.
+
+    쓰지 못해도 그림은 이미 저장돼 있다. 계측을 못 남긴 것은 말해 주되, 그것 때문에
+    산출물을 없던 일로 만들지는 않는다.
     """
+    global _LOG_STARTED
     if not VERIFY_LOG:
         return
     rec = {'file': Path(path).name,
            'counts': dict(checks),                    # 재지 않은 항목은 null
            'tolerated': [k for k, v in checks if v and k in tolerate],
            'warn': [k for k, v in checks if v and k not in tolerate]}
-    with open(VERIFY_LOG, 'a', encoding='utf-8') as fp:
-        fp.write(json.dumps(rec, ensure_ascii=False) + '\n')
+    try:
+        with open(VERIFY_LOG, 'w' if not _LOG_STARTED else 'a', encoding='utf-8') as fp:
+            fp.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        _LOG_STARTED = True
+    except OSError as e:
+        print(T('log.verify_log_fail', path=VERIFY_LOG, err=e))
 
 
 def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale=2,
@@ -941,8 +987,31 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     pending.append((src, dst, '#B0885A', label, True,
                                     entry_ys(src, dst)))
 
-        # 자기참조를 먼저 자리잡는다. 루프의 세로선을 통로 예약에 넣어야 뒤이어
-        # 계산되는 경로들이 그 자리를 피한다 — 안 그러면 겹쳐 그려진다.
+        for tname in tnames:
+            if tname in stubs:
+                continue
+            for fk in SCHEMA[tname]['fks']:
+                ref = fk['ref_table']
+                color = EDGE          # 선은 FK(실선)·ETL(점선) 두 종류만 쓴다
+                lbl = f"{fk['column']}: {fk['ref_column']}"
+                if ref == tname:
+                    continue                              # 자기참조는 아래에서 처리한다
+                if ref not in inside:
+                    continue
+                pending.append((tname, ref, color, lbl, False,
+                                entry_ys(tname, ref, fk['column'], fk['ref_column'])))
+
+        # ── 자기참조 루프 ──
+        # 진출입 y 가 다 모인 **뒤에**, 통로 lane 을 고르기 **전에** 자리잡는다.
+        #
+        # 예전엔 이 블록이 entry_ys() 보다 먼저 돌았다. 두 단계로 나눈 것(y 를 다 잡고
+        # 나서 경로를 만든다)을 통로 lane 에만 적용하고 루프에는 적용하지 않은 자리다.
+        # 그래서 팔 높이 cy±dy 는 **아직 태어나지 않은** 진출입 y 를 피할 수 없었고,
+        # 팔은 used_vx 에만 등록되고 used_hy 에는 안 들어가 뒤에 잡히는 통로 lane 도
+        # 팔을 피하지 못했다. 자기참조가 든 평범한 스키마에서 가로선 중첩 [경고] 가
+        # 났고, 그것은 세는 실수가 아니라 실제로 겹쳐 그린 선이었다 (팔과 다른 선의
+        # 꼬리가 1px 차이로 50px 넘게 나란히 달렸다). [경고] 가 흔해지면 회귀 신호가
+        # 아니라 소음이 되므로 그림보다 이쪽이 더 아프다.
         for tname in tnames:
             if tname in stubs:
                 continue
@@ -953,24 +1022,22 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 x1, y1, _x2, y2 = rect(tname)
                 cy = (y1 + y2) / 2
                 dx, dy = 30 + k * 22, 16 + k * 24
-                used_vx.append(x1 - dx)
+                # 두 팔이 **모두** 비어 있는 높이까지 벌린다. 팔은 좌우 대칭이라
+                # 하나씩 따로 잡을 수 없다 — 한 쌍으로 놓고 한 칸씩 넓힌다.
+                for step in range(40):
+                    cand = dy + step * 13
+                    if all(abs(cy - cand - u) >= 12 and abs(cy + cand - u) >= 12
+                           for u in used_hy):
+                        dy = cand
+                        break
+                # 세로 팔도 자리를 **잡아서** 쓴다. 예전엔 x1-dx 를 그냥 등록만 해
+                # 뒤에 오는 통로만 피하게 했는데, 그러면 이미 그 자리를 쓰고 있는
+                # 선과는 겹친다 — 팔이 길어질수록 더 그렇다.
+                dx = x1 - slot(x1 - dx, used_vx, 14, lo=x1 - 600, hi=x1 - 12)
+                used_hy.extend((cy - dy, cy + dy))   # 팔도 가로선이다 — 통로가 피하게
                 self_loops.append(([(x1, cy - dy), (x1 - dx, cy - dy),
                                     (x1 - dx, cy + dy), (x1, cy + dy)],
                                    EDGE, fk['column'], tname))
-
-        for tname in tnames:
-            if tname in stubs:
-                continue
-            for fk in SCHEMA[tname]['fks']:
-                ref = fk['ref_table']
-                color = EDGE          # 선은 FK(실선)·ETL(점선) 두 종류만 쓴다
-                lbl = f"{fk['column']}: {fk['ref_column']}"
-                if ref == tname:
-                    continue                              # 자기참조는 위에서 처리했다
-                if ref not in inside:
-                    continue
-                pending.append((tname, ref, color, lbl, False,
-                                entry_ys(tname, ref, fk['column'], fk['ref_column'])))
 
         # 진출입 y 가 다 모인 뒤에야 통로 lane 을 고른다 — 위 entry_ys() 참고.
         for a, b, color, lbl, dash, ys in pending:
@@ -1107,13 +1174,16 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
     W = max(W, int(tw(title, f['head']) / S) + MARGIN * 2)
     if subtitle:
         W = max(W, int(tw(subtitle, f['legend']) / S) + MARGIN * 2)
-    if legend and LAYERS:
-        widest = max(tw(v[3], f['legend']) for v in LAYERS.values()) / S
-        W = max(W, int(widest) + 74 + 40 + MARGIN * 2)
     legend_h = 0
-    if legend:                       # 범례도 실제로 그려보고 높이를 잰다 (줄바꿈 반영)
-        probe_leg = Tracker(ImageDraw.Draw(Image.new('RGB', (1, 1))))
-        legend_h = draw_legend(probe_leg, f, MARGIN, 0, S, W - MARGIN * 2) + 20
+    if legend:                       # 범례도 실제로 그려보고 재다 (줄바꿈 반영)
+        # 두 번 잰다. 먼저 폭 제한 없이 그려 **가장 넓은 항목**이 요구하는 폭을 받고,
+        # 캔버스를 거기까지 넓힌 뒤, 그 폭으로 다시 그려 줄바꿈이 반영된 높이를 받는다.
+        # 순서를 바꾸면 안 된다 — 높이는 폭에 딸린 값이다.
+        def _leg_probe(mw):
+            return draw_legend(Tracker(ImageDraw.Draw(Image.new('RGB', (1, 1)))),
+                               f, MARGIN, 0, S, mw)
+        W = max(W, int(_leg_probe(10 ** 6)[1]) + MARGIN * 2)
+        legend_h = _leg_probe(W - MARGIN * 2)[0] + 20
     H = int(ly1 - ly0) + title_h + legend_h + MARGIN
     while S > 1 and W * H * S * S > MAX_PIXELS:      # 너무 크면 배율을 낮춘다
         S -= 1
@@ -1244,8 +1314,11 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
     bad = [T('verify.' + k) for k, v in checks if v and k not in tolerate]
     print(T('log.verify', name=Path(path).name, report=' · '.join(parts))
           + (T('verify.warn', list=', '.join(bad)) if bad else ''))
-    verify_log(path, checks, tolerate)
+    # 그림을 먼저 저장하고 계측을 뒤에 남긴다. 순서가 반대였을 때, 로그 경로가
+    # 쓸 수 없는 자리이면 '검증했다' 는 줄만 찍힌 채 PNG 한 장 없이 죽었다 —
+    # 재는 도구가 재려는 것을 부수면 안 된다.
     img.save(path)
+    verify_log(path, checks, tolerate)
 
     # ── 같은 그림을 벡터로 한 벌 더 (문서 삽입용 — 확대해도 안 뭉갠다) ──
     # 문서에는 제목·번호가 캡션으로 따로 붙으므로 그림 안 제목은 뺀다(중복·번호 충돌).

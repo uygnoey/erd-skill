@@ -114,7 +114,7 @@ ERD_DOC_HTML=previous.html python3 merge_desc.py
 | **`ERD_DB`** | — | via docker. Format: `container:user:db` |
 | `ERD_SCHEMAS` | `public` | target schemas (comma separated) |
 | `ERD_EXCLUDE` | — | regex of tables to exclude |
-| `ERD_MAX_AREAS` | `12` | cap on the number of auto-classified areas |
+| `ERD_MAX_AREAS` | `12` | cap on the number of auto-classified areas — counted across the whole document, "other" buckets included. A schema is never dropped, so with more schemas than the cap each still gets one area. |
 | `ERD_SQL_DIR` | `$ERD_PROJ/sql` | only when parsing DDL |
 | `ERD_SQL_FILES` | — | DDL parsing: name the files directly (comma separated; default is every `*.sql` in the directory) |
 | `ERD_REF_SCHEMA` | — | DDL parsing: a read-only source schema to include as well |
@@ -268,6 +268,10 @@ for a check that did not run). `selftest.py` reads that, not the printed line: t
 formatted for people and changes shape, and when `(tolerated)` and `[warn]` tails were added
 the suite's number-scraping regex silently stopped seeing the last counter — precisely when
 it was non-zero. Nothing else should parse the printed line.
+
+The file is rewritten from scratch on every run, so it always holds exactly one run's records.
+Writing it is instrumentation and never blocks the build: if the path cannot be written the run
+says so and still produces every figure.
 
 ## Regression test
 

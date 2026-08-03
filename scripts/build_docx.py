@@ -145,11 +145,25 @@ def row(t, values, widths=None, font_size=8.5, mono_cols=(), bold_cols=(),
     return cells
 
 
+MISSING_FIGS = []
+
+
 def picture(doc, path, width_cm, caption, max_h_cm=16.2):
     """폭·높이 둘 다에 맞춘다. 폭만 지정하면 세로가 긴 그림이 페이지를 넘어 잘린다.
 
     가로 A4(29.7×21cm) · 여백 1.5cm → 가용 26.7×18cm. 제목·캡션 몫을 빼고 16.2cm 를 쓴다.
+
+    그림 파일이 없으면 건너뛰고 이름을 적어 둔다. 신선도 관문(require_fresh)은 **없는
+    파일을 세지 않으므로** 그대로 지나가고, 그 다음 줄의 PIL 이 없는 파일을 열어
+    FileNotFoundError 를 그대로 사용자에게 뱉었다 — 무엇을 어떻게 하라는 말이 한 줄도
+    없는 역추적이다. 같은 상황에서 build_html.py 는 도판을 빼고 경고 한 줄로 알린다.
+    다만 그쪽은 영역 그림이 빠진 것만 세어서 개요도·전체도가 통째로 없어도 조용하다.
+    여기서는 빠진 그림을 하나도 빼놓지 않고 말한다.
     """
+    path = Path(path)
+    if not path.exists():
+        MISSING_FIGS.append(path.name)
+        return
     iw, ih = Image.open(path).size
     w_cm = min(width_cm, max_h_cm * iw / ih)
     p = doc.add_paragraph()
@@ -350,6 +364,10 @@ def build():
 
     path = PROJ / f'{DOCNAME}.docx'
     doc.save(path)
+    if MISSING_FIGS:
+        # 조용히 빠지면 그림 없는 문서가 그림 있는 문서인 척 나간다
+        print(T('log.figs_missing', n=len(MISSING_FIGS),
+                list=', '.join(MISSING_FIGS[:6]) + (' …' if len(MISSING_FIGS) > 6 else '')))
     return path
 
 

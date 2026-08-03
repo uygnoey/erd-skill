@@ -250,6 +250,8 @@ M = {
     'log.scale_down': '    [nota] {name}: diagrama demasiado grande, escala reducida a {s}×',
     'log.overlap_at': '      solape: en {a}  [{s0}~{s1}] vs [{t0}~{t1}]',
     'log.verify': '    verificación {name}: {report}',
+    'log.verify_log_fail': '  [aviso] no se pudo escribir ERD_VERIFY_LOG, las figuras siguen '
+                           'ahí: {path} — {err}',
     'log.html_done': 'HTML  tablas: {tables} · áreas: {areas} · figuras: {figs}  '
                      '{mb}MB → {name}',
     'log.html_missing': '  [aviso] áreas sin diagrama ({n}): {list}  '
@@ -257,4 +259,6 @@ M = {
     'log.stale_figs': '  [aviso] se incrustan {n} diagramas más antiguos que el esquema '
                       '(ERD_STALE): {list}',
     'log.docx_saved': 'guardado: {name} ({kb} KB)',
+    'log.figs_missing': '  [aviso] diagramas no encontrados, omitidos del documento: '
+                        '{n} ({list})  → ejecuta build_erd.py primero',
 }

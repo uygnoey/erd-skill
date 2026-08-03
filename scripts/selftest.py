@@ -46,8 +46,11 @@ def eq(got, want, what):
 
 
 def has(hay, needle, what):
+    # 건초더미가 HTML 한 장이면 실패 한 줄에 수십 KB 가 쏟아져 정작 무엇이 없는지가
+    # 안 보인다. 못 찾은 것을 앞에 두고 더미는 끝을 자른다.
     if needle not in hay:
-        raise Fail(f'{what}\n      {needle!r} not in {hay!r}')
+        shown = hay if len(hay) <= 600 else hay[:300] + ' … ' + hay[-300:]
+        raise Fail(f'{what}\n      {needle!r} not in ({len(hay)} chars) {shown!r}')
 
 
 def run(script, work, proj=None, env=None, sql_dir=None, expect_ok=True):
@@ -103,6 +106,21 @@ def table(name, cols, **kw):
     return t
 
 
+def hub_schema(n=24):
+    """허브 하나에 자식 n개 — 관계가 한 점으로 모이는, 실제 DB 에 흔한 모양.
+
+    전체도는 노드 진출 y 가 고정이라 이 모양에서 가로선이 몇 번 스친다. 그 '아는
+    겹침' 이 있어야 (허용)·[경고] 서식을 실제로 지나갈 수 있어 두 케이스가 함께 쓴다.
+    """
+    t = {'hub': table('hub', [col('id'), col('name', 'text')], pk=['id'])}
+    for i in range(n):
+        nm = f'c{i:02d}'
+        t[nm] = table(nm, [col('id'), col('hub_id')], pk=['id'],
+                      fks=[{'column': 'hub_id', 'ref_table': 'hub', 'ref_column': 'id',
+                            'on_delete': 'CASCADE'}])
+    return t
+
+
 def verify_recs(work, name=''):
     """그림 자체검증 결과를 erd.py 가 남긴 JSONL 에서 읽는다.
 
@@ -125,13 +143,114 @@ def verify_recs(work, name=''):
     return recs
 
 
-def verify_clean(work, name='', what='the diagram must be clean'):
-    """검증 항목 중 0 이어야 하는 것이 0 이 아니면 실패한다."""
-    for r in verify_recs(work, name):
-        if r['warn']:
-            raise Fail(f'{what}\n      {r["file"]}: {", ".join(r["warn"])} != 0'
-                       f'\n      counts: {r["counts"]}')
-    return verify_recs(work, name)
+# ── '깨끗하다' 의 뜻은 시험이 가진다 ────────────────────────────────────────
+# 예전엔 `if r['warn']` 한 줄이 전부였다. 그런데 그 목록은 **재는 쪽이 직접 내린
+# 판정**이다 — erd.py 가 tolerate 에 든 항목을 빼고 적는다. 즉 코드가 '이건 봐줘도
+# 된다' 고 적으면 시험은 그대로 믿었다. 세 번 재 봤다:
+#
+#   · 모든 항목을 n/a(None) 로 만든다          → 57개 중 3개만 붉어졌다
+#   · counts 는 정직하게 두고 warn 만 비운다    → 57개 전부 통과
+#   · tolerate 를 전 항목으로 넓히고 가로선 중첩 2 를 되살린다 → 57개 전부 통과
+#
+# 경고를 잠재우려 tolerate 를 한 항목 넓히는 것은 다음 판이 충분히 할 법한 한 줄이고,
+# 그 한 줄이면 그림 품질 보증이 통째로 조용해진다. 그래서 아래 규칙은 counts 만 읽고
+# warn·tolerated 는 판정에 쓰지 않는다 — 두 값은 실패 메시지에 참고로만 싣는다.
+MEASURES = ('label_table', 'label_x', 'thru', 'v_overlap', 'h_overlap')
+
+# 라벨을 아예 그리지 않는 그림(개요도 — edge_labels=False)에서만 라벨 항목이 '해당
+# 없음' 일 수 있다. 그 밖의 n/a 는 재기를 그만둔 것이고, **안 잰 것은 깨끗한 것이
+# 아니다**. 그래서 기본은 '숫자여야 한다' 이고, 케이스가 따로 말할 필요가 없다.
+NA_OK = {('overview', 'label_table'), ('overview', 'label_x')}
+
+
+def diagram_kind(fname):
+    """그림의 갈래 — 규칙이 갈래마다 다르다. 모르는 이름은 가장 엄한 쪽(area)으로 친다."""
+    s = str(fname)
+    return 'overview' if 'overview' in s else 'full' if 'full' in s else 'area'
+
+
+def verify_faults(rec, allow=None):
+    """기록 하나가 어긴 규칙을 말로 돌려준다. 빈 목록이면 깨끗하다.
+
+    allow 는 **케이스가 적는** 예외다: {'h_overlap': 5} 처럼 항목마다 숫자를 못박아야
+    하고, 재는 쪽이 넘긴 tolerate 와는 아무 상관이 없다. 코드를 고쳐서는 늘릴 수 없는
+    자리에 두는 것이 요점이다 — 봐주는 것은 시험을 고쳐야만 늘어난다.
+    """
+    allow = allow or {}
+    kind = diagram_kind(rec.get('file', ''))
+    counts = rec.get('counts') or {}
+    bad = []
+    gone = [k for k in MEASURES if k not in counts]
+    if gone:
+        # 항목이 이름째 사라지면 '전부 0' 이 되어 조용히 통과한다 — 그 자리를 막는다
+        bad.append(f'{", ".join(gone)}: not in the record at all')
+    new = [k for k in counts if k not in MEASURES]
+    if new:
+        # 반대쪽도 막는다: erd.py 가 검사를 하나 늘렸는데 여기가 모르면, 그 검사는
+        # 재기만 하고 아무도 안 보는 숫자가 된다. 붉어지면 MEASURES 에 한 줄 늘린다.
+        bad.append(f'{", ".join(new)}: measured by the code but not known to this test')
+    for k in MEASURES:
+        if k not in counts:
+            continue
+        v = counts[k]
+        if v is None:
+            if (kind, k) not in NA_OK:
+                bad.append(f'{k}: n/a — a check that stopped measuring is not a clean check')
+        elif not isinstance(v, int) or isinstance(v, bool):
+            bad.append(f'{k}: {v!r} is not a count')
+        elif v > allow.get(k, 0):
+            cap = allow.get(k, 0)
+            bad.append(f'{k}={v} (this case allows at most {cap})')
+    return bad
+
+
+def verify_clean(work, name='', what='the diagram must be clean', allow=None):
+    """그림 검증 기록이 **시험의 규칙대로** 깨끗한지 본다."""
+    recs = verify_recs(work, name)
+    for r in recs:
+        bad = verify_faults(r, allow)
+        if bad:
+            raise Fail(f'{what}\n      {r["file"]}: ' + '; '.join(bad)
+                       + f'\n      counts: {r["counts"]}'
+                       + f'\n      (the record itself said warn={r.get("warn")!r}'
+                         f' tolerated={r.get("tolerated")!r} — not consulted)')
+    return recs
+
+
+# 일부러 어지러운 그림을 그리는 케이스는 여기에 숫자로 적는다. 지금은 하나뿐이다:
+# 허브 하나에 자식 24개 — 전체도는 노드 진출 y 가 고정이라 가로선이 다섯 번 스친다.
+# (허용치가 실제보다 헐거워지면 그만큼 회귀가 숨는다. 늘릴 때는 왜인지 같이 적는다.)
+RENDER_ALLOW = {
+    'render: a hub with many children keeps lines out of the tables':
+        {'h_overlap': 5},
+    # 같은 허브 fixture 를 (허용)·[경고] 서식을 지나가게 하는 데 쓴다 — 그 케이스는
+    # 일부러 '봐주기 없이' 한 번 더 그려서 경고 줄을 만든다.
+    'verify: the printed line and the machine record say the same thing':
+        {'h_overlap': 5},
+}
+
+
+def sweep_verify(name, tmp):
+    """케이스가 그린 **모든** 그림을 같은 규칙에 걸어 본다.
+
+    verify_clean 을 직접 부르는 케이스는 셋뿐인데 그림을 그리는 케이스는 스무 개가
+    넘는다. 나머지는 '자기가 보려던 것' 만 보고 그림이 어떻게 나왔는지는 묻지 않았다 —
+    렌더 회귀가 스물 몇 개의 그림을 지나가면서 한 번도 붙잡히지 않을 수 있었다.
+    케이스가 통과한 뒤 그 케이스가 남긴 기록을 전부 훑는다.
+    """
+    p = tmp / 'verify.jsonl'
+    if not p.exists():
+        return                      # 그림을 안 그리는 케이스 — 여기서 잴 것이 없다
+    allow = RENDER_ALLOW.get(name)
+    for line in p.read_text(encoding='utf-8').splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        bad = verify_faults(r, allow)
+        if bad:
+            raise Fail(f'the diagrams this case drew are not clean\n'
+                       f'      {r["file"]}: ' + '; '.join(bad)
+                       + f'\n      counts: {r["counts"]}')
 
 
 # ── 말 ──────────────────────────────────────────────────────────────────────
@@ -193,13 +312,27 @@ def _(work):
 
 @case('config: docname is made safe for a filename')
 def _(work):
-    r = run('build_erd.py', work, env={'ERD_DOCNAME': 'a/b:c'}, expect_ok=False)
+    # 예전엔 `any('/' in n for n in names)` 를 봤다 — names 는 Path.name 이라 구분자가
+    # **들어 있을 수 없다**. 즉 조건이 늘 거짓인, 아무것도 못 잡는 줄이었다. 슬래시가
+    # 살아남으면 실제로 나는 일은 '이름에 /가 남는 것' 이 아니라 하위 디렉토리가 생겨
+    # 산출물이 엉뚱한 자리로 가는 것이다. 그러니 나온 이름과 자리를 직접 못박는다.
     write_schema(work, {'t': table('t', [col('id')])})
     run('build_erd.py', work, env={'ERD_DOCNAME': 'a/b:c'})
-    names = [p.name for p in work.parent.glob('*.graphml')] + \
-            [p.name for p in work.glob('*.graphml')]
-    if any('/' in n for n in names):
-        raise Fail(f'slash survived into a filename: {names}')
+    eq(sorted(p.name for p in work.glob('*.graphml')), ['a_b_c.graphml'],
+       'every separator becomes _ and the file lands in the project directory itself')
+    if (work / 'a').exists():
+        raise Fail('a slash turned into a subdirectory — the artifact left its place')
+    if list(work.parent.glob('*.graphml')):
+        raise Fail(f'an artifact escaped the project directory: '
+                   f'{[p.name for p in work.parent.glob("*.graphml")]}')
+    # 위로 거슬러 올라가는 이름도 (.. 은 strip('. ') 로 사라진다)
+    run('build_erd.py', work, env={'ERD_DOCNAME': '../../etc/passwd'})
+    eq(sorted(p.name for p in work.glob('*.graphml')),
+       ['_.._etc_passwd.graphml', 'a_b_c.graphml'], 'a traversal cannot climb out')
+    # 빈 이름은 '.html' 같은 숨김 파일이 된다 — 기본 이름으로 떨어져야 한다
+    run('build_erd.py', work, env={'ERD_DOCNAME': '  . '})
+    if not (work / 'ERD.graphml').exists():
+        raise Fail('an empty docname must fall back to a visible default name')
 
 
 # ── DDL 파서 ─────────────────────────────────────────────────────────────────
@@ -745,27 +878,114 @@ def _(work):
 # 읽는 쪽**이 눈을 감으면 나머지 시험이 다 통과해도 아무것도 지켜지지 않는다. 실제로
 # 그 줄에 (허용)·[경고] 꼬리가 붙자 숫자를 긁던 정규식이 마지막 항목을 놓쳤고, 가로선
 # 중첩이 44 여도 render 항목은 전부 통과라고 했다. 여기 담는 것은 그 자리다.
+@case('verify: a clean verdict is computed here, not taken from the record')
+def _(work):
+    # 이 케이스가 막는 것은 그림 버그가 아니라 **시험이 눈을 감는 것**이다. 검사하는
+    # 쪽이 재는 쪽의 판정(warn·tolerated)을 다시 믿기 시작하면, 아래 세 가지가 전부
+    # 통과로 돌아선다 — 실제로 셋 다 한 번씩 전부 통과였다.
+    honest = {'file': 'erd_area_A.png',
+              'counts': {'label_table': 0, 'label_x': 0, 'thru': 0,
+                         'v_overlap': 0, 'h_overlap': 2},
+              'tolerated': [], 'warn': ['h_overlap']}
+    if not verify_faults(honest):
+        raise Fail('a real regression must be a fault')
+    # ① 재는 쪽이 경고를 지워도 판정은 그대로여야 한다
+    if not verify_faults({**honest, 'warn': []}):
+        raise Fail('an empty warn list must not make a nonzero count clean')
+    # ② tolerate 를 전 항목으로 넓혀도 마찬가지다
+    if not verify_faults({**honest, 'warn': [], 'tolerated': list(MEASURES)}):
+        raise Fail('the code tolerating a check must not silence the test')
+    # ③ 재기를 그만두고 n/a 를 찍는 것은 '깨끗하다' 가 아니다
+    blind = {'file': 'erd_area_A.png', 'counts': {k: None for k in MEASURES},
+             'tolerated': [], 'warn': []}
+    eq(len(verify_faults(blind)), len(MEASURES), 'every unmeasured check is a fault')
+    # 라벨을 안 그리는 개요도에서만 라벨 항목이 n/a 여도 된다 — 그 밖은 아니다
+    ov = {'file': 'erd_overview.png',
+          'counts': {'label_table': None, 'label_x': None, 'thru': 0,
+                     'v_overlap': 0, 'h_overlap': 0}, 'tolerated': [], 'warn': []}
+    eq(verify_faults(ov), [], 'the overview draws no labels — n/a is honest there')
+    eq(verify_faults({**ov, 'file': 'erd_area_A.png'})[:1],
+       ['label_table: n/a — a check that stopped measuring is not a clean check'],
+       'the same n/a on a diagram that does draw labels is an escape hatch')
+    # ④ 항목이 이름째 사라지면 남은 것이 전부 0 이라 조용히 통과한다
+    gone = {'file': 'erd_area_A.png',
+            'counts': {k: 0 for k in MEASURES if k != 'thru'}, 'tolerated': [], 'warn': []}
+    if not verify_faults(gone):
+        raise Fail('a check that vanished from the record must be a fault')
+    extra = {'file': 'erd_area_A.png',
+             'counts': {**{k: 0 for k in MEASURES}, 'brand_new': 0},
+             'tolerated': [], 'warn': []}
+    if not verify_faults(extra):
+        raise Fail('a check the code added but this test ignores must be a fault')
+    # ⑤ 봐주기는 케이스가 숫자로 적을 때만, 그 숫자까지만
+    eq(verify_faults(honest, {'h_overlap': 2}), [], 'an explicit allowance covers it')
+    if not verify_faults(honest, {'h_overlap': 1}):
+        raise Fail('an allowance must not cover more than the number it names')
+
+
 @case('verify: the printed line and the machine record say the same thing')
 def _(work):
     # 사람이 읽는 줄과 기계가 읽는 기록이 갈라지면 둘 중 하나는 거짓말이 된다.
+    #
+    # 예전엔 항목마다 `has(line, ...)` 로 조각을 찾고 `'[warn]' in line == bool(warn)`
+    # 을 봤다. 그런데 붙박이 fixture 는 어느 그림도 경고를 내지 않아서, 그 마지막 줄은
+    # 모든 그림에서 False == False 를 비교했다 — 경고 꼬리는 한 번도 재지 않았다.
+    # (허용) 서식도 마찬가지로 한 번도 지나가지 않았다.
+    #
+    # 그래서 ① 세 갈래(숫자·n/a·허용·경고)가 다 나오는 입력을 쓰고 ② 조각이 아니라
+    # **줄 전체를 기록에서 되만들어** 글자까지 맞춘다. 꼬리·서식·항목 순서가 다 걸린다.
     sys.path.insert(0, str(HERE))
     import lang.en as en
-    write_schema(work, {
-        'a': table('a', [col('id'), col('b_id')], pk=['id'],
-                   fks=[{'column': 'b_id', 'ref_table': 'b', 'ref_column': 'id',
-                         'on_delete': 'CASCADE'}]),
-        'b': table('b', [col('id')], pk=['id'])})
-    out = run('build_erd.py', work).stdout
-    lines = [x.strip() for x in out.split('\n') if 'verify' in x]
-    recs = {r['file']: r for r in verify_recs(work)}
-    eq(len(lines), len(recs), 'one machine record per printed verify line')
-    for line in lines:
-        name = line.split()[1].rstrip(':')
-        r = recs[name]
-        for k, v in r['counts'].items():
-            shown = en.M['verify.na'] if v is None else str(v)
-            has(line, f"{en.M['verify.' + k]} {shown}", f'{name}: {k} on the printed line')
-        eq('[warn]' in line, bool(r['warn']), f'{name}: the warn tail matches the record')
+    write_schema(work, hub_schema(24))
+    seen = {'a number': 0, 'n/a': 0, 'tolerated': 0, 'the warn tail': 0}
+
+    def check(stdout):
+        """방금 돈 판이 찍은 줄과 그 판이 남긴 기록을 짝지어 글자까지 맞춘다.
+
+        기록은 판마다 처음부터 다시 쓰이므로(erd.verify_log), 한 판이 끝난 그 자리에서
+        읽어야 그 판의 것만 본다. 줄 순서 = 기록 순서다.
+        """
+        lines = [x.strip() for x in stdout.split('\n') if 'verify ' in x]
+        recs = verify_recs(work)
+        eq(len(lines), len(recs), 'one machine record per printed verify line')
+        for line, r in zip(lines, recs):
+            parts = []
+            for k in MEASURES:
+                v = r['counts'][k]
+                if v is None:
+                    shown, kind = en.M['verify.na'], 'n/a'
+                elif v and k in r['tolerated']:
+                    shown, kind = en.M['verify.tolerated'].format(n=v), 'tolerated'
+                else:
+                    shown, kind = str(v), 'a number'
+                seen[kind] += 1
+                parts.append(f"{en.M['verify.' + k]} {shown}")
+            want = en.M['log.verify'].format(name=r['file'], report=' · '.join(parts))
+            if r['warn']:
+                want += en.M['verify.warn'].format(
+                    list=', '.join(en.M['verify.' + k] for k in r['warn']))
+                seen['the warn tail'] += 1
+            eq(line, want.strip(),
+               f'{r["file"]}: the printed line is exactly what the record says')
+
+    check(run('build_erd.py', work).stdout)
+
+    # 같은 전체도를 '봐주기 없이' 한 번 더 그린다 — 경고 꼬리가 붙은 줄을 실제로 만든다.
+    # tolerate 는 draw_erd 의 인자라, 코드를 고치지 않고 시험 쪽에서 끌 수 있다.
+    probe = work / 'probe.py'
+    probe.write_text(
+        "import erd\n"
+        "pos, boxes, groups = erd.layout_global()\n"
+        "erd.draw_erd(erd.OUT / 'erd_full.png', list(erd.SCHEMA), pos, boxes, 'again',\n"
+        "             with_desc=True, scale=2, legend=True, groups=groups,\n"
+        "             derives=True, tolerate=())\n", encoding='utf-8')
+    check(run(str(probe), work, env={'PYTHONPATH': str(HERE)}).stdout)
+
+    for kind, n in seen.items():
+        if not n:
+            raise Fail(f'no diagram exercised {kind} — the fixture proves nothing about it. '
+                       f'(the hub fixture is expected to leave a few horizontal overlaps '
+                       f'on the full diagram; if the layout got better, pick another one)')
 
 
 @case('verify: a diagram without labels does not report a label check it never ran')
@@ -906,13 +1126,25 @@ def _(work):
 
 @case('render: many unrelated tables do not become a vertical ribbon')
 def _(work):
-    write_schema(work, {f't{i:02d}': table(f't{i:02d}', [col('id'), col('v', 'text')])
-                        for i in range(60)})
-    run('build_erd.py', work)
+    # 예전엔 60테이블 하나에 1:4 였다. 열 수를 옛 고정값(4)으로 되돌리면 그 자리는
+    # 1:2.30 이라 통과한다 — 고칠 때 잡으라고 둔 시험이 정작 그 회귀를 통과시킨다.
+    # 리본이 되는지는 **테이블이 늘 때 비율이 어떻게 되는가**로 재야 보인다:
+    # 고정 4열이면 60→200 에서 1:2.30 → 1:7.26 으로 자라고(열은 그대로, 세로만 길어짐),
+    # 열 수가 따라 늘면 1:1.49 → 1:1.82 로 거의 그대로다.
     from PIL import Image
-    w, h = Image.open(work / 'out' / 'erd_full.png').size
-    if h / w > 4:
-        raise Fail(f'aspect ratio 1:{h / w:.1f} — unreadable once fitted into a document')
+    ratio = {}
+    for n in (60, 200):
+        write_schema(work, {f't{i:03d}': table(f't{i:03d}', [col('id'), col('v', 'text')])
+                            for i in range(n)})
+        run('build_erd.py', work)
+        w, h = Image.open(work / 'out' / 'erd_full.png').size
+        ratio[n] = h / w
+        if ratio[n] > 3:
+            raise Fail(f'{n} tables → aspect ratio 1:{ratio[n]:.2f} — '
+                       f'unreadable once fitted into a document')
+    if ratio[200] > ratio[60] * 1.5:
+        raise Fail(f'the sheet only grows downward: 1:{ratio[60]:.2f} at 60 tables → '
+                   f'1:{ratio[200]:.2f} at 200 — columns are not keeping up')
 
 
 @case('render: badge clears the name on a title-only box')
@@ -952,16 +1184,43 @@ def _(work):
     run('build_erd.py', work)
     run('build_html.py', work)
     run('build_docx.py', work)
+    # 세 벌 다 **자리를 못박아** 본다. 예전엔 GraphML·docx 쪽이 맨 `in` 검사였다:
+    # graphml_node() 가 빈 문자열을 돌려주게 해도 통과했다 — <node> 가 하나도 없는
+    # GraphML 인데, 남은 <edge> 하나가 'a' 와 'b' 를 둘 다 품고 있어서다. GraphML 은
+    # 이 스킬이 내건 네 산출물 중 하나인데 텅 빈 채로 나갈 수 있었다.
     html = (work / 'T.html').read_text(encoding='utf-8')
     for name in t:
-        has(html, f'>{name}<', f'{name} appears in the HTML')
-    graphml = (work / 'T.graphml').read_text(encoding='utf-8')
-    for name in t:
-        has(graphml, name, f'{name} appears in the GraphML')
+        has(html, f'<h4 id="tb_{name}">', f'{name} has its own section in the HTML')
+
+    import xml.etree.ElementTree as ET
+    NS = {'g': 'http://graphml.graphdrawing.org/xmlns',
+          'y': 'http://www.yworks.com/xml/graphml'}
+    root = ET.parse(work / 'T.graphml').getroot()
+    nodes = root.findall('.//g:node', NS)
+    titles = []
+    for n in nodes:
+        for lab in n.findall('.//y:NodeLabel', NS):
+            if 'label.name' in (lab.get('configuration') or ''):
+                titles.append((lab.text or '').split('  ·  ')[0])
+    eq(sorted(titles), sorted(t), 'one GraphML <node> per table, each carrying its name')
+    edges = root.findall('.//g:edge', NS)
+    eq([(e.get('source'), e.get('target')) for e in edges],
+       [(nodes[1].get('id'), nodes[0].get('id'))], 'the one FK is the one GraphML edge')
+    eq([e.findtext('g:data[@key="d3"]', namespaces=NS) for e in edges], ['a_id : id'],
+       'and it says which columns it joins')
+
+    # docx 도 4장의 테이블별 절 제목으로 못박는다 — 어디든 이름이 스치기만 하면
+    # 통과하던 검사는 컬럼표가 통째로 빠져도 몰랐다.
     from docx import Document
-    text = '\n'.join(p.text for p in Document(str(work / 'T.docx')).paragraphs)
+    doc = Document(str(work / 'T.docx'))
+    heads = [p.text for p in doc.paragraphs if re.match(r'^4\.\d+\.\d+ ', p.text)]
+    eq(sorted(h.split(' ', 1)[1].split(' · ')[0] for h in heads), sorted(t),
+       'each table gets its own section in chapter 4 of the docx')
+    cells = {c.text for tb in doc.tables for row in tb.rows for c in row.cells}
     for name in t:
-        has(text, name, f'{name} appears in the docx')
+        for c in t[name]['columns']:
+            if c['name'] not in cells:
+                raise Fail(f'the docx column table lost {name}.{c["name"]}')
 
 
 @case('artifacts: graphml and svg are well-formed xml')
@@ -988,14 +1247,27 @@ def _(work):
 
 @case('artifacts: no unresolved message keys anywhere')
 def _(work):
+    # 표식(⟨키⟩)은 i18n.py 것이다. 예전엔 그 모양을 여기에 그대로 적어 두어서, 저쪽이
+    # 표식을 바꾸면 이 케이스는 아무것도 못 보면서 계속 통과했다. 표식을 **저쪽에
+    # 물어서** 만든다 — 그리고 물어본 답이 키를 담고 있지 않으면 그것부터 실패다.
     write_schema(work, {'t': table('t', [col('id')])})
+    sys.path.insert(0, str(HERE))
+    from i18n import t
+    probe = 'zz_probe.no_such_key'
+    mark = t(probe)
+    if probe not in mark or mark == probe:
+        raise Fail(f'i18n no longer marks an unresolved key ({mark!r}) — '
+                   f'this case would look at a document it cannot read')
+    lead, tail = mark.split(probe)
+    pat = re.escape(lead) + r'[a-z_][a-z._0-9]*' + re.escape(tail)
     for lang in ('en', 'ko', 'ja', 'es'):
         run('merge_desc.py', work, env={'ERD_LANG': lang})
         run('build_erd.py', work, env={'ERD_LANG': lang})
-        run('build_html.py', work, env={'ERD_LANG': lang})
+        r = run('build_html.py', work, env={'ERD_LANG': lang})
         text = (work / 'T.html').read_text(encoding='utf-8')
-        left = re.findall(r'⟨[a-z._]+⟩', text)
-        eq(left, [], f'{lang}: unresolved keys in the document')
+        eq(re.findall(pat, text), [], f'{lang}: unresolved keys in the document')
+        # 콘솔로 새는 것도 마찬가지다 — 사용자가 먼저 보는 자리다
+        eq(re.findall(pat, r.stdout + r.stderr), [], f'{lang}: unresolved keys on the console')
 
 
 @case('artifacts: docx pictures fit the page')
@@ -1004,11 +1276,23 @@ def _(work):
                         for i in range(12)})
     run('merge_desc.py', work)
     run('build_erd.py', work)
-    run('build_docx.py', work)
+    r = run('build_docx.py', work)
     from docx import Document
-    for s in Document(str(work / 'T.docx')).inline_shapes:
+    shapes = Document(str(work / 'T.docx')).inline_shapes
+    # 그림이 한 장도 없어도 이 반복문은 조용히 지나갔다 — add_picture 를 통째로 지워도
+    # 통과했다. '그림이 페이지에 맞는다' 와 '그림이 없다' 를 구분하지 못하는 검사다.
+    # 그려 놓은 PNG 마다 한 장씩 들어가야 한다: 개요도 · 전체도 · 영역별 상세도.
+    pngs = sorted(p.name for p in (work / 'out').glob('*.png'))
+    eq(len(shapes), len(pngs), f'one picture per diagram drawn ({pngs})')
+    if len(pngs) < 3:
+        raise Fail(f'the fixture must draw more than a token diagram: {pngs}')
+    if 'warn' in r.stdout:
+        raise Fail(f'no diagram should have been left out:\n{r.stdout}')
+    for s in shapes:
         if s.width.cm > 26.7 or s.height.cm > 18.0:
             raise Fail(f'picture {s.width.cm:.1f}×{s.height.cm:.1f}cm exceeds the page')
+        if s.width.cm < 1 or s.height.cm < 1:
+            raise Fail(f'picture {s.width.cm:.1f}×{s.height.cm:.1f}cm is not a diagram')
 
 
 # ── 두 번째 실행 ─────────────────────────────────────────────────────────────
@@ -1119,12 +1403,59 @@ def _(work):
     has(r.stdout + r.stderr, 'ERD_FONT', 'the message names the variable')
 
 
+@case('errors: a diagram file that is simply missing is a message, not a traceback')
+def _(work):
+    # 신선도 관문(require_fresh)은 **없는 파일을 세지 않는다** — 일부러 그렇다. 그래서
+    # 그림 하나를 지운 뒤 문서를 만들면 관문은 그대로 지나가고, build_docx.py 는 PIL 이
+    # 없는 파일을 여는 자리에서 FileNotFoundError 를 사용자에게 그대로 뱉었다.
+    # build_html.py 는 같은 상황을 도판만 빼고 경고 한 줄로 넘긴다. 둘이 같아야 한다.
+    write_schema(work, {'a': table('a', [col('id')]), 'b': table('b', [col('id')])})
+    run('merge_desc.py', work)
+    run('build_erd.py', work)
+    for ext in ('.png', '.svg'):     # HTML 은 PNG 가 없으면 SVG 로 떨어진다
+        (work / 'out' / f'erd_full{ext}').unlink()
+    # 빠진 도판이 조용히 빠지면 그림 없는 문서가 그림 있는 문서인 척 나간다 — 둘 다
+    # 어느 그림을 못 넣었는지 이름을 대야 한다 (HTML 쪽은 영역 그림만 세고 있었다)
+    for script in ('build_html.py', 'build_docx.py'):
+        r = run(script, work)
+        if 'Traceback' in r.stderr:
+            raise Fail(f'{script} tracebacked on a missing diagram:\n{r.stderr[-400:]}')
+        has(r.stdout, 'erd_full', f'{script} says which diagram it had to leave out')
+    from docx import Document
+    pngs = list((work / 'out').glob('*.png'))
+    eq(len(Document(str(work / 'T.docx')).inline_shapes), len(pngs),
+       'the document still carries every diagram that does exist')
+    # 다시 그리면 아무 말 없이 원래대로
+    run('build_erd.py', work)
+    r = run('build_docx.py', work)
+    if 'warn' in r.stdout:
+        raise Fail(f'a complete set of diagrams must not warn:\n{r.stdout}')
+
+
 @case('errors: an old schema.json without new keys still renders')
 def _(work):
+    # 예전엔 종료 코드 0 말고는 아무것도 보지 않았다. 그림을 한 장도 안 그리고 끝나도
+    # 통과였다 — '죽지 않았다' 와 '렌더된다' 는 다른 말이다.
     work.mkdir(parents=True, exist_ok=True)
     (work / 'schema.json').write_text(json.dumps(
-        {'t': {'name': 't', 'columns': [{'name': 'id', 'type': 'bigint', 'comment': ''}]}}))
+        {'t': {'name': 't', 'columns': [{'name': 'id', 'type': 'bigint', 'comment': ''}],
+               'fks': [{'column': 'p', 'ref_table': 'u', 'ref_column': 'id'}]},
+         'u': {'name': 'u', 'columns': [{'name': 'id', 'type': 'bigint', 'comment': ''}]}}))
     run('build_erd.py', work)
+    from PIL import Image
+    for stem in ('erd_overview', 'erd_full'):
+        p = work / 'out' / f'{stem}.png'
+        if not p.exists():
+            raise Fail(f'{stem}.png was never drawn — exit 0 is not a rendered diagram')
+        if min(Image.open(p).size) < 50:
+            raise Fail(f'{stem}.png is {Image.open(p).size} — an empty canvas, not a diagram')
+    if not list((work / 'out').glob('erd_area_*.png')):
+        raise Fail('no area diagram came out of an old schema.json')
+    # 새 키가 없어도 옛 스키마의 테이블·관계가 문서까지 간다
+    run('build_html.py', work)
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    for name in ('t', 'u'):
+        has(html, f'<h4 id="tb_{name}">', f'{name} reached the document from an old schema')
 
 
 def main():
@@ -1138,6 +1469,7 @@ def main():
         tmp = Path(tempfile.mkdtemp(prefix='erd-selftest-'))
         try:
             fn(tmp / 'work')
+            sweep_verify(name, tmp)
             print(f'  \033[32m✓\033[0m {name}')
         except Exception as e:                                    # noqa: BLE001
             FAILED.append((name, e))

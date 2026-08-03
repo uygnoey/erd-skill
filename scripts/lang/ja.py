@@ -235,6 +235,8 @@ M = {
     'log.scale_down': '    [注記] {name}: 図が大きいため倍率を {s}倍に下げた',
     'log.overlap_at': '      重なり: 座標 {a}  [{s0}~{s1}] vs [{t0}~{t1}]',
     'log.verify': '    検証 {name}: {report}',
+    'log.verify_log_fail': '  [警告] ERD_VERIFY_LOG を書けなかった。図はそのまま残っている: '
+                           '{path} — {err}',
     'log.html_done': 'HTML  テーブル {tables} · 領域 {areas} · 図版 {figs}点  '
                      '{mb}MB → {name}',
     'log.html_missing': '  [警告] 図のない領域 {n}件: {list}  '
@@ -242,4 +244,6 @@ M = {
     'log.stale_figs': '  [警告] スキーマより古い図 {n}枚をそのまま埋め込む '
                       '(ERD_STALE): {list}',
     'log.docx_saved': '保存: {name} ({kb} KB)',
+    'log.figs_missing': '  [警告] 画像ファイルがなく文書から除いた図 {n}点: '
+                        '{list}  → 先に build_erd.py を実行する',
 }

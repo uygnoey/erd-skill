@@ -209,7 +209,10 @@ def _split(tables, schema_name, max_areas, min_size=3):
     묶는다. 두 번 묶는 이유는 한 번만 하면 '기타' 가 비대해지기 때문이다 — 80개
     테이블에서 39개가 기타로 몰리면 그 영역은 세로로 한없이 길어져 못 쓴다.
 
-    반환: [(영역명, [테이블…]), …]
+    max_areas 는 **이 스키마가 쓸 수 있는 영역 수 전부** 다 — '기타' 도 그 안에 든다.
+    예전엔 '기타' 를 상한 밖에 두어, 상한 4 를 적으면 스키마 하나에서도 5개가 나왔다.
+
+    반환: [(영역명, [테이블…]), …]  — 길이는 언제나 1 이상 max_areas 이하
     """
     keep, rest = [], list(tables)
     for depth in (2, 1):
@@ -229,6 +232,10 @@ def _split(tables, schema_name, max_areas, min_size=3):
             break
 
     if rest:
+        # '기타' 가 자리를 차지하려면 가장 작은 묶음을 도로 내놓는다. 그러지 않으면
+        # 상한을 한 칸 넘긴다 — 영역 수가 곧 문서의 목차라 4를 적은 사람에게 5장이 간다.
+        while keep and len(keep) >= max_areas:
+            rest += keep.pop()[1]
         keep.append((T('word.area_other', schema=schema_name), sorted(rest)))
     return keep or [(schema_name, sorted(tables))]
 
@@ -285,13 +292,16 @@ def load_spec(schema):
         areas = []
         raw_max = os.environ.get('ERD_MAX_AREAS', '')
         max_areas = int(raw_max) if raw_max.strip().lstrip('-').isdigit() else 12
-        for sch, ts in sorted(by_schema.items()):
+        # 상한은 문서 전체 기준이다 — 스키마마다 따로 세면 스키마가 셋일 때
+        # 상한 4 가 12 개가 되어 버린다. 단 스키마를 통째로 버릴 수는 없으므로
+        # 스키마마다 한 영역은 반드시 남긴다. 그래서 실제 하한은 스키마 개수다.
+        todo = sorted(by_schema.items())
+        for i, (sch, ts) in enumerate(todo):
+            later = len(todo) - i - 1             # 뒤에 올 스키마도 한 자리씩은 가져간다
             if len(ts) <= 8:                      # 작은 스키마는 통째로 한 영역
                 areas.append([_code(len(areas)), sch, sch, sorted(ts)])
                 continue
-            # 상한은 문서 전체 기준이다 — 스키마마다 따로 세면 스키마가 셋일 때
-            # 상한 4 가 12 개가 되어 버린다
-            room = max(1, max_areas - len(areas))
+            room = max(1, max_areas - len(areas) - later)
             for gname, gts in _split(ts, sch, room):
                 areas.append([_code(len(areas)), gname, sch, sorted(gts)])
 

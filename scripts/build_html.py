@@ -338,11 +338,14 @@ def main():
     n_fig = _FIG_N[0]
     print(T('log.html_done', tables=len(SCHEMA), areas=len(AREAS), figs=n_fig,
             mb=f'{len(html) / 1e6:.1f}', name=out.name))
-    missing = [f'erd_area_{a[0]}' for a in AREAS
-               if not (OUT / f'erd_area_{a[0]}.svg').exists()
-               and not (OUT / f'erd_area_{a[0]}.png').exists()]
+    # 빠진 그림은 영역 것만 세고 있었다 — 개요도나 부록 전체도가 통째로 없어도
+    # 조용히 빠진 채로 문서가 나갔다. 박으려던 것 전부를 센다.
+    want = ['erd_overview'] + [f'erd_area_{a[0]}' for a in AREAS] \
+        + (['erd_full'] if WANT_FULL else [])
+    missing = [s for s in want
+               if not (OUT / f'{s}.svg').exists() and not (OUT / f'{s}.png').exists()]
     if missing:
-        print(T('log.html_missing', n=len(missing),
+        print(T('log.figs_missing', n=len(missing),
                 list=', '.join(missing[:6]) + (' …' if len(missing) > 6 else '')))
 
 

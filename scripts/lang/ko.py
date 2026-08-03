@@ -234,6 +234,8 @@ M = {
     'log.scale_down': '    [알림] {name}: 그림이 커서 배율을 {s}배로 낮춤',
     'log.overlap_at': '      겹침: 좌표{a}  [{s0}~{s1}] vs [{t0}~{t1}]',
     'log.verify': '    검증 {name}: {report}',
+    'log.verify_log_fail': '  [경고] ERD_VERIFY_LOG 를 쓰지 못했다. 그림은 그대로 있다: '
+                           '{path} — {err}',
     'log.html_done': 'HTML  테이블 {tables} · 영역 {areas} · 도판 {figs}장  '
                      '{mb}MB → {name}',
     'log.html_missing': '  [경고] 그림이 없는 영역 {n}개: {list}  '
@@ -241,4 +243,6 @@ M = {
     'log.stale_figs': '  [경고] 스키마보다 오래된 그림 {n}장을 그대로 넣는다 '
                       '(ERD_STALE): {list}',
     'log.docx_saved': '저장: {name} ({kb} KB)',
+    'log.figs_missing': '  [경고] 그림 파일이 없어 문서에서 뺀 도판 {n}장: '
+                        '{list}  → build_erd.py 를 먼저 돌린다',
 }
