@@ -87,6 +87,7 @@ M = {
     'erd.sub_area': '{schema} スキーマ · テーブル {n}件',
     'erd.sub_ext': ' · 外部参照 {n}件',
     'verify.label_table': 'ラベル↔テーブル',
+    'verify.thru': '線↔テーブル',
     'verify.v_overlap': '縦線の重なり',
     'verify.h_overlap': '横線の重なり',
 

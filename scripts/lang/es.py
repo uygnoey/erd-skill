@@ -87,6 +87,7 @@ M = {
     'erd.sub_area': 'esquema {schema} · tablas: {n}',
     'erd.sub_ext': ' · referencias externas: {n}',
     'verify.label_table': 'etiqueta↔tabla',
+    'verify.thru': 'línea↔tabla',
     'verify.v_overlap': 'solape vertical',
     'verify.h_overlap': 'solape horizontal',
 

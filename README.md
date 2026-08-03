@@ -58,7 +58,7 @@ columns are not quietly waved through.**
 **③ Diagram quality is not judged by eye.** Every render prints its own verification.
 
 ```
-verify erd_area_A.png: label↔table 0 · vertical overlap 0 · horizontal overlap 0
+verify erd_area_A.png: label↔table 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
 ```
 
 A label covering a table, or lines lying on top of each other, shows up as a number.

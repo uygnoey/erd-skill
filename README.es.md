@@ -60,7 +60,7 @@ descripción no pasan de largo en silencio.**
 verificación.
 
 ```
-verificación erd_area_A.png: etiqueta↔tabla 0 · solape vertical 0 · solape horizontal 0
+verificación erd_area_A.png: etiqueta↔tabla 0 · línea↔tabla 0 · solape vertical 0 · solape horizontal 0
 ```
 
 Una etiqueta que cubre una tabla, o líneas montadas una sobre otra, se manifiestan como un

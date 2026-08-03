@@ -586,29 +586,57 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
 
         used_vx, used_hy = [], []
 
-        def slot(base, used, pitch, limit=64):
+        def slot(base, used, pitch, limit=64, lo=None, hi=None):
             """base 근처에서 이미 쓰인 좌표를 피해 좌우(상하) 번갈아 자리를 잡는다.
 
-            자리를 찾을 때까지 계속 벌린다 — 선끼리는 절대 겹치지 않아야 한다.
+            lo·hi 는 넘어서면 안 되는 경계다 — 통로 밖은 테이블 속이다. 예전엔 경계가
+            없어서 통로에 들어갈 선이 많으면 남는 선이 테이블을 뚫고 지나갔다. 선은
+            노드보다 먼저 그리므로 그 관통은 노드에 덮여 눈에 보이지도 않았다.
             """
             for k in range(1, 2 * limit + 2):
                 off = (k // 2) * pitch * (1 if k % 2 else -1)
                 v = base + off
+                if lo is not None and not (lo <= v <= hi):
+                    continue
                 if all(abs(v - u) >= pitch - 1 for u in used):
                     used.append(v)
                     return v
+            if lo is not None and hi > lo:
+                # 통로가 꽉 찼다. 선끼리 붙는 편이 테이블을 뚫는 것보다 낫다 —
+                # 경계 안에서 이미 쓴 자리들과 가장 멀리 떨어진 곳을 고른다.
+                best, bestd = (lo + hi) / 2, -1.0
+                for i in range(1, 128):
+                    c = lo + (hi - lo) * i / 128
+                    dmin = min((abs(c - u) for u in used), default=1e9)
+                    if dmin > bestd:
+                        best, bestd = c, dmin
+                used.append(best)
+                return best
             v = max(used, default=base) + pitch
             used.append(v)
             return v
 
+        def gutter_bounds(i):
+            """세로 통로가 쓸 수 있는 x 범위. 바깥 통로는 넓게 열어 둔다."""
+            if i < 0:
+                return columns[0]['x1'] - 420, columns[0]['x1'] - 10
+            if i >= len(columns) - 1:
+                return columns[-1]['x2'] + 10, columns[-1]['x2'] + 420
+            return columns[i]['x2'] + 10, columns[i + 1]['x1'] - 10
+
         def free_y(ci, prefer):
-            """열 ci 의 노드 사이 빈 구간 중 prefer 에 가장 가까운 통과 y"""
+            """열 ci 의 노드 사이 빈 구간 중 prefer 에 가장 가까운 것 → (중심, lo, hi)
+
+            경계까지 돌려주는 이유는, 그 구간에 선이 여럿 지날 때 구간 밖으로 밀려나면
+            바로 위아래 테이블을 관통하기 때문이다.
+            """
             spans = columns[ci]['spans']
-            cands = [spans[0][0] - 36, spans[-1][1] + 36]
+            cands = [(spans[0][0] - 36, spans[0][0] - 420, spans[0][0] - 10),
+                     (spans[-1][1] + 36, spans[-1][1] + 10, spans[-1][1] + 420)]
             for a, b in zip(spans, spans[1:]):
                 if b[0] - a[1] >= 28:
-                    cands.append((a[1] + b[0]) / 2)
-            return min(cands, key=lambda y: abs(y - prefer))
+                    cands.append(((a[1] + b[0]) / 2, a[1] + 7, b[0] - 7))
+            return min(cands, key=lambda c: abs(c[0] - prefer))
 
         exit_used = {}                   # 노드별로 이미 쓴 진출입 y (컬럼이 없을 때 분산)
         exit_all = []                    # 전체 진출입 y (같은 행에 몰리는 것 방지)
@@ -652,20 +680,23 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             ax1, _t1, ax2, _t2 = rect(a)
             bx1, _t3, bx2, _t4 = rect(b)
             if ia == ib:                                  # 같은 열 — 왼쪽 통로로 우회
-                gx = slot(gutter_x(ia - 1), used_vx, 14)
+                lo, hi = gutter_bounds(ia - 1)
+                gx = slot(gutter_x(ia - 1), used_vx, 14, lo=lo, hi=hi)
                 pts = [(ax1, ya), (gx, ya), (gx, yb), (bx1, yb)]
             else:
                 right = ib > ia
                 step = 1 if right else -1
-                gseq = [gutter_x(i if right else i - 1) for i in range(ia, ib, step)]
+                gidx = [(i if right else i - 1) for i in range(ia, ib, step)]
                 mids = list(range(ia + step, ib, step))
                 pts = [(ax2 if right else ax1, ya)]
                 y = ya
-                for k, g in enumerate(gseq):
-                    gx = slot(g, used_vx, 14)
+                for k, gi in enumerate(gidx):
+                    lo, hi = gutter_bounds(gi)
+                    gx = slot(gutter_x(gi), used_vx, 14, lo=lo, hi=hi)
                     pts.append((gx, y))
                     if k < len(mids):                     # 중간 열은 노드 사이로 건넌다
-                        yp = slot(free_y(mids[k], yb), used_hy, 13)
+                        yc, ylo, yhi = free_y(mids[k], yb)
+                        yp = slot(yc, used_hy, 13, lo=ylo, hi=yhi)
                         pts.append((gx, yp))
                         y = yp
                 pts.append((pts[-1][0], yb))
@@ -930,7 +961,15 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
         lx0, ly0, lx1, ly1 = (v / S for v in probe.bbox)
 
     # ② 실제 렌더 — 측정 범위 + 여백
+    # 더미 측정은 본체만 잰다. 제목·부제·범례는 그 바깥이라 길면 잘려 나갔다 —
+    # 영역명이 곧 범례 라벨이라 자동 분류된 긴 이름에서 실제로 잘렸다.
     W = int(lx1 - lx0) + MARGIN * 2
+    W = max(W, int(tw(title, f['head']) / S) + MARGIN * 2)
+    if subtitle:
+        W = max(W, int(tw(subtitle, f['legend']) / S) + MARGIN * 2)
+    if legend and LAYERS:
+        widest = max(tw(v[3], f['legend']) for v in LAYERS.values()) / S
+        W = max(W, int(widest) + 74 + 40 + MARGIN * 2)
     legend_h = 0
     if legend:                       # 범례도 실제로 그려보고 높이를 잰다 (줄바꿈 반영)
         probe_leg = Tracker(ImageDraw.Draw(Image.new('RGB', (1, 1))))
@@ -958,29 +997,59 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                   for n in tnames]
     lab_hit = sum(1 for b in placed for o in node_rects
                   if not (b[2] < o[0] or b[0] > o[2] or b[3] < o[1] or b[1] > o[3]))
+    # 세그먼트마다 그 선의 양 끝(출발·도착 지점)을 달아 둔다 — 같은 지점으로 모여드는
+    # 합류와, 아무 상관 없이 같은 자리에 겹쳐 그려진 것을 구분하기 위해서다.
     segs_v, segs_h = [], []
     for pts, *_r in edges:
+        ends = ((round(pts[0][0]), round(pts[0][1])),
+                (round(pts[-1][0]), round(pts[-1][1])))
         for p, q in zip(pts, pts[1:]):
-            (segs_v if abs(p[0] - q[0]) < 0.5 else segs_h).append(
-                (p[0], min(p[1], q[1]), max(p[1], q[1])) if abs(p[0] - q[0]) < 0.5
-                else (p[1], min(p[0], q[0]), max(p[0], q[0])))
+            if abs(p[0] - q[0]) < 0.5:
+                segs_v.append((p[0], min(p[1], q[1]), max(p[1], q[1]), ends))
+            else:
+                segs_h.append((p[1], min(p[0], q[0]), max(p[0], q[0]), ends))
 
     def overlaps(segs):
-        """겹친 길이를 센다. 단 한쪽 끝을 공유하는 것은 '같은 지점으로 합류' 이므로 제외."""
+        """같은 자리에 겹쳐 그려진 구간을 센다.
+
+        한쪽 끝을 공유하는 것은 '같은 컬럼으로 모이는 합류' 라 제외하는데, 그 예외가
+        너무 넓었다 — 끝점 하나만 같으면 나머지가 아무리 길게 겹쳐도 넘어갔다.
+        합류로 봐줄 만한 짧은 구간(<=24px)까지만 예외로 둔다.
+        """
         n = 0
-        for i, (a, s0, s1) in enumerate(segs):
-            for (b, t0, t1) in segs[i + 1:]:
-                if abs(a - b) >= 3 or min(s1, t1) - max(s0, t0) <= 6:
+        for i, (a, s0, s1, ea) in enumerate(segs):
+            for (b, t0, t1, eb) in segs[i + 1:]:
+                lap = min(s1, t1) - max(s0, t0)
+                if abs(a - b) >= 3 or lap <= 6:
                     continue
-                if abs(s0 - t0) < 3 or abs(s1 - t1) < 3:
-                    continue         # 같은 컬럼으로 모이는 합류 구간
+                if set(ea) & set(eb):
+                    continue         # 같은 컬럼 행으로 모여드는 합류 — 겹쳐도 정상이다
                 n += 1
                 if DEBUG_OVERLAP:
                     print(T('log.overlap_at', a=f'{a:.0f}', s0=f'{s0:.0f}',
                              s1=f'{s1:.0f}', t0=f'{t0:.0f}', t1=f'{t1:.0f}'))
         return n
 
+    def thru_nodes():
+        """테이블 속을 지나는 선을 센다.
+
+        문서가 '선이 테이블을 관통하지 않는다' 고 못박아 두고선 정작 이걸 재지 않았다.
+        선을 노드보다 먼저 그리므로 관통은 노드에 덮여 **보이지도 않는다** — 선이
+        테이블 뒤로 사라졌다 반대편에서 나온다. 눈으로는 못 잡는다.
+        """
+        n = 0
+        for x, y0, y1, _e in segs_v:
+            for (ox0, oy0, ox1, oy1) in node_rects:
+                if ox0 + 2 < x < ox1 - 2 and min(y1, oy1) - max(y0, oy0) > 4:
+                    n += 1
+        for y, x0, x1, _e in segs_h:
+            for (ox0, oy0, ox1, oy1) in node_rects:
+                if oy0 + 2 < y < oy1 - 2 and min(x1, ox1) - max(x0, ox0) > 4:
+                    n += 1
+        return n
+
     report = {T('verify.label_table'): lab_hit,
+              T('verify.thru'): thru_nodes(),
               T('verify.v_overlap'): overlaps(segs_v),
               T('verify.h_overlap'): overlaps(segs_h)}
     print(T('log.verify', name=Path(path).name,

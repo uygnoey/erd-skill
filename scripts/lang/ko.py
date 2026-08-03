@@ -87,6 +87,7 @@ M = {
     'erd.sub_area': '{schema} 스키마 · 테이블 {n}개',
     'erd.sub_ext': ' · 외부 참조 {n}개',
     'verify.label_table': '라벨↔테이블',
+    'verify.thru': '선↔테이블',
     'verify.v_overlap': '세로선 중첩',
     'verify.h_overlap': '가로선 중첩',
 

@@ -87,6 +87,7 @@ M = {
     'erd.sub_area': '{schema} schema · tables {n}',
     'erd.sub_ext': ' · external references {n}',
     'verify.label_table': 'label↔table',
+    'verify.thru': 'line↔table',
     'verify.v_overlap': 'vertical overlap',
     'verify.h_overlap': 'horizontal overlap',
 

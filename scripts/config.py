@@ -121,6 +121,19 @@ PALETTE = [
 ]
 
 
+def _code(i):
+    """영역 코드 A…Z, 그 다음은 AA·AB…
+
+    26 개를 넘기면 chr() 가 '[' 나 '\\' 를 내놓아 erd_area_\\.png 같은 파일명이 됐다.
+    macOS 에서는 넘어가도 Windows 에서는 만들 수 없는 이름이다.
+    """
+    out, i = '', i + 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        out = chr(ord('A') + r) + out
+    return out
+
+
 def _is_color(c):
     return isinstance(c, str) and re.fullmatch(r'#[0-9A-Fa-f]{6}', c.strip()) is not None
 
@@ -211,17 +224,18 @@ def load_spec(schema):
         by_schema = {}
         for t in tables:
             by_schema.setdefault(schema[t].get('schema', 'public'), []).append(t)
-        areas, code = [], ord('A')
+        areas = []
         raw_max = os.environ.get('ERD_MAX_AREAS', '')
         max_areas = int(raw_max) if raw_max.strip().lstrip('-').isdigit() else 12
         for sch, ts in sorted(by_schema.items()):
             if len(ts) <= 8:                      # 작은 스키마는 통째로 한 영역
-                areas.append([chr(code), sch, sch, sorted(ts)])
-                code += 1
+                areas.append([_code(len(areas)), sch, sch, sorted(ts)])
                 continue
-            for gname, gts in _split(ts, sch, max_areas):
-                areas.append([chr(code), gname, sch, sorted(gts)])
-                code += 1
+            # 상한은 문서 전체 기준이다 — 스키마마다 따로 세면 스키마가 셋일 때
+            # 상한 4 가 12 개가 되어 버린다
+            room = max(1, max_areas - len(areas))
+            for gname, gts in _split(ts, sch, room):
+                areas.append([_code(len(areas)), gname, sch, sorted(gts)])
 
     # ── 레이어(색): 명시 없으면 영역 단위로 배정 ──
     layer_of = dict(spec.get('layer_of', {}))

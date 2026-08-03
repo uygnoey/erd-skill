@@ -224,10 +224,13 @@ run off the page. On landscape A4 the usable area is 26.7 × 18.0 cm.
 Printed on every render. Do not judge it by eye.
 
 ```
-verify erd_area_A.png: label↔table 0 · vertical overlap 0 · horizontal overlap 0
+verify erd_area_A.png: label↔table 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
 ```
 
 - **label↔table** — must be 0. Otherwise widen the candidate range in `flush_labels()`.
+- **line↔table** — must be 0. A line running through a table is invisible (nodes are
+  drawn over the edges), so this counter is the only way to see it. Non-zero means a
+  corridor overflowed; widen `hgap` in the layout call, or split the area.
 - **vertical overlap** — must be 0. Happens when `slot()` gives up finding a lane.
 - **horizontal overlap** — merges into the same column are not counted. Per-area detail
   diagrams must come out 0. The full and overview diagrams may keep a few, since the exit
