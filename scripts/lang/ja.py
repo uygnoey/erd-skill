@@ -172,8 +172,8 @@ M = {
     # ── エラー ────────────────────────────────────────────────────────────
     'err.no_conn': 'DB 接続情報がない。次のいずれかを指定すること。',
     'err.no_conn_db': "'コンテナ:ユーザー:DB'        # docker 経由",
-    'err.no_tables': 'テーブルを一つも読み取れなかった。'
-                     'ERD_DB / ERD_PSQL / ERD_SCHEMAS を確認すること。',
+    'err.no_tables': 'テーブルを一つも読めなかった。'
+                     'ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE を確認すること。',
     'err.font_env': '{env} で指定したフォントが存在しない: {path}',
     'err.font_none': '{kind}フォントが見つからない。install.sh を実行するか、{env} で'
                      '直接指定すること。\n  探索した場所: {looked}',
@@ -187,6 +187,7 @@ M = {
     'log.introspected': 'テーブル {tables} · カラム {columns} · FK {fks} → {path}',
     'log.desc_from_db': '  DB コメントから補完したカラム説明 {n}/{total}',
     'log.desc_rest': '  → 残りは merge_desc.py で補完すること',
+    'log.dup_names': '  複数のスキーマにまたがる名前のテーブル {n}件 — キーは スキーマ.テーブル とする: {list}',
     'log.exclude_rule': '  除外規則: {rule}',
     'log.fk_dropped': '  対象外テーブルを指す FK {n}件を除外',
     'log.per_schema': '  [{schema}] {n}件',

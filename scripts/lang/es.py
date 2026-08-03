@@ -184,7 +184,7 @@ M = {
     'err.no_conn': 'No hay conexión a la base de datos configurada. Debe definirse una de las dos.',
     'err.no_conn_db': "'contenedor:usuario:bd'        # vía docker",
     'err.no_tables': 'No se pudo leer ninguna tabla. '
-                     'Compruebe ERD_DB / ERD_PSQL / ERD_SCHEMAS.',
+                     'Compruebe ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE.',
     'err.font_env': 'la fuente indicada en {env} no existe: {path}',
     'err.font_none': 'No se encontró ninguna fuente {kind}. Ejecute install.sh o defina '
                      '{env} manualmente.\n  Rutas revisadas: {looked}',
@@ -198,6 +198,7 @@ M = {
     'log.introspected': 'tablas: {tables} · columnas: {columns} · FK: {fks} → {path}',
     'log.desc_from_db': '  descripciones de columna tomadas de comentarios de la BD: {n}/{total}',
     'log.desc_rest': '  → complete el resto con merge_desc.py',
+    'log.dup_names': '  {n} nombres de tabla existen en más de un esquema — la clave pasa a ser esquema.tabla: {list}',
     'log.exclude_rule': '  regla de exclusión: {rule}',
     'log.fk_dropped': '  FK descartadas por apuntar fuera del objetivo: {n}',
     'log.per_schema': '  [{schema}] {n}',

@@ -19,13 +19,24 @@ from config import EXCLUDE, SCHEMA_JSON, SCHEMAS, SEP, excluded, psql
 LABEL = os.environ.get('ERD_LABEL', '')
 
 
-def key(tname):
-    """여러 DB 를 합칠 때 이름이 부딪히므로 라벨로 구분한다."""
-    return f'{LABEL}.{tname}' if LABEL else tname
+DUP = set()      # 이름이 두 스키마 이상에 걸쳐 있는 테이블
+
+
+def key(tname, sch=''):
+    """테이블 키.
+
+    이름만으로는 `public.events` 와 `analytics.events` 를 구분하지 못해 둘이 한 테이블로
+    합쳐졌었다. 그렇다고 늘 스키마를 붙이면 spec 이 테이블명으로 적혀 있던 기존 문서가
+    전부 어긋난다. 그래서 **겹칠 때만** 스키마를 붙인다.
+    """
+    base = f'{sch}.{tname}' if sch and tname in DUP else tname
+    return f'{LABEL}.{base}' if LABEL else base
 
 Q_COLUMNS = """
 select c.table_schema, c.table_name, c.column_name,
-  case when c.character_maximum_length is not null
+  case when c.data_type in ('USER-DEFINED','ARRAY')
+         then format_type(a.atttypid, a.atttypmod)
+       when c.character_maximum_length is not null
          then replace(c.data_type,'character varying','varchar')||'('||c.character_maximum_length||')'
        when c.data_type='numeric' and c.numeric_precision is not null
          then 'numeric('||c.numeric_precision||','||coalesce(c.numeric_scale,0)||')'
@@ -34,11 +45,15 @@ select c.table_schema, c.table_name, c.column_name,
        else c.data_type end,
   c.is_nullable,
   coalesce(c.column_default,''),
+  c.is_identity,
   replace(coalesce(col_description((quote_ident(c.table_schema)||'.'||
              quote_ident(c.table_name))::regclass::oid, c.ordinal_position), ''), chr(10), ' ')
 from information_schema.columns c
 join information_schema.tables t
   on t.table_schema=c.table_schema and t.table_name=c.table_name and t.table_type='BASE TABLE'
+left join pg_attribute a
+  on a.attrelid=(quote_ident(c.table_schema)||'.'||quote_ident(c.table_name))::regclass
+ and a.attname=c.column_name and a.attnum>0
 where c.table_schema in ({schemas})
 order by c.table_schema, c.table_name, c.ordinal_position"""
 
@@ -50,17 +65,26 @@ join information_schema.key_column_usage kcu
 where tc.constraint_type='PRIMARY KEY' and tc.table_schema in ({schemas})
 order by kcu.ordinal_position"""
 
+# 복합 FK 는 자식 컬럼과 부모 컬럼을 **자리끼리** 짝지어야 한다. constraint_name 만으로
+# 이으면 2컬럼짜리가 2×2 로 불어나 있지도 않은 관계가 문서에 실린다.
+# position_in_unique_constraint 가 '이 자식 컬럼이 부모 유니크 제약의 몇 번째인지' 다.
 Q_FK = """
-select tc.table_name, kcu.column_name, ccu.table_name, ccu.column_name,
+select tc.table_schema, tc.table_name, kcu.column_name,
+       ccu.table_schema, ccu.table_name, ccu.column_name,
        coalesce(rc.delete_rule,'NO ACTION')
 from information_schema.table_constraints tc
-join information_schema.key_column_usage kcu
-  on kcu.constraint_name=tc.constraint_name and kcu.table_schema=tc.table_schema
-join information_schema.constraint_column_usage ccu
-  on ccu.constraint_name=tc.constraint_name
 join information_schema.referential_constraints rc
   on rc.constraint_name=tc.constraint_name
-where tc.constraint_type='FOREIGN KEY' and tc.table_schema in ({schemas})"""
+ and rc.constraint_schema=tc.constraint_schema
+join information_schema.key_column_usage kcu
+  on kcu.constraint_name=tc.constraint_name
+ and kcu.constraint_schema=tc.constraint_schema
+join information_schema.key_column_usage ccu
+  on ccu.constraint_name=rc.unique_constraint_name
+ and ccu.constraint_schema=rc.unique_constraint_schema
+ and ccu.ordinal_position=kcu.position_in_unique_constraint
+where tc.constraint_type='FOREIGN KEY' and tc.table_schema in ({schemas})
+order by tc.table_schema, tc.table_name, kcu.ordinal_position"""
 
 Q_TABLE_NOTE = """
 select t.table_schema, t.table_name,
@@ -114,17 +138,25 @@ def main():
     q = lambda tpl: tpl.format(schemas=schemas)
     tables = {}
 
-    for sch, tname, cname, ctype, nullable, default, comment in rows(q(Q_COLUMNS), 7):
-        if excluded(tname):
-            continue
-        t = tables.setdefault(key(tname), {
+    # 컬럼을 먼저 다 읽어 이름이 겹치는 테이블을 가려낸다 — 키를 정한 뒤라야
+    # PK·FK·인덱스를 제 테이블에 붙일 수 있다.
+    cols = [r for r in rows(q(Q_COLUMNS), 8) if not excluded(r[1])]
+    by_name = {}
+    for sch, tname, *_ in cols:
+        by_name.setdefault(tname, set()).add(sch)
+    DUP.update(n for n, schs in by_name.items() if len(schs) > 1)
+
+    for sch, tname, cname, ctype, nullable, default, identity, comment in cols:
+        t = tables.setdefault(key(tname, sch), {
             'name': tname, 'origin': 'existing', 'db': LABEL,
             'schema': f'{LABEL}.{sch}' if LABEL else sch, 'src_file': 'DB',
             'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
         })
         t['columns'].append({
             'name': cname, 'type': ctype, 'not_null': nullable == 'NO',
-            'default': default, 'identity': 'nextval' in default or 'identity' in default.lower(),
+            'default': default,
+            # GENERATED … AS IDENTITY 는 기본값이 비어 있다 — is_identity 를 같이 본다
+            'identity': identity == 'YES' or 'nextval' in default,
             'comment': comment, 'added': False,
         })
         t.setdefault('rows', None)
@@ -133,39 +165,39 @@ def main():
         t.setdefault('checks', [])
 
     for sch, tname, cname in rows(q(Q_PK), 3):
-        if key(tname) in tables:
-            tables[key(tname)]['pk'].append(cname)
+        if key(tname, sch) in tables:
+            tables[key(tname, sch)]['pk'].append(cname)
 
-    for child, col, parent, refcol, rule in rows(q(Q_FK), 5):
-        if key(child) in tables:
-            tables[key(child)]['fks'].append({
-                'column': col, 'ref_table': key(parent), 'ref_column': refcol,
+    for csch, child, col, psch, parent, refcol, rule in rows(q(Q_FK), 7):
+        if key(child, csch) in tables:
+            tables[key(child, csch)]['fks'].append({
+                'column': col, 'ref_table': key(parent, psch), 'ref_column': refcol,
                 'on_delete': rule.upper(),
             })
 
     for sch, tname, note in rows(q(Q_TABLE_NOTE), 3):
-        if key(tname) in tables and note:
-            tables[key(tname)]['note'] = note
+        if key(tname, sch) in tables and note:
+            tables[key(tname, sch)]['note'] = note
 
     # ── 문서용 부가정보 — 조회에 실패해도 ERD 생성은 계속한다 ──
     for sch, tname, n_rows, size in rows(q(Q_STATS), 4):
-        t = tables.get(key(tname))
+        t = tables.get(key(tname, sch))
         if t:
             t['rows'] = int(n_rows) if n_rows.lstrip('-').isdigit() else None
             t['size'] = size
 
     for sch, tname, iname, idef in rows(q(Q_INDEX), 4):
-        t = tables.get(key(tname))
+        t = tables.get(key(tname, sch))
         if t and idef:
             t['indexes'].append({'name': iname, 'def': idef})
 
     for sch, tname, cname, cdef in rows(q(Q_CHECK), 4):
-        t = tables.get(key(tname))
+        t = tables.get(key(tname, sch))
         if t and cdef:
             t['checks'].append({'name': cname, 'def': cdef})
 
     for sch, tname, cname, cdef in rows(q(Q_UNIQUE), 4):
-        t = tables.get(key(tname))
+        t = tables.get(key(tname, sch))
         if t and cdef:
             cols = cdef[cdef.find('(') + 1:cdef.rfind(')')]
             t['uniques'].append([c.strip() for c in cols.split(',')])
@@ -188,6 +220,8 @@ def main():
             path=out_path))
     print(T('log.desc_from_db', n=n_desc, total=n_col)
           + (T('log.desc_rest') if n_desc < n_col else ''))
+    if DUP:
+        print(T('log.dup_names', n=len(DUP), list=', '.join(sorted(DUP)[:6])))
     if EXCLUDE:
         print(T('log.exclude_rule', rule=EXCLUDE))
     if dropped:

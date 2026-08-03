@@ -182,7 +182,7 @@ M = {
     'err.no_conn': 'No database connection configured. Set one of the two.',
     'err.no_conn_db': "'container:user:db'        # via docker",
     'err.no_tables': 'Not a single table could be read. '
-                     'Check ERD_DB / ERD_PSQL / ERD_SCHEMAS.',
+                     'Check ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE.',
     'err.font_env': 'the font set in {env} does not exist: {path}',
     'err.font_none': 'No {kind} font found. Run install.sh, or set {env} yourself.\n'
                      '  Looked in: {looked}',
@@ -196,6 +196,7 @@ M = {
     'log.introspected': 'tables {tables} · columns {columns} · FKs {fks} → {path}',
     'log.desc_from_db': '  column descriptions filled from DB comments: {n}/{total}',
     'log.desc_rest': '  → fill in the rest with merge_desc.py',
+    'log.dup_names': '  {n} table names exist in more than one schema — keyed as schema.table: {list}',
     'log.exclude_rule': '  exclude rule: {rule}',
     'log.fk_dropped': '  dropped FKs that point outside the target: {n}',
     'log.per_schema': '  [{schema}] {n}',

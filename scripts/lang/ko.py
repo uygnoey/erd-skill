@@ -173,7 +173,7 @@ M = {
     'err.no_conn': 'DB 접속 정보가 없다. 둘 중 하나를 지정할 것.',
     'err.no_conn_db': "'컨테이너:계정:DB'        # docker 경유",
     'err.no_tables': '테이블을 하나도 읽지 못했다. '
-                     'ERD_DB / ERD_PSQL / ERD_SCHEMAS 를 확인할 것.',
+                     'ERD_DB / ERD_PSQL / ERD_SCHEMAS / ERD_EXCLUDE 를 확인할 것.',
     'err.font_env': '{env} 로 지정한 폰트가 없다: {path}',
     'err.font_none': '{kind} 폰트를 찾지 못했다. install.sh 를 돌리거나 {env} 로 직접 '
                      '지정한다.\n  찾아본 곳: {looked}',
@@ -186,6 +186,7 @@ M = {
     'log.introspected': '테이블 {tables} · 컬럼 {columns} · FK {fks} → {path}',
     'log.desc_from_db': '  DB 코멘트로 채워진 컬럼 설명 {n}/{total}',
     'log.desc_rest': '  → merge_desc.py 로 나머지를 채울 것',
+    'log.dup_names': '  이름이 여러 스키마에 걸친 테이블 {n}개 — 키를 스키마.테이블 로 둔다: {list}',
     'log.exclude_rule': '  제외 규칙: {rule}',
     'log.fk_dropped': '  대상 밖 테이블을 가리키는 FK {n}건 제외',
     'log.per_schema': '  [{schema}] {n}개',
