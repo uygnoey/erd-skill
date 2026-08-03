@@ -14,7 +14,7 @@ import json
 import os
 
 from i18n import t as T
-from config import EXCLUDE, SCHEMA_JSON, SCHEMAS, SEP, clean, excluded, psql
+from config import EXCLUDE, RS, SCHEMA_JSON, SCHEMAS, SEP, clean, excluded, psql
 
 LABEL = os.environ.get('ERD_LABEL', '')
 
@@ -73,6 +73,9 @@ order by kcu.ordinal_position"""
 # 관계가 그림에서 소리 없이 사라졌다. 유니크 인덱스는 흔한 방식이다.
 #
 # conkey·confkey 를 자리끼리 풀어 복합 FK 도 자리로 짝짓는다.
+#
+# conparentid=0: 파티션 테이블의 FK 는 파티션마다 복제본이 생긴다(conparentid 가
+# 원본을 가리킨다). 안 거르면 파티션 2개짜리 테이블이 같은 FK 를 세 번 그린다.
 Q_FK = """
 select cs.nspname, cl.relname, ca.attname,
        ps.nspname, pl.relname, pa.attname,
@@ -87,7 +90,7 @@ join lateral unnest(con.conkey) with ordinality as k(attnum, ord) on true
 join lateral unnest(con.confkey) with ordinality as f(attnum, ord) on f.ord=k.ord
 join pg_attribute ca on ca.attrelid=con.conrelid and ca.attnum=k.attnum
 join pg_attribute pa on pa.attrelid=con.confrelid and pa.attnum=f.attnum
-where con.contype='f' and cs.nspname in ({schemas})
+where con.contype='f' and con.conparentid=0 and cs.nspname in ({schemas})
 order by cs.nspname, cl.relname, con.conname, k.ord"""
 
 Q_TABLE_NOTE = """
@@ -129,8 +132,13 @@ order by rel.relname, con.conname"""
 
 
 def rows(query, n):
-    """조회 결과를 n개 필드로 맞춰 돌려준다 (모자라면 빈 값으로 채움)."""
-    for line in psql(query).strip().split('\n'):
+    """조회 결과를 n개 필드로 맞춰 돌려준다 (모자라면 빈 값으로 채움).
+
+    행은 RS 로 가른다. 개행으로 갈랐더니 개행이 든 기본값 하나가 행을 둘로 쪼개
+    유령 테이블을 만들고 진짜 값은 잘렸다. 마지막 개행은 psql 이 붙이는 것이다.
+    """
+    out = psql(query, rs=RS)
+    for line in out.removesuffix('\n').split(RS):
         if not line.strip():
             continue
         f = line.split(SEP)
@@ -172,12 +180,23 @@ def main():
         if key(tname, sch) in tables:
             tables[key(tname, sch)]['pk'].append(cname)
 
+    # FK 부모는 실제로 읽어 온 테이블에서 (스키마, 이름) 으로 찾는다. pg_catalog 는
+    # 목록 밖·권한 밖 스키마의 제약도 돌려주는데, key() 는 DUP 에 없는 이름에
+    # 스키마를 안 붙여 보이지 않는 부모가 같은 이름의 다른 테이블로 둔갑했다 —
+    # 없는 관계가 그려졌다. 못 찾으면 버리고 센다.
+    real = {(sch, tname): key(tname, sch) for sch, tname, *_ in cols}
+    dropped = 0
     for csch, child, col, psch, parent, refcol, rule in rows(q(Q_FK), 7):
-        if key(child, csch) in tables:
-            tables[key(child, csch)]['fks'].append({
-                'column': col, 'ref_table': key(parent, psch), 'ref_column': refcol,
-                'on_delete': rule.upper(),
-            })
+        ck, pk = real.get((csch, child)), real.get((psch, parent))
+        if ck is None:
+            continue
+        if pk is None:
+            dropped += 1
+            continue
+        tables[ck]['fks'].append({
+            'column': col, 'ref_table': pk, 'ref_column': refcol,
+            'on_delete': rule.upper(),
+        })
 
     for sch, tname, note in rows(q(Q_TABLE_NOTE), 3):
         if key(tname, sch) in tables and note:
@@ -206,7 +225,6 @@ def main():
             cols = cdef[cdef.find('(') + 1:cdef.rfind(')')]
             t['uniques'].append([c.strip() for c in cols.split(',')])
 
-    dropped = 0
     for t in tables.values():                 # 제외된 테이블을 가리키는 FK 는 버린다
         keep = [fk for fk in t['fks'] if fk['ref_table'] in tables]
         dropped += len(t['fks']) - len(keep)

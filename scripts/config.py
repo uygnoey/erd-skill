@@ -93,11 +93,16 @@ def psql_cmd():
 
 
 SEP = '\x1f'          # 구분자. | 는 기본값·코멘트에 섞여 나와 쓸 수 없다
+RS = '\x1e'           # 레코드 구분자. 개행으로 행을 가르면 값 속 개행이 가짜 행이 된다
 
 
-def psql(query):
-    """DB 조회 — 결과를 SEP 구분 문자열로 돌려준다. 실패하면 빈 문자열."""
-    r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-c', query],
+def psql(query, rs='\n'):
+    """DB 조회 — 결과를 SEP 구분 문자열로 돌려준다. 실패하면 빈 문자열.
+
+    행 구분은 rs 로 한다. 기본값에 개행이 든 컬럼(DEFAULT E'a\\nb')이 행 하나를
+    둘로 쪼개 유령 테이블을 만들었다 — 개행이 들어올 수 있는 조회는 rs=RS 로 부른다.
+    """
+    r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-R', rs, '-c', query],
                        capture_output=True, text=True)
     if r.returncode != 0 and not r.stdout:
         print(T('log.query_fail', err=r.stderr.strip()[:200]))

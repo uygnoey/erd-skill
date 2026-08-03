@@ -91,6 +91,8 @@ M = {
     'verify.label_x': 'etiqueta↔etiqueta',
     'verify.v_overlap': 'solape vertical',
     'verify.h_overlap': 'solape horizontal',
+    'verify.tolerated': '{n}(tolerado)',
+    'verify.warn': '  [aviso] debe ser 0: {list}',
 
     # ── documento docx ────────────────────────────────────────────────────
     'docx.doc_name': 'Documento',

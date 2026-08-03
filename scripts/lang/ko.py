@@ -91,6 +91,8 @@ M = {
     'verify.label_x': '라벨↔라벨',
     'verify.v_overlap': '세로선 중첩',
     'verify.h_overlap': '가로선 중첩',
+    'verify.tolerated': '{n}(허용)',
+    'verify.warn': '  [경고] 0 이어야 한다: {list}',
 
     # ── docx 문서 ─────────────────────────────────────────────────────────
     'docx.doc_name': '문서명',

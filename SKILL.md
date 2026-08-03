@@ -228,7 +228,11 @@ Printed on every render. Do not judge it by eye.
 
 ```
 verify erd_area_A.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
+verify erd_full.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 3(tolerated)
 ```
+
+A non-zero that is acceptable prints as `(tolerated)`. A counter that must be 0 but is not
+gets a `[warn] must be 0: …` tail on the same line — **a `[warn]` means a regression.**
 
 - **label↔table** — must be 0. Otherwise widen the candidate range in `flush_labels()`.
 - **line↔table** — must be 0. A line running through a table is invisible (nodes are
@@ -237,7 +241,7 @@ verify erd_area_A.png: label↔table 0 · label↔label 0 · line↔table 0 · v
 - **vertical overlap** — must be 0. Happens when `slot()` gives up finding a lane.
 - **horizontal overlap** — merges into the same column are not counted. Per-area detail
   diagrams should come out 0; the full and overview diagrams may keep a few, since the exit
-  y of a node is fixed there. A stubborn non-zero on one area usually means too many edges
+  y of a node is fixed there — only on those two it prints as `(tolerated)`. A stubborn non-zero on one area usually means too many edges
   arrive at one column row — widen `hgap`, or split that area in the spec.
 - **label↔label** — must be 0. Two labels sitting on top of each other.
 

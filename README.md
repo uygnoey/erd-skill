@@ -58,11 +58,13 @@ columns are not quietly waved through.**
 **③ Diagram quality is not judged by eye.** Every render prints its own verification.
 
 ```
-verify erd_area_A.png: label↔table 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
+verify erd_area_A.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
 ```
 
 A label covering a table, or lines lying on top of each other, shows up as a number.
-Per-area detail diagrams must be 0 across the board.
+Per-area detail diagrams must be 0 across the board. The overview and full diagrams may
+keep a few horizontal overlaps — those print as `3(tolerated)`; anything that must be 0
+but is not gets a `[warn]` tail on the same line.
 
 ## Install
 

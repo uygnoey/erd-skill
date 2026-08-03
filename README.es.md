@@ -60,11 +60,14 @@ descripción no pasan de largo en silencio.**
 verificación.
 
 ```
-verificación erd_area_A.png: etiqueta↔tabla 0 · línea↔tabla 0 · solape vertical 0 · solape horizontal 0
+verificación erd_area_A.png: etiqueta↔tabla 0 · etiqueta↔etiqueta 0 · línea↔tabla 0 · solape vertical 0 · solape horizontal 0
 ```
 
 Una etiqueta que cubre una tabla, o líneas montadas una sobre otra, se manifiestan como un
-número. Los diagramas de detalle por área deben dar 0 en todo.
+número. Los diagramas de detalle por área deben dar 0 en todo. El diagrama general y el
+completo pueden conservar unos pocos solapes horizontales — se imprimen como
+`3(tolerado)`; cualquier valor que deba ser 0 y no lo sea añade una cola `[aviso]` en la
+misma línea.
 
 ## Instalación
 

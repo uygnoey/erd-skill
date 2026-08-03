@@ -91,6 +91,8 @@ M = {
     'verify.label_x': 'label↔label',
     'verify.v_overlap': 'vertical overlap',
     'verify.h_overlap': 'horizontal overlap',
+    'verify.tolerated': '{n}(tolerated)',
+    'verify.warn': '  [warn] must be 0: {list}',
 
     # ── docx document ─────────────────────────────────────────────────────
     'docx.doc_name': 'Document',

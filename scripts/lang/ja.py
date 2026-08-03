@@ -91,6 +91,8 @@ M = {
     'verify.label_x': 'ラベル↔ラベル',
     'verify.v_overlap': '縦線の重なり',
     'verify.h_overlap': '横線の重なり',
+    'verify.tolerated': '{n}(許容)',
+    'verify.warn': '  [警告] 0 でなければならない: {list}',
 
     # ── docx 文書 ─────────────────────────────────────────────────────────
     'docx.doc_name': '文書名',

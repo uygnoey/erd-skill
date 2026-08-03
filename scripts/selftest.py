@@ -179,6 +179,56 @@ CREATE TABLE t (
        'trailing comments belong to the column they follow, not the next one')
 
 
+@case('parse: a comment on a shared line does not swallow the next column')
+def _(work):
+    s = ddl(work, """
+CREATE TABLE t (a int, b int,  -- shared line
+  c int);
+CREATE TABLE leading (
+    id int PRIMARY KEY   -- row id
+  , name text            -- leading-comma style
+  , v int
+);
+""")
+    eq([c['name'] for c in s['t']['columns']], ['a', 'b', 'c'],
+       'a trailing comment must not merge two columns')
+    eq([c['name'] for c in s['leading']['columns']], ['id', 'name', 'v'],
+       'leading-comma style keeps every column')
+    eq({c['name']: c['comment'] for c in s['leading']['columns']},
+       {'id': 'row id', 'name': 'leading-comma style', 'v': ''},
+       'and each comment stays with its own column')
+
+
+@case('parse: a constraint written after REFERENCES still counts')
+def _(work):
+    s = ddl(work, """
+CREATE TABLE t (
+  id int PRIMARY KEY,
+  parent_id int REFERENCES users(id) NOT NULL
+);
+""")
+    c = [x for x in s['t']['columns'] if x['name'] == 'parent_id'][0]
+    eq(c['not_null'], True, 'NOT NULL after REFERENCES is still NOT NULL')
+
+
+@case('parse: PRIMARY KEY implies NOT NULL')
+def _(work):
+    # Postgres puts NOT NULL on every PK column; introspect reports it that way.
+    # The diagrams hide a miss (the PK icon wins) but the definition tables do not.
+    s = ddl(work, """
+CREATE TABLE t (id bigint PRIMARY KEY, v text);
+CREATE TABLE pair (a int, b int, note text, PRIMARY KEY (a, b));
+CREATE TABLE later (id bigint, v text);
+ALTER TABLE later ADD CONSTRAINT later_pk PRIMARY KEY (id);
+""")
+    eq({c['name']: c['not_null'] for c in s['t']['columns']},
+       {'id': True, 'v': False}, 'an inline PK column is NOT NULL')
+    eq({c['name']: c['not_null'] for c in s['pair']['columns']},
+       {'a': True, 'b': True, 'note': False}, 'a composite table-level PK too')
+    eq({c['name']: c['not_null'] for c in s['later']['columns']},
+       {'id': True, 'v': False}, 'and a PK added by ALTER TABLE')
+
+
 @case('parse: columns named after table-level keywords survive')
 def _(work):
     s = ddl(work, """
@@ -324,6 +374,70 @@ CREATE TABLE orders (id bigint PRIMARY KEY, m bigint REFERENCES merchants(id));
         raise Fail('a column-less table must render as a title-only box')
 
 
+# ── 인트로스펙션 ─────────────────────────────────────────────────────────────
+# 진짜 DB 없이 introspect 의 **판단**을 재현하는 가짜 psql. 받은 -F·-R 을 그대로
+# 존중하므로, 행 구분이 개행으로 퇴행하면 개행 든 값이 행을 쪼개는 것까지 재현된다.
+_FAKE_PSQL = '''\
+import sys
+a = sys.argv
+sep = a[a.index('-F') + 1]
+rs = a[a.index('-R') + 1] if '-R' in a else chr(10)
+q = a[a.index('-c') + 1]
+NL = chr(10)
+rows = []
+if 'information_schema.columns' in q:
+    rows = [['s1', 'claims', 'id', 'bigint', 'NO', '', 'NO', ''],
+            ['s1', 'claims', 'owner_id', 'bigint', 'YES', '', 'NO', ''],
+            ['s2', 'owners', 'id', 'bigint', 'NO', '', 'NO', ''],
+            ['s1', 'tricky', 'id', 'bigint', 'NO', '', 'NO', ''],
+            ['s1', 'tricky', 'note', 'text', 'YES',
+             "'line1" + NL + "line2'::text", 'NO', '']]
+elif 'PRIMARY KEY' in q:
+    rows = [['s1', 'claims', 'id'], ['s2', 'owners', 'id'], ['s1', 'tricky', 'id']]
+elif "contype='f'" in q:
+    rows = [['s1', 'claims', 'owner_id', 'hidden', 'owners', 'id', 'NO ACTION']]
+if rows:
+    sys.stdout.write(rs.join(sep.join(r) for r in rows) + NL)
+'''
+
+
+def db_fake(work):
+    import shlex
+    work.mkdir(parents=True, exist_ok=True)
+    fake = work / 'fake_psql.py'
+    fake.write_text(_FAKE_PSQL, encoding='utf-8')
+    return {'ERD_PSQL': f'{shlex.quote(sys.executable)} {shlex.quote(str(fake))}',
+            'ERD_SCHEMAS': 's1,s2'}
+
+
+@case('introspect: an FK parent you cannot see is dropped, not rewired')
+def _(work):
+    # hidden.owners 는 목록 밖 — 같은 이름의 s2.owners 로 갈아타면 없는 관계가 그려진다
+    r = run('introspect.py', work, env=db_fake(work))
+    s = json.loads((work / 'schema.json').read_text())
+    eq(s['claims']['fks'], [], 'an FK to hidden.owners must not become s2.owners')
+    has(r.stdout, 'outside the target: 1', 'the dropped FK is counted, not silent')
+
+
+@case('introspect: a newline inside a default does not forge a row')
+def _(work):
+    run('introspect.py', work, env=db_fake(work))
+    s = json.loads((work / 'schema.json').read_text())
+    eq(sorted(s), ['claims', 'owners', 'tricky'], 'no ghost table from a split row')
+    eq([c['default'] for c in s['tricky']['columns'] if c['name'] == 'note'],
+       ["'line1\nline2'::text"], 'the default keeps both of its lines')
+
+
+@case('introspect: partition copies of an FK are filtered in the query')
+def _(work):
+    # 파티션마다 복제된 제약은 SQL 에서 걸러진다 — 여기서는 그 술어가 지워지지
+    # 않았는지만 지킨다 (충실한 재현은 진짜 DB 가 필요하다)
+    sys.path.insert(0, str(HERE))
+    import introspect
+    has(introspect.Q_FK, 'conparentid=0',
+        'inherited (per-partition) constraint copies must be filtered out')
+
+
 # ── 설명 ─────────────────────────────────────────────────────────────────────
 @case('merge_desc: common dictionary follows ERD_LANG')
 def _(work):
@@ -427,6 +541,31 @@ def _(work):
     w, h = Image.open(work / 'out' / 'erd_full.png').size
     if h / w > 4:
         raise Fail(f'aspect ratio 1:{h / w:.1f} — unreadable once fitted into a document')
+
+
+@case('render: badge clears the name on a title-only box')
+def _(work):
+    # 컬럼을 모르는 테이블(참조만 되고 정의가 없는 것)도 배지를 단다. 상자 폭이
+    # 제목 폭만 보고 정해지면 배지가 이름 위에 얹힌다 — 픽셀 대신 기하로 잰다:
+    # 오른쪽 정렬로 그려질 배지의 왼쪽 끝이 제목의 오른쪽 끝보다 오른쪽이어야 한다.
+    write_schema(work, {
+        'orders': table('orders', [col('id'), col('m')], origin='new', pk=['id'],
+                        fks=[{'column': 'm', 'ref_table': 'merchants',
+                              'ref_column': 'id', 'on_delete': 'NO ACTION'}]),
+        'merchants': table('merchants', [])})
+    probe = work / 'probe.py'
+    probe.write_text(
+        "import erd\n"
+        "f = erd.load_fonts()\n"
+        "for name in erd.SCHEMA:\n"
+        "    box = erd.measure(name)\n"
+        "    bd, _c = erd.badge(name)\n"
+        "    name_right = erd.PAD + erd.tw(name, f['title'])\n"
+        "    badge_left = box['w'] - erd.PAD - erd.tw(bd, f['badge'])\n"
+        "    assert badge_left > name_right, (\n"
+        "        f'{name}: badge at x={badge_left} overlaps name ending at x={name_right}')\n",
+        encoding='utf-8')
+    run(str(probe), work, env={'PYTHONPATH': str(HERE)})
 
 
 # ── 산출물 ───────────────────────────────────────────────────────────────────

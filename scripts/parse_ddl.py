@@ -117,13 +117,7 @@ def split_top_level(body_mc: str, body_ms: str, body_sc: str):
         elif c == ')':
             depth -= 1
         elif c == ',' and depth == 0:
-            # 보통은 콤마에서 자른다. 다만 콤마 뒤 같은 줄에 주석이 붙어 있으면 그
-            # 주석은 앞 컬럼의 설명이므로(`id bigint,  -- 행 식별자`) 줄 끝까지 끌어온다.
-            # 줄 끝까지를 무조건 경계로 삼으면 한 줄에 여러 컬럼을 적은 정의가
-            # 통째로 한 항목이 된다.
-            nl = body_sc.find('\n', i)
-            end = len(body_sc) if nl < 0 else nl
-            cuts.append(end + 1 if '--' in body_ms[i + 1:end] else i + 1)
+            cuts.append(i + 1)          # 경계는 언제나 콤마다
     cuts.append(len(body_sc) + 1)
 
     items = []
@@ -132,9 +126,23 @@ def split_top_level(body_mc: str, body_ms: str, body_sc: str):
         # 주석은 위치도 내용도 ms(문자열만 가린 사본)에서 가져온다. 위치만 ms 에서
         # 찾고 내용을 mc(주석을 가린 사본)에서 떼어내던 탓에, 인라인 `-- 설명` 이
         # 전부 빈 문자열이 됐다 — DDL 경로의 간판 기능이 조용히 죽어 있었다.
-        notes = [seg_ms[mm.start() + 2:mm.end()]
-                 for mm in re.finditer(r'--[^\n]*', seg_ms)]
-        note = ' '.join(x.strip() for x in notes if x.strip())
+        #
+        # 설명이 붙는 자리는 두 가지다. `id int,  -- 설명` 처럼 콤마 뒤에 오면 그것은
+        # **앞** 컬럼 것이고, `id int  -- 설명` 처럼 코드 뒤에 오면 제 것이다.
+        # 그래서 항목 안에서 코드가 시작되기 전에 나온 주석만 앞 항목으로 넘긴다.
+        # 경계를 줄 끝까지 늘리는 식으로 맞추려 들면 한 줄에 여러 컬럼을 적은 정의가
+        # 통째로 한 덩어리가 된다.
+        first = re.search(r'\S', code)
+        lead_end = first.start() if first else len(seg_ms)
+        lead, own = [], []
+        for mm in re.finditer(r'--[^\n]*', seg_ms):
+            (lead if mm.start() < lead_end else own).append(
+                seg_ms[mm.start() + 2:mm.end()].strip())
+        lead = ' '.join(x for x in lead if x)
+        if lead and items:
+            items[-1] = (items[-1][0], items[-1][1],
+                         ' '.join(x for x in (items[-1][2], lead) if x))
+        note = ' '.join(x for x in own if x)
         # 값(타입·기본값)은 주석만 가린 사본에서, 구조 판정은 둘 다 가린 사본에서.
         raw_code = ' '.join(raw.split()).rstrip(', ')
         code = ' '.join(code.split()).rstrip(', ')
@@ -178,9 +186,21 @@ _TYPE_HEAD = re.compile(
     r'(\s*\([^)]*\))?((?:\s*\[\s*\d*\s*\])*)', re.I)
 
 
+_REF_CLAUSE = re.compile(
+    r'\bREFERENCES\s+(?:"?\w+"?\s*\.\s*)?"?\w+"?\s*(?:\([^)]*\))?'
+    r'(?:\s+MATCH\s+\w+)?'
+    r'(?:\s+ON\s+(?:DELETE|UPDATE)\s+'
+    r'(?:CASCADE|RESTRICT|NO\s+ACTION|SET\s+NULL|SET\s+DEFAULT))*', re.I)
+
+
 def _decl(rest):
-    """REFERENCES 절을 떼어 낸 선언부. 부모 테이블 이름이 판정에 끼어들지 않게 한다."""
-    return re.split(r'\bREFERENCES\b', rest, 1, re.I)[0]
+    """REFERENCES 절**만** 걷어낸 선언부.
+
+    부모 테이블 이름이 판정에 끼어들면 안 되지만(REFERENCES serial_numbers 가
+    identity 가 됐다), REFERENCES 에서 뒤를 통째로 잘라 내면 그 뒤에 적은 제약을
+    놓친다 — `parent_id int REFERENCES users(id) NOT NULL` 이 nullable 이 됐다.
+    """
+    return _REF_CLAUSE.sub(' ', rest)
 
 
 def _type(rest):
@@ -573,6 +593,15 @@ def main():
         default_pk = os.environ.get('ERD_DEFAULT_PK', '')
         if not tables[n]['pk'] and default_pk:
             tables[n]['pk'] = [default_pk]
+
+    # PRIMARY KEY 컬럼은 Postgres 가 NOT NULL 을 자동으로 건다. DDL 에 따로 적지 않은
+    # PK 를 nullable 로 두면 같은 테이블을 DB 에서 읽은 결과(introspect)와 어긋난다 —
+    # 그림은 PK 아이콘이 앞서 가려 주지만, 정의서 표의 NULL 칸은 그대로 틀린다.
+    # 인라인 PK · 테이블 수준 복합 PK · ALTER 로 붙인 PK 를 여기서 한 번에 채운다.
+    for t in tables.values():
+        for c in t['columns']:
+            if c['name'] in t['pk']:
+                c['not_null'] = True
 
     for t in tables.values():
         t.setdefault('schema', 'public')

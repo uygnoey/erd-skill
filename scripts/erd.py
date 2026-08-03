@@ -351,7 +351,10 @@ def measure(tname, with_desc=True):
 
 def stub_box(tname):
     f = load_fonts()
-    w = max(tw(tname, f['title']),
+    bd, _ = badge(tname)
+    # 제목만 있는 상자에도 배지는 그려진다. measure() 처럼 배지 폭을 더하지 않으면
+    # 배지가 테이블명 위에 얹힌다 — 참조만 되고 정의가 없는 테이블에서 실제로 그랬다.
+    w = max(tw(tname, f['title']) + tw(bd, f['badge']) + 24,
             tw(T('erd.ref_of', area=AREA_OF.get(tname, T('word.external')),
                   role=ROLE.get(tname, '')), f['role'])) + PAD * 2
     return {'w': int(w), 'h': HEAD_H + 2, 'rows': [], 'cols': (0, 0), 'gap': 0}
@@ -588,7 +591,8 @@ def draw_legend(d, f, x, y, S, max_w=10 ** 6):
 
 
 def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale=2,
-             stubs=(), legend=False, edge_labels=True, groups=(), derives=False):
+             stubs=(), legend=False, edge_labels=True, groups=(), derives=False,
+             tolerate=()):
     """2단계 렌더 — ① 실제로 그려지는 모든 요소의 범위를 재고 ② 거기에 여백을 붙여 그린다.
 
     선·라벨·그룹 박스는 노드 바깥으로 나가므로, 노드 위치만으로 캔버스를 잡으면 잘린다.
@@ -1158,13 +1162,17 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     n += 1
         return n
 
-    report = {T('verify.label_table'): lab_hit,
-              T('verify.label_x'): lab_hits(),
-              T('verify.thru'): thru_nodes(),
-              T('verify.v_overlap'): overlaps(segs_v),
-              T('verify.h_overlap'): overlaps(segs_h)}
-    print(T('log.verify', name=Path(path).name,
-             report=' · '.join(f'{k} {v}' for k, v in report.items())))
+    # 개요도·전체도는 노드 진출 y 가 고정이라 가로선 중첩이 소수 남는 것이 정상인데,
+    # 숫자만 찍으면 그 '아는 겹침' 과 회귀를 구분할 수 없다. 그래서 허용된 항목은
+    # 값에 (허용) 을 달고, 0 이어야 하는 항목이 0 이 아니면 같은 줄에 [경고] 를 단다.
+    checks = [('label_table', lab_hit), ('label_x', lab_hits()), ('thru', thru_nodes()),
+              ('v_overlap', overlaps(segs_v)), ('h_overlap', overlaps(segs_h))]
+    parts = [f"{T('verify.' + k)} "
+             + (T('verify.tolerated', n=v) if v and k in tolerate else str(v))
+             for k, v in checks]
+    bad = [T('verify.' + k) for k, v in checks if v and k not in tolerate]
+    print(T('log.verify', name=Path(path).name, report=' · '.join(parts))
+          + (T('verify.warn', list=', '.join(bad)) if bad else ''))
     img.save(path)
 
     # ── 같은 그림을 벡터로 한 벌 더 (문서 삽입용 — 확대해도 안 뭉갠다) ──

@@ -28,7 +28,7 @@ def main():
                      T('word.fig_no', n=1) + ' ' + T('docx.fig_overview', title=TITLE),
                      subtitle=T('erd.sub_overview'),
                      with_desc=False, scale=2, legend=True, edge_labels=False,
-                     groups=ogroups, derives=True)
+                     groups=ogroups, derives=True, tolerate=('h_overlap',))
     print(T('log.png_overview', name=Path(p).name, size='%d×%d' % Image.open(p).size))
 
     # 3) PNG 전체 상세 ERD — 모든 테이블의 전 컬럼 + 설명
@@ -39,7 +39,9 @@ def main():
                                  columns=sum(len(x['columns']) for x in SCHEMA.values()),
                                  fks=sum(len(x['fks']) for x in SCHEMA.values()))
                                + (T('erd.sub_etl', n=len(erd.DERIVES)) if erd.DERIVES else '')),
-                     with_desc=True, scale=2, legend=True, groups=groups, derives=True)
+                     # 전체도·개요도는 노드 진출 y 가 고정이라 가로선 중첩 소수는 허용
+                     with_desc=True, scale=2, legend=True, groups=groups, derives=True,
+                     tolerate=('h_overlap',))
     print(T('log.png_full', name=Path(p).name, size='%d×%d' % Image.open(p).size))
 
     # 4) PNG 영역별 상세도
