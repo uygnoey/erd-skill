@@ -132,6 +132,32 @@ allí. Cuanto más crece «Otros», más alto y más difícil de leer se vuelve 
 **Si el resultado va a un documento, conviene definir las áreas a mano en
 `erd.spec.json`** — las áreas se convierten en el índice del documento.
 
+### Desde archivos DDL en lugar de la base de datos
+
+Para documentar cambios que todavía no se han aplicado, ejecuta `parse_ddl.py` en lugar de
+`introspect.py`: lee `$ERD_SQL_DIR/*.sql` (por defecto `$ERD_PROJ/sql`) y escribe el mismo
+`schema.json`.
+
+Los comentarios `--` de ese DDL se convierten en las descripciones, y **dónde está el
+comentario decide de quién es la descripción:**
+
+```sql
+-- una fila por pedido          ← encima de CREATE TABLE → nota de la tabla
+CREATE TABLE orders (           -- una fila por pedido  ← en esta línea → nota de la tabla, y esta gana
+  id       bigint PRIMARY KEY,  -- id de fila          ← tras la coma → esta columna
+  -- quién lo hizo              ← encima de una columna → esa columna (varias líneas se unen)
+  user_id  bigint NOT NULL,
+  code     text,
+  -- único por inquilino        ← encima de una restricción → de nadie
+  UNIQUE (user_id, code)
+  -- TODO: añadir moneda        ← tras la última columna → de nadie
+);
+```
+
+Un bloque `/* … */` nunca es una descripción, ni siquiera una línea `--` dentro de él.
+`COMMENT ON TABLE/COLUMN` sobrescribe todo lo anterior, y por eso un archivo de `pg_dump` y
+uno escrito a mano acaban igual.
+
 ### Idioma de la salida
 
 Todo lo que lee una persona — la salida de consola, los documentos HTML y docx, la leyenda
@@ -205,9 +231,13 @@ Están pensadas para documentos que se revisan, así que hay cosas que no se neg
 
 ## PNG y SVG
 
-Son el mismo dibujo. Las coordenadas y los anchos de fuente se miden de forma idéntica con
-PIL; solo cambia el backend de dibujo a vectorial (`svg_canvas.py` imita la interfaz de
-`ImageDraw`).
+Son el mismo trazado, dibujado dos veces. Las posiciones de las tablas y el tamaño de las
+cajas salen de un único cálculo de disposición, así que una tabla queda en el mismo sitio en
+ambos; solo cambia el backend de dibujo a vectorial (`svg_canvas.py` imita la interfaz de
+`ImageDraw`). Sin embargo, la pasada del SVG corre a otra escala y los anchos de texto de
+PIL no escalan de forma lineal: una etiqueta de relación puede caer en otro sitio en el SVG
+(medido: una etiqueta a 134px, sobre 20 esquemas aleatorios). **Los contadores de
+verificación que se imprimen en cada render miden el PNG.**
 
 |  | Vista de conjunto | Por área | Detalle completo |
 |---|---|---|---|

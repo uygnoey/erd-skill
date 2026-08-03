@@ -77,10 +77,18 @@ python3 merge_schemas.py shop mart     # table keys become e.g. 'shop.orders'
 | `$ERD_WORK/out/erd_full.png·svg` | Full ERD (every column + descriptions) |
 | `$ERD_WORK/out/erd_area_*.png·svg` | Per-area detail |
 
-**PNG and SVG are the same picture.** Coordinates and font widths are measured identically
-with PIL; only the drawing back end becomes vector (`svg_canvas.py`). SVG is a tenth the
-size and does not blur when enlarged, so it goes into the HTML; PNG goes wherever a raster
-is required (docx, slides).
+**PNG and SVG are the same layout, drawn twice — and only the PNG is measured.** Node
+positions and box sizes come from one layout pass, so tables land in the same place in
+both. But `draw_erd()` runs the drawing pass a second time for the SVG at scale 1
+(`svg_canvas.py`), and PIL's text metrics do not scale linearly, so a *relationship label*
+can end up somewhere else: measured over 20 random schemas with self-references, the label
+sets were always identical and one label had moved 134px. The five verification counters
+below run on the **PNG only**. SVG is a tenth the size and does not blur when enlarged, so
+it goes into the HTML; PNG goes into the docx and wherever else a raster is required.
+
+Until the SVG is drawn at the PNG's scale, read the counters as a statement about the
+PNG. `artifacts: the counters describe the PNG, and each builder says which one it ships`
+holds that sentence to the code.
 
 ## HTML schema reference
 
@@ -242,11 +250,32 @@ A counter that must be 0 but is not gets a `[warn] must be 0: …` tail on the s
 **a `[warn]` means a regression.** A non-zero the caller has declared acceptable for that
 diagram prints as `3(tolerated)` instead of warning.
 
+**Tolerance is one policy for all three kinds of diagram, and that policy is "none".**
+`draw_erd(tolerate=…)` shapes only the printed line; the regression suite ignores it
+entirely and reads the raw counts. So the only thing an asymmetric `tolerate` can do is
+teach the reader that the same number means different things on different diagrams — for a
+while `build_erd.py` passed `tolerate=('h_overlap',)` for the overview and the full ERD and
+nothing for the area diagrams, so an identical overlap warned on one and went quiet on the
+other two. The reason that tolerance was introduced — entry/exit tails whose y the router
+cannot move — is now handled *inside* the counter, which does not count them at all;
+silencing it a second time only hides the part the router **can** fix. If a class of
+overlap genuinely cannot be avoided, exclude it in `overlaps()` with the reason written
+down, and if a specific fixture is known to be messy, record the number in the test's
+`RENDER_ALLOW`. Both of those are places where widening the exception is visible; a
+`tolerate` argument is not.
+
 `n/a` means the check **did not run on that diagram**, and is never a substitute for 0. The
 overview draws no relationship labels, so the two label counters have nothing to measure
 there; printing 0 would claim a clean result from a check that never happened.
 
-- **label↔table** — must be 0. Otherwise widen the candidate range in `flush_labels()`.
+- **label↔table** — must be 0. It counts label *placement* boxes against table boxes, and
+  labels reach their place by two different routes, so read the diagram before reaching for
+  a fix. A label on a relationship line is positioned by `flush_labels()`, which picks from
+  a candidate list — widen that range. A **self-reference** label is not: it is pinned to
+  the loop's upper arm and clipped so its right edge stops short of the table, and it never
+  enters `flush_labels()` at all, so widening the candidate range there changes nothing.
+  When the counter fires on a self-loop the label is longer than the arm it hangs on; the
+  fix is in the self-loop label placement, not in `flush_labels()`.
 - **line↔table** — must be 0. A line running through a table is invisible (nodes are
   drawn over the edges), so this counter is the only way to see it. Non-zero means a
   corridor overflowed; widen `hgap` in the layout call, or split the area.
@@ -269,9 +298,12 @@ formatted for people and changes shape, and when `(tolerated)` and `[warn]` tail
 the suite's number-scraping regex silently stopped seeing the last counter — precisely when
 it was non-zero. Nothing else should parse the printed line.
 
-The file is rewritten from scratch on every run, so it always holds exactly one run's records.
-Writing it is instrumentation and never blocks the build: if the path cannot be written the run
-says so and still produces every figure.
+The file is rewritten from scratch on every **process**, so it always holds exactly one run's
+records. Anyone driving several runs must therefore give each one its own path — the suite
+does, one file per `build_erd.py` invocation, because it used to share a single path and the
+second run silently erased the first one's records: 174 diagrams were drawn and 114 were
+checked. Writing the log is instrumentation and never blocks the build: if the path cannot be
+written the run says so and still produces every figure.
 
 ## Regression test
 
@@ -281,9 +313,9 @@ database, no docker — about 20 seconds. It is the one entry point: the cases l
 of them up. `install.sh --check` runs exactly this.
 
 ```bash
-python3 selftest.py            # everything (96 cases)
+python3 selftest.py            # everything (101 cases)
 python3 selftest.py parse      # only cases whose name contains 'parse'
-python3 selftest_history.py    # just that file's own 36 (about 9 seconds)
+python3 selftest_history.py    # just that file's own 39 (about 10 seconds)
 ```
 
 Six more cases need a real server and are skipped by default — the run says so on the line
@@ -305,6 +337,14 @@ zeros. Every case in there is something that broke silently at least once.
 
 **When you fix something, leave a case behind that would have caught it.** That is the point
 of the file.
+
+Every case is also swept: after it passes, every diagram it drew is put through the same
+rule, and the sweep first checks that **the number of diagrams drawn equals the number of
+records it read**. Anything else is a check that measured nothing — the sweep used to read a
+single log file that each new `build_erd.py` process truncated, so a third of the diagrams
+(60 of 174) never reached it, and a regression planted in one of them left the suite green.
+The count is taken from the printed `verify` lines, not from the records, so the instrument
+does not grade its own homework.
 
 Check the inserted size too:
 
@@ -347,6 +387,31 @@ comments blanked out, then counts brackets and splits on commas using those. Any
 leaks: `DEFAULT '('` used to swallow the next column, and a `--` inside a string literal
 swallowed the one after it. The psql output separator is `\x1f`; `|` shows up inside
 defaults and comments.
+
+### `--` comments in the DDL become descriptions
+
+Hand-written DDL rarely carries `COMMENT ON`; it carries `--`. So `parse_ddl.py` reads line
+comments as column and table descriptions, and they end up in the diagrams, the HTML and the
+docx. What a comment describes depends on **where it sits relative to the commas and the
+opening paren**. That rule has been rewritten twice and each rewrite moved every description
+one column sideways, so it is written down here.
+
+| Where the `--` sits | Whose description it becomes |
+|---|---|
+| after the comma, on the same line as a column — `id bigint,  -- row id` | that column |
+| on its own line, or several lines, directly above a column | that column (the lines are joined with a space) |
+| on the `CREATE TABLE … (` line itself | the **table** note, never the first column |
+| on the lines just above the `CREATE TABLE` statement | the table note — but a comment on the `CREATE TABLE` line beats it |
+| above a table-level constraint (`UNIQUE (…)`, `FOREIGN KEY (…)`) | nobody |
+| after the last column, above the closing paren | nobody — it must not overwrite the last column |
+| `/* … */`, including any `--` line inside one | nobody. Only line comments are descriptions |
+
+Leading-comma style (`, name text  -- …`) follows the same rule: a comment belongs to the
+column on its own line, not to the one the comma reaches back to.
+
+`COMMENT ON TABLE/COLUMN` overwrites whatever the `--` comments produced, which is what
+makes a `pg_dump` and a hand-written file behave the same. `merge_desc.py` then layers the
+previous document, the ORM models and `MANUAL` on top — `MANUAL` wins over everything.
 
 ## Other databases and platforms
 

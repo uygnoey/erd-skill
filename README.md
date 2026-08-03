@@ -127,6 +127,32 @@ an 80-table database, 24% of them landed there. The bigger "Other" gets, the tal
 harder to read that diagram becomes. **If the output is going into a document, define the
 areas yourself in `erd.spec.json`** — the areas become the document's table of contents.
 
+### From DDL files instead of a database
+
+To document changes that have not been applied yet, run `parse_ddl.py` in place of
+`introspect.py` — it reads `$ERD_SQL_DIR/*.sql` (default `$ERD_PROJ/sql`) and writes the
+same `schema.json`.
+
+`--` comments in that DDL become the descriptions, and **where the comment sits decides
+whose description it is**:
+
+```sql
+-- one row per order            ← above CREATE TABLE → the table note
+CREATE TABLE orders (           -- one row per order  ← on this line → the table note, and this one wins
+  id       bigint PRIMARY KEY,  -- row id             ← after the comma → this column
+  -- who placed it              ← above a column → that column (several lines are joined)
+  user_id  bigint NOT NULL,
+  code     text,
+  -- unique per tenant          ← above a constraint → nobody's
+  UNIQUE (user_id, code)
+  -- TODO: add a currency       ← after the last column → nobody's
+);
+```
+
+A `/* … */` block is never a description, not even a `--` line inside it. `COMMENT ON
+TABLE/COLUMN` overrides everything above, which is why a `pg_dump` file and a hand-written
+one end up the same.
+
 ### Output language
 
 Everything a person reads — console output, the HTML and docx documents, the diagram
@@ -196,9 +222,12 @@ These are meant for documents that get reviewed, so a few things are not negotia
 
 ## PNG and SVG
 
-They are the same picture. Coordinates and font widths are measured identically with PIL;
-only the drawing back end changes to vector (`svg_canvas.py` mimics the `ImageDraw`
-interface).
+They are the same layout, drawn twice. The table positions and box sizes come from one
+layout pass, so a table sits in the same place in both; only the drawing back end changes
+to vector (`svg_canvas.py` mimics the `ImageDraw` interface). The SVG pass runs at a
+different scale, though, and PIL's text widths do not scale linearly — so a relationship
+label can land somewhere else in the SVG (measured: one label 134px away, over 20 random
+schemas). **The verification counters printed on every render measure the PNG.**
 
 |  | Overview | Per-area | Full detail |
 |---|---|---|---|

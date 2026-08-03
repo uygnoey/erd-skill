@@ -25,9 +25,9 @@ import re
 import subprocess
 import sys
 
-from selftest_kit import (Fail, HERE, MEASURES, case, col, ddl, eq, has, hub_schema,
-                          load_extras, main, run, table, verify_clean, verify_faults,
-                          verify_recs, write_schema)
+from selftest_kit import (Fail, HERE, MEASURES, case, col, ddl, drawn_names, eq, has,
+                          hub_schema, load_extras, main, run, table, verify_clean,
+                          verify_faults, verify_recs, write_schema)
 
 # ── 말 ──────────────────────────────────────────────────────────────────────
 @case('i18n: four catalogs agree')
@@ -699,6 +699,45 @@ def _(work):
         raise Fail('an allowance must not cover more than the number it names')
 
 
+@case('verify: the sweep sees every diagram the case drew, not only the last run')
+def _(work):
+    # 14라운드. '케이스가 통과할 때마다 그 케이스가 남긴 기록을 전부 훑는다' 는
+    # 13라운드의 주장이었는데, 훑기가 읽는 파일은 **판마다 처음부터 다시 쓰였다**
+    # (erd.py 의 _LOG_STARTED 는 프로세스 전역이다). 그래서 build_erd.py 를 두 번
+    # 이상 부르는 열 케이스에서 앞 판의 기록이 통째로 사라졌다 — 174장을 그리고
+    # 114장(66%)만 봤다. 지워진 60장은 같은 그림을 다시 그린 것이 아니라 **서로 다른
+    # 스키마**였다(ERD_MAX_AREAS 는 스키마 하나·둘·셋을, 오른쪽 끝 검사는 네 벌을
+    # 각각 그린다). 그 60장에 회귀를 넣어 보면 시험은 초록이었다.
+    #
+    # 지금은 run() 이 부를 때마다 다른 기록 파일을 준다. 여기서 못박는 것은 그
+    # 성질이다 — 앞 판에만 있던 그림이 훑기에 남아 있는가.
+    t = {}
+    for grp in ('order', 'user', 'item'):
+        for i in range(3):
+            t[f'{grp}_{grp}_{i}'] = table(f'{grp}_{grp}_{i}', [col('id')])
+    write_schema(work, t)
+    first = drawn_names(run('build_erd.py', work).stdout)
+    # 두 번째 판은 영역이 하나뿐이라, 앞 판의 영역 그림 이름이 이번 판에는 없다
+    write_schema(work, {'solo': table('solo', [col('id')])})
+    second = drawn_names(run('build_erd.py', work).stdout)
+
+    only_first = set(first) - set(second)
+    if not only_first:
+        raise Fail('the fixture no longer separates the two runs — both drew the same '
+                   'file names, so nothing here can tell a kept record from a lost one')
+    swept = [r['file'] for r in verify_recs(work, scope='all')]
+    eq(len(swept), len(first) + len(second),
+       'every diagram the case drew must leave a record the sweep reads')
+    missing = sorted(only_first - set(swept))
+    if missing:
+        raise Fail(f'{", ".join(missing)} was drawn by the first run and is in no record '
+                   f'the sweep reads — a regression in it would never turn this suite red')
+    # 그리고 그 그림들은 **마지막 판만** 보면 정말로 안 보인다. 이 줄이 없으면 위
+    # 단정은 '어차피 한 판밖에 없었다' 로도 통과한다.
+    if only_first & {r['file'] for r in verify_recs(work)}:
+        raise Fail('the last run redrew them after all — this case proves nothing')
+
+
 @case('verify: the printed line and the machine record say the same thing')
 def _(work):
     # 사람이 읽는 줄과 기계가 읽는 기록이 갈라지면 둘 중 하나는 거짓말이 된다.
@@ -1129,6 +1168,49 @@ def _(work):
             raise Fail(f'picture {s.width.cm:.1f}×{s.height.cm:.1f}cm exceeds the page')
         if s.width.cm < 1 or s.height.cm < 1:
             raise Fail(f'picture {s.width.cm:.1f}×{s.height.cm:.1f}cm is not a diagram')
+
+
+@case('artifacts: the counters describe the PNG, and each builder says which one it ships')
+def _(work):
+    # 14라운드. 검증 숫자가 말하는 그림과 문서에 실리는 그림이 서로 다르다는 것이
+    # 나왔다. `build_html.py` 는 SVG 를 인라인으로 박고 `build_docx.py` 는 PNG 를
+    # 넣는데, 다섯 카운터는 **PNG 한 장만** 잰다 — SVG 는 draw_erd 가 배율을 1 로
+    # 되돌려 한 번 더 그리는 세 번째 렌더라, 글자 폭이 배율에 비례하지 않는 만큼
+    # 라벨 자리가 달라진다. 자기참조를 섞은 무작위 스키마 20벌을 재 보니 라벨 하나가
+    # 134px 옮겨 앉은 판까지 있었다 (라벨의 **글자 목록**은 언제나 같았다).
+    #
+    # 그 어긋남 자체는 erd.py 안에서만 고칠 수 있다. 여기서 못박는 것은 **문서가
+    # 적어 둔 사실** 이다 — 숫자는 PNG 것이고, HTML 은 SVG 를, docx 는 PNG 를
+    # 싣는다. 어느 쪽이 조용히 바뀌면 SKILL.md 의 그 문단이 거짓이 된다.
+    # SVG 가 PNG 배율을 함께 쓰게 되면 아래 단정은 그대로 참이고, 그때 비로소
+    # 숫자가 두 산출물을 함께 말한다.
+    import zipfile
+    write_schema(work, {
+        'a': table('a', [col('id'), col('b_id')], pk=['id'],
+                   fks=[{'column': 'b_id', 'ref_table': 'b', 'ref_column': 'id',
+                         'on_delete': 'CASCADE'}]),
+        'b': table('b', [col('id')], pk=['id'])})
+    run('merge_desc.py', work)
+    run('build_erd.py', work)
+    for r in verify_recs(work):
+        if not r['file'].endswith('.png'):
+            raise Fail(f'the counters name {r["file"]} — this test and SKILL.md both say '
+                       f'they measure the PNG')
+    run('build_html.py', work)
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    has(html, '<div class="fig"><svg', 'the html inlines the SVG, not the measured PNG')
+    if 'data:image/png' in html:
+        raise Fail('the html fell back to PNG — then SKILL.md must stop saying it ships '
+                   'the vector')
+    run('build_docx.py', work)
+    with zipfile.ZipFile(work / 'T.docx') as z:
+        media = sorted(n.rsplit('/', 1)[-1] for n in z.namelist()
+                       if n.startswith('word/media/'))
+    if not media:
+        raise Fail('the docx carries no picture at all — nothing here is measured')
+    odd = [n for n in media if not n.lower().endswith('.png')]
+    if odd:
+        raise Fail(f'the docx no longer ships the measured raster: {odd}')
 
 
 # ── 두 번째 실행 ─────────────────────────────────────────────────────────────

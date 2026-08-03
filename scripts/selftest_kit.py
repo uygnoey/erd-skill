@@ -27,6 +27,27 @@ CASES = []
 FAILED = []
 NOTES = []                  # 결과 앞에 덧붙일 한 줄들 (안 돌린 것이 있으면 그것)
 
+# ── 한 케이스가 그린 것과 남긴 것 ────────────────────────────────────────────
+# erd.py 는 `ERD_VERIFY_LOG` 를 **프로세스마다** 처음부터 다시 쓴다(_LOG_STARTED 가
+# 프로세스 전역이다). 그래서 케이스 하나가 build_erd.py 를 두 번 이상 부르면, 뒤의
+# 프로세스가 앞의 기록을 지워 버렸다 — 174장을 그리고 114장만 훑었다. 지워진 60장은
+# 중복 렌더가 아니라 **서로 다른 스키마**였다(ERD_MAX_AREAS·오른쪽 끝 검사 등).
+#
+# 고치는 자리는 두 군데가 있었다. erd.py 가 늘 이어 쓰게 하고 케이스가 시작할 때
+# 시험이 지우는 것, 또는 **부를 때마다 다른 파일을 주는 것**. 뒤쪽을 골랐다 —
+# erd.py 를 건드리지 않고, 프로세스가 제 파일을 비우는 것이 그대로 옳은 동작이 된다.
+# 파일이 나뉘어도 '이번 판의 것만 본다'(verify_recs) 와 '이 케이스가 그린 것을 전부
+# 본다'(sweep_verify) 를 둘 다 말할 수 있다 — 예전 한 파일 구조는 둘을 구분할 수가
+# 없어서 뒤엣것을 잃었다.
+_LOGS = []                  # 이번 케이스가 만든 검증 기록 파일 (run() 부른 순서)
+_DREW = [0]                 # 이번 케이스가 그린 도판 수 — 기록이 아니라 찍힌 줄에서 센다
+
+
+def new_case():
+    """케이스 하나가 시작한다 — 그린 것·남긴 것 셈을 0 으로."""
+    _LOGS.clear()
+    _DREW[0] = 0
+
 
 def case(name):
     def deco(fn):
@@ -57,6 +78,48 @@ def has(hay, needle, what):
         raise Fail(f'{what}\n      {needle!r} not in ({len(hay)} chars) {shown!r}')
 
 
+_VERIFY_RE = {}
+
+
+def drawn_names(stdout, lang='en'):
+    """이 판이 그린 도판의 이름 — **사람이 읽는 줄**에서 센다.
+
+    기록(JSONL)을 세면 '기록에 남은 것이 기록에 남았다' 는 동어반복이 된다. 훑기가
+    놓친 60장이 바로 그렇게 안 보였다. 그래서 세는 자리를 기록 바깥에 둔다 — 도판
+    하나에 검증 줄 하나가 찍히고, 그 줄의 서식은
+    `verify: the printed line and the machine record say the same thing` 이 글자까지
+    못박고 있다. 재는 값은 하나도 긁지 않는다 — 값을 긁던 정규식이 꼬리 하나에 눈을
+    감은 적이 있다. 여기서 가져오는 것은 줄 수와 파일 이름뿐이다.
+
+    말이 바뀌면 줄도 바뀌므로 서식은 그 말의 목록에서 가져온다 — 네 말로 도는
+    케이스가 있다.
+    """
+    rx = _VERIFY_RE.get(lang)
+    if rx is None:
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))
+
+        def catalog(code):
+            try:
+                return dict(importlib.import_module(f'lang.{code}').M)
+            except Exception:                                     # noqa: BLE001
+                return {}                   # i18n._load 와 같다 — 영어로 떨어진다
+
+        own = catalog(lang).get('log.verify')
+        tmpl = own or catalog('en').get('log.verify')
+        if not tmpl:
+            raise Fail('lang/en.py has no log.verify — the drawn-vs-checked count '
+                       'would silently read 0')
+        pat = (re.escape(tmpl).replace(re.escape('{name}'), r'(\S+?)')
+               .replace(re.escape('{report}'), '.*'))
+        rx = re.compile('^' + pat + '$', re.M)
+        # 깨진 카탈로그는 캐시하지 않는다 — 일부러 하나 깨뜨렸다 되돌리는 케이스가
+        # 있고, 그때 캐시가 남으면 그다음 판을 엉뚱한 서식으로 센다.
+        if own:
+            _VERIFY_RE[lang] = rx
+    return rx.findall(stdout)
+
+
 def run(script, work, proj=None, env=None, sql_dir=None, expect_ok=True):
     """스크립트 하나를 별도 프로세스로 돌린다 (import 시점 상태가 섞이지 않게).
 
@@ -66,11 +129,14 @@ def run(script, work, proj=None, env=None, sql_dir=None, expect_ok=True):
     19개가 깨졌다. `install.sh --check` 는 그걸 그대로 물려받아 멀쩡한 설치를
     고장 났다고 알렸다. 시험은 부르는 사람의 설정이 아니라 코드를 재야 한다.
     """
+    # 부를 때마다 **다른** 기록 파일을 준다. erd.py 는 제 파일을 처음부터 쓰는데,
+    # 그 파일을 모두가 나눠 쓰면 뒤 프로세스가 앞 프로세스의 기록을 지운다.
+    log = Path(work).parent / f'verify.{len(_LOGS):03d}.jsonl'
     e = {k: v for k, v in os.environ.items() if not k.startswith('ERD_')}
     e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(proj or work),
               'ERD_LANG': 'en', 'ERD_DOCNAME': 'T',
               # 그림 검증 결과를 기계가 읽을 자리에 남기게 한다 (verify_recs 참고)
-              'ERD_VERIFY_LOG': str(Path(work).parent / 'verify.jsonl')})
+              'ERD_VERIFY_LOG': str(log)})
     if sql_dir:
         e['ERD_SQL_DIR'] = str(sql_dir)
     if env:
@@ -79,6 +145,12 @@ def run(script, work, proj=None, env=None, sql_dir=None, expect_ok=True):
                        text=True, env=e, cwd=str(HERE))
     if expect_ok and r.returncode != 0:
         raise Fail(f'{script} exited {r.returncode}\n{r.stdout}\n{r.stderr}')
+    if e['ERD_VERIFY_LOG'] == str(log):
+        # 이 판이 남긴 자리와, 이 판이 그렸다고 **말한** 장수를 함께 적어 둔다.
+        # 케이스가 제 손으로 ERD_VERIFY_LOG 를 딴 데로 돌렸으면(그런 케이스가 하나
+        # 있다) 그 판의 기록은 훑기의 몫이 아니므로 장수도 세지 않는다.
+        _LOGS.append(log)
+        _DREW[0] += len(drawn_names(r.stdout, e['ERD_LANG']))
     return r
 
 
@@ -125,7 +197,11 @@ def hub_schema(n=24):
     return t
 
 
-def verify_recs(work, name=''):
+def _read_log(p):
+    return [json.loads(x) for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+
+
+def verify_recs(work, name='', scope='last'):
     """그림 자체검증 결과를 erd.py 가 남긴 JSONL 에서 읽는다.
 
     예전엔 사람이 읽는 검증 줄에서 `(\\d+)(?=\\s*(?:·|$))` 로 숫자를 긁었다. 그 줄에
@@ -135,11 +211,18 @@ def verify_recs(work, name=''):
 
     기록이 아예 없으면 통과가 아니라 실패다. '못 찾았으니 깨끗하다' 가 바로 위
     버그의 모양이었다.
+
+    scope='last' 는 **방금 돈 판**의 기록만 준다 — 부르는 쪽 대부분이 한 판을 돌리고
+    그 판을 묻는다. scope='all' 은 이 케이스가 돌린 모든 판의 것을 부른 순서대로
+    준다 (훑기가 쓴다). 예전엔 판마다 같은 파일을 덮어써서 둘이 구분되지 않았고,
+    그래서 앞 판의 기록은 아무 데도 남지 않았다.
     """
-    p = Path(work).parent / 'verify.jsonl'
-    if not p.exists():
+    got = [p for p in _LOGS if p.exists()]
+    if not got:
         raise Fail('erd.py left no verify log — the check would measure nothing')
-    recs = [json.loads(x) for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
+    if scope == 'last':
+        got = got[-1:]
+    recs = [r for p in got for r in _read_log(p)]
     if name:
         recs = [r for r in recs if name in r['file']]
     if not recs:
@@ -242,20 +325,29 @@ def sweep_verify(name, tmp):
     넘는다. 나머지는 '자기가 보려던 것' 만 보고 그림이 어떻게 나왔는지는 묻지 않았다 —
     렌더 회귀가 스물 몇 개의 그림을 지나가면서 한 번도 붙잡히지 않을 수 있었다.
     케이스가 통과한 뒤 그 케이스가 남긴 기록을 전부 훑는다.
+
+    **훑었다는 말도 반증을 받아야 한다.** 이 함수는 케이스마다 돌긴 했지만 판마다
+    덮어써지는 파일 하나만 읽어서, 두 번 이상 그리는 열 케이스에서 앞 판의 기록을
+    통째로 잃고 있었다 — 174장을 그리고 114장(66%)만 봤다. 그래서 이제 그린 장수와
+    본 장수를 맞춰 본다. 어긋나면 그 자체가 실패다: **재지 않은 것은 깨끗한 것이
+    아니다** 를 훑기 자신에게도 댄다.
     """
-    p = tmp / 'verify.jsonl'
-    if not p.exists():
+    logs = [p for p in _LOGS if p.exists()]
+    drew, kept = _DREW[0], sum(len(_read_log(p)) for p in logs)
+    if drew != kept:
+        raise Fail(f'this case drew {drew} diagram(s) but only {kept} left a record — '
+                   f'{drew - kept} went unchecked\n'
+                   f'      (logs: {[p.name for p in logs]})')
+    if not logs:
         return                      # 그림을 안 그리는 케이스 — 여기서 잴 것이 없다
     allow = RENDER_ALLOW.get(name)
-    for line in p.read_text(encoding='utf-8').splitlines():
-        if not line.strip():
-            continue
-        r = json.loads(line)
-        bad = verify_faults(r, allow)
-        if bad:
-            raise Fail(f'the diagrams this case drew are not clean\n'
-                       f'      {r["file"]}: ' + '; '.join(bad)
-                       + f'\n      counts: {r["counts"]}')
+    for p in logs:
+        for r in _read_log(p):
+            bad = verify_faults(r, allow)
+            if bad:
+                raise Fail(f'the diagrams this case drew are not clean\n'
+                           f'      {r["file"]}: ' + '; '.join(bad)
+                           + f'\n      counts: {r["counts"]}')
 
 
 # ── 등록 ────────────────────────────────────────────────────────────────────
@@ -283,6 +375,7 @@ def main():
     width = max(len(n) for n, _ in cases)
     for name, fn in cases:
         tmp = Path(tempfile.mkdtemp(prefix='erd-selftest-'))
+        new_case()
         try:
             fn(tmp / 'work')
             sweep_verify(name, tmp)
