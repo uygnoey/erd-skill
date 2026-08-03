@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """회귀 시험 — DB 없이 스킬 전체를 한 번 돌려 보고 결과를 검사한다.
 
-    python3 selftest.py            전부
+    python3 selftest.py            전부 (옆의 selftest_*.py 까지 한 벌로)
     python3 selftest.py parse      이름에 'parse' 가 든 항목만
+
+이 파일이 회귀 시험의 입구다. 항목은 여기와 `selftest_*.py` 들에 나뉘어 있고, 아래
+`load_extras()` 가 옆에 있는 것을 전부 끌어와 한 목록으로 돌린다 — 도우미와 그 목록은
+`selftest_kit.py` 에 있다. `install.sh --check` 는 이 파일만 부른다.
 
 그림 품질은 렌더링할 때마다 자체 검증이 찍히지만, 그 밖의 기능은 재는 것이 없었다.
 그래서 고칠 때마다 다른 데가 조용히 죽었다 — 인라인 주석은 두 판을 통째로 빈
@@ -18,240 +22,12 @@ DB 도 docker 도 필요 없다. 임시 디렉토리에서 돌고 뒤를 치운�
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-CASES = []
-FAILED = []
-
-
-def case(name):
-    def deco(fn):
-        CASES.append((name, fn))
-        return fn
-    return deco
-
-
-class Fail(AssertionError):
-    pass
-
-
-def eq(got, want, what):
-    if got != want:
-        raise Fail(f'{what}\n      want: {want!r}\n      got : {got!r}')
-
-
-def has(hay, needle, what):
-    # 건초더미가 HTML 한 장이면 실패 한 줄에 수십 KB 가 쏟아져 정작 무엇이 없는지가
-    # 안 보인다. 못 찾은 것을 앞에 두고 더미는 끝을 자른다.
-    if needle not in hay:
-        shown = hay if len(hay) <= 600 else hay[:300] + ' … ' + hay[-300:]
-        raise Fail(f'{what}\n      {needle!r} not in ({len(hay)} chars) {shown!r}')
-
-
-def run(script, work, proj=None, env=None, sql_dir=None, expect_ok=True):
-    """스크립트 하나를 별도 프로세스로 돌린다 (import 시점 상태가 섞이지 않게).
-
-    ERD_* 는 **하나도 물려받지 않는다**. 예전엔 ERD_DB·ERD_PSQL 둘만 지웠고, 나머지는
-    부르는 사람의 껍데기에서 그대로 새어 들어왔다 — 문서가 권하는 다중 DB 흐름대로
-    `ERD_LABEL=shop` 을 켜 둔 사람이 시험을 돌리면 2개가, `ERD_EXCLUDE='.*'` 면
-    19개가 깨졌다. `install.sh --check` 는 그걸 그대로 물려받아 멀쩡한 설치를
-    고장 났다고 알렸다. 시험은 부르는 사람의 설정이 아니라 코드를 재야 한다.
-    """
-    e = {k: v for k, v in os.environ.items() if not k.startswith('ERD_')}
-    e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(proj or work),
-              'ERD_LANG': 'en', 'ERD_DOCNAME': 'T',
-              # 그림 검증 결과를 기계가 읽을 자리에 남기게 한다 (verify_recs 참고)
-              'ERD_VERIFY_LOG': str(Path(work).parent / 'verify.jsonl')})
-    if sql_dir:
-        e['ERD_SQL_DIR'] = str(sql_dir)
-    if env:
-        e.update({k: str(v) for k, v in env.items()})
-    r = subprocess.run([sys.executable, str(HERE / script)], capture_output=True,
-                       text=True, env=e, cwd=str(HERE))
-    if expect_ok and r.returncode != 0:
-        raise Fail(f'{script} exited {r.returncode}\n{r.stdout}\n{r.stderr}')
-    return r
-
-
-def ddl(work, text, sql_dir=None):
-    d = sql_dir or (work / 'sql')
-    d.mkdir(parents=True, exist_ok=True)
-    (d / 'a.sql').write_text(text, encoding='utf-8')
-    run('parse_ddl.py', work, sql_dir=d)
-    return json.loads((work / 'schema.json').read_text())
-
-
-def write_schema(work, tables):
-    work.mkdir(parents=True, exist_ok=True)
-    (work / 'schema.json').write_text(json.dumps(tables, ensure_ascii=False))
-
-
-def col(name, typ='bigint', **kw):
-    c = {'name': name, 'type': typ, 'not_null': False, 'default': None,
-         'comment': '', 'added': False, 'identity': False}
-    c.update(kw)
-    return c
-
-
-def table(name, cols, **kw):
-    t = {'name': name, 'schema': 'public', 'db': '', 'origin': 'existing',
-         'columns': cols, 'pk': [], 'fks': [], 'uniques': [], 'checks': [],
-         'indexes': [], 'note': '', 'rows': 1, 'size': ''}
-    t.update(kw)
-    return t
-
-
-def hub_schema(n=24):
-    """허브 하나에 자식 n개 — 관계가 한 점으로 모이는, 실제 DB 에 흔한 모양.
-
-    전체도는 노드 진출 y 가 고정이라 이 모양에서 가로선이 몇 번 스친다. 그 '아는
-    겹침' 이 있어야 (허용)·[경고] 서식을 실제로 지나갈 수 있어 두 케이스가 함께 쓴다.
-    """
-    t = {'hub': table('hub', [col('id'), col('name', 'text')], pk=['id'])}
-    for i in range(n):
-        nm = f'c{i:02d}'
-        t[nm] = table(nm, [col('id'), col('hub_id')], pk=['id'],
-                      fks=[{'column': 'hub_id', 'ref_table': 'hub', 'ref_column': 'id',
-                            'on_delete': 'CASCADE'}])
-    return t
-
-
-def verify_recs(work, name=''):
-    """그림 자체검증 결과를 erd.py 가 남긴 JSONL 에서 읽는다.
-
-    예전엔 사람이 읽는 검증 줄에서 `(\\d+)(?=\\s*(?:·|$))` 로 숫자를 긁었다. 그 줄에
-    (허용)·[경고] 꼬리가 붙자 정규식이 **마지막 항목을 통째로 놓쳤다** — 하필 그
-    항목이 0 이 아닐 때만 놓치니, 가로선 중첩이 44 여도 시험은 전부 통과라고 했다.
-    사람 좋으라고 바뀌는 서식 대신 값을 직접 읽는다.
-
-    기록이 아예 없으면 통과가 아니라 실패다. '못 찾았으니 깨끗하다' 가 바로 위
-    버그의 모양이었다.
-    """
-    p = Path(work).parent / 'verify.jsonl'
-    if not p.exists():
-        raise Fail('erd.py left no verify log — the check would measure nothing')
-    recs = [json.loads(x) for x in p.read_text(encoding='utf-8').splitlines() if x.strip()]
-    if name:
-        recs = [r for r in recs if name in r['file']]
-    if not recs:
-        raise Fail(f'no verify record for {name or "any diagram"}')
-    return recs
-
-
-# ── '깨끗하다' 의 뜻은 시험이 가진다 ────────────────────────────────────────
-# 예전엔 `if r['warn']` 한 줄이 전부였다. 그런데 그 목록은 **재는 쪽이 직접 내린
-# 판정**이다 — erd.py 가 tolerate 에 든 항목을 빼고 적는다. 즉 코드가 '이건 봐줘도
-# 된다' 고 적으면 시험은 그대로 믿었다. 세 번 재 봤다:
-#
-#   · 모든 항목을 n/a(None) 로 만든다          → 57개 중 3개만 붉어졌다
-#   · counts 는 정직하게 두고 warn 만 비운다    → 57개 전부 통과
-#   · tolerate 를 전 항목으로 넓히고 가로선 중첩 2 를 되살린다 → 57개 전부 통과
-#
-# 경고를 잠재우려 tolerate 를 한 항목 넓히는 것은 다음 판이 충분히 할 법한 한 줄이고,
-# 그 한 줄이면 그림 품질 보증이 통째로 조용해진다. 그래서 아래 규칙은 counts 만 읽고
-# warn·tolerated 는 판정에 쓰지 않는다 — 두 값은 실패 메시지에 참고로만 싣는다.
-MEASURES = ('label_table', 'label_x', 'thru', 'v_overlap', 'h_overlap')
-
-# 라벨을 아예 그리지 않는 그림(개요도 — edge_labels=False)에서만 라벨 항목이 '해당
-# 없음' 일 수 있다. 그 밖의 n/a 는 재기를 그만둔 것이고, **안 잰 것은 깨끗한 것이
-# 아니다**. 그래서 기본은 '숫자여야 한다' 이고, 케이스가 따로 말할 필요가 없다.
-NA_OK = {('overview', 'label_table'), ('overview', 'label_x')}
-
-
-def diagram_kind(fname):
-    """그림의 갈래 — 규칙이 갈래마다 다르다. 모르는 이름은 가장 엄한 쪽(area)으로 친다."""
-    s = str(fname)
-    return 'overview' if 'overview' in s else 'full' if 'full' in s else 'area'
-
-
-def verify_faults(rec, allow=None):
-    """기록 하나가 어긴 규칙을 말로 돌려준다. 빈 목록이면 깨끗하다.
-
-    allow 는 **케이스가 적는** 예외다: {'h_overlap': 5} 처럼 항목마다 숫자를 못박아야
-    하고, 재는 쪽이 넘긴 tolerate 와는 아무 상관이 없다. 코드를 고쳐서는 늘릴 수 없는
-    자리에 두는 것이 요점이다 — 봐주는 것은 시험을 고쳐야만 늘어난다.
-    """
-    allow = allow or {}
-    kind = diagram_kind(rec.get('file', ''))
-    counts = rec.get('counts') or {}
-    bad = []
-    gone = [k for k in MEASURES if k not in counts]
-    if gone:
-        # 항목이 이름째 사라지면 '전부 0' 이 되어 조용히 통과한다 — 그 자리를 막는다
-        bad.append(f'{", ".join(gone)}: not in the record at all')
-    new = [k for k in counts if k not in MEASURES]
-    if new:
-        # 반대쪽도 막는다: erd.py 가 검사를 하나 늘렸는데 여기가 모르면, 그 검사는
-        # 재기만 하고 아무도 안 보는 숫자가 된다. 붉어지면 MEASURES 에 한 줄 늘린다.
-        bad.append(f'{", ".join(new)}: measured by the code but not known to this test')
-    for k in MEASURES:
-        if k not in counts:
-            continue
-        v = counts[k]
-        if v is None:
-            if (kind, k) not in NA_OK:
-                bad.append(f'{k}: n/a — a check that stopped measuring is not a clean check')
-        elif not isinstance(v, int) or isinstance(v, bool):
-            bad.append(f'{k}: {v!r} is not a count')
-        elif v > allow.get(k, 0):
-            cap = allow.get(k, 0)
-            bad.append(f'{k}={v} (this case allows at most {cap})')
-    return bad
-
-
-def verify_clean(work, name='', what='the diagram must be clean', allow=None):
-    """그림 검증 기록이 **시험의 규칙대로** 깨끗한지 본다."""
-    recs = verify_recs(work, name)
-    for r in recs:
-        bad = verify_faults(r, allow)
-        if bad:
-            raise Fail(f'{what}\n      {r["file"]}: ' + '; '.join(bad)
-                       + f'\n      counts: {r["counts"]}'
-                       + f'\n      (the record itself said warn={r.get("warn")!r}'
-                         f' tolerated={r.get("tolerated")!r} — not consulted)')
-    return recs
-
-
-# 일부러 어지러운 그림을 그리는 케이스는 여기에 숫자로 적는다. 지금은 하나뿐이다:
-# 허브 하나에 자식 24개 — 전체도는 노드 진출 y 가 고정이라 가로선이 다섯 번 스친다.
-# (허용치가 실제보다 헐거워지면 그만큼 회귀가 숨는다. 늘릴 때는 왜인지 같이 적는다.)
-RENDER_ALLOW = {
-    'render: a hub with many children keeps lines out of the tables':
-        {'h_overlap': 5},
-    # 같은 허브 fixture 를 (허용)·[경고] 서식을 지나가게 하는 데 쓴다 — 그 케이스는
-    # 일부러 '봐주기 없이' 한 번 더 그려서 경고 줄을 만든다.
-    'verify: the printed line and the machine record say the same thing':
-        {'h_overlap': 5},
-}
-
-
-def sweep_verify(name, tmp):
-    """케이스가 그린 **모든** 그림을 같은 규칙에 걸어 본다.
-
-    verify_clean 을 직접 부르는 케이스는 셋뿐인데 그림을 그리는 케이스는 스무 개가
-    넘는다. 나머지는 '자기가 보려던 것' 만 보고 그림이 어떻게 나왔는지는 묻지 않았다 —
-    렌더 회귀가 스물 몇 개의 그림을 지나가면서 한 번도 붙잡히지 않을 수 있었다.
-    케이스가 통과한 뒤 그 케이스가 남긴 기록을 전부 훑는다.
-    """
-    p = tmp / 'verify.jsonl'
-    if not p.exists():
-        return                      # 그림을 안 그리는 케이스 — 여기서 잴 것이 없다
-    allow = RENDER_ALLOW.get(name)
-    for line in p.read_text(encoding='utf-8').splitlines():
-        if not line.strip():
-            continue
-        r = json.loads(line)
-        bad = verify_faults(r, allow)
-        if bad:
-            raise Fail(f'the diagrams this case drew are not clean\n'
-                       f'      {r["file"]}: ' + '; '.join(bad)
-                       + f'\n      counts: {r["counts"]}')
-
+from selftest_kit import (Fail, HERE, MEASURES, case, col, ddl, eq, has, hub_schema,
+                          load_extras, main, run, table, verify_clean, verify_faults,
+                          verify_recs, write_schema)
 
 # ── 말 ──────────────────────────────────────────────────────────────────────
 @case('i18n: four catalogs agree')
@@ -274,8 +50,8 @@ def _(work):
     import lang.en as en
     used = set()
     for f in HERE.glob('*.py'):
-        if f.name == 'selftest.py':
-            continue
+        if f.name.startswith('selftest'):
+            continue                 # 시험 파일은 배포물이 아니다 — 여기 있는 T( 는 예시다
         for m in re.finditer(r"""T\(\s*['"]([a-z_]+\.[a-z_0-9]+)['"]""",
                              f.read_text(encoding='utf-8')):
             used.add(m.group(1))
@@ -1037,6 +813,66 @@ def _(work):
         raise Fail(f'a [warn] a user would learn to ignore:\n{r.stdout}')
 
 
+@case('verify: the label overlap check measures ink, not the placement padding')
+def _(work):
+    # 14라운드. 위 케이스와 같은 부류인데 이번엔 `라벨↔라벨` 이었다. 자기참조를 절반쯤
+    # 섞은 무작위 스키마 80개에서 셋이 [경고] 를 달았고, 잘라서 눈으로 본 셋 다 두 줄로
+    # 나란히 놓인 멀쩡히 읽히는 라벨이었다. 재던 사각형이 글자가 아니라 **자리 잡기용
+    # 여백**이었던 탓이다 — 좌우로 LABEL_PAD_X 씩, 세로는 글꼴과 무관하게 고정 높이라
+    # 11pt 글자 잉크보다 넉넉하다. 어지러운 배치가 있어야 재현되는 자리라 그림으로는
+    # 못 박아 두지 못한다. 그래서 규칙 자체를 여기에 박는다.
+    #
+    # 세 자리를 한꺼번에 지킨다: 여백이 걷혔는가, 여백만큼 떨어진 것을 안 세는가,
+    # 그리고 **진짜 겹친 것은 여전히 세는가**. 마지막이 빠지면 이 수정은 그냥
+    # 경고를 끈 것이 된다.
+    write_schema(work, {'a': table('a', [col('id')])})
+    e = {k: v for k, v in os.environ.items() if not k.startswith('ERD_')}
+    e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(work),
+              'ERD_LANG': 'en', 'ERD_DOCNAME': 'T'})
+    probe = '''
+import json, erd
+S = 2
+f = erd.load_fonts(S)['edge']
+P = erd.LABEL_PAD_X
+
+
+def placed(cy, w=60.0):
+    """자기참조 라벨이 쓰는 자리 잡기용 상자 — 중심이 글자의 anchor y 다."""
+    return (100.0 - w / 2 - P, cy - 8, 100.0 + w / 2 + P, cy + 8)
+
+
+def laps(c0, c1):
+    a = erd.label_ink_box(placed(c0), f, S)
+    b = erd.label_ink_box(placed(c1), f, S)
+    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+
+box = placed(100.0)
+ink = erd.label_ink_box(box, f, S)
+print(json.dumps({
+    'pad': P,
+    'inside': [ink[0] > box[0], ink[1] > box[1], ink[2] < box[2], ink[3] < box[3]],
+    # 실제로 [경고] 를 냈던 간격들이다 (자리 잡기용 상자로는 3px·1px 겹쳤다)
+    'apart_13': laps(100.0, 113.0),
+    'apart_15': laps(100.0, 115.0),
+    # 글자끼리 진짜로 포개지는 간격 — 여기서도 0 이면 이 검사는 죽은 것이다
+    'apart_5': laps(100.0, 105.0),
+    'apart_0': laps(100.0, 100.0),
+}))
+'''
+    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True,
+                       env=e, cwd=str(HERE))
+    if r.returncode != 0:
+        raise Fail(f'the label geometry probe died:\n{r.stdout}\n{r.stderr}')
+    got = json.loads(r.stdout.strip().splitlines()[-1])
+    eq(got['inside'], [True] * 4,
+       'the measured box must sit strictly inside the placement box on all four sides')
+    eq(got['apart_13'], False, 'two labels 13px apart read as two lines — not an overlap')
+    eq(got['apart_15'], False, 'nor 15px apart')
+    eq(got['apart_5'], True, 'but 5px apart the glyphs really do collide — still counted')
+    eq(got['apart_0'], True, 'and two labels on the same spot are the bug this check exists for')
+
+
 @case('verify: relationships that cross the corridors do not stack on an exit row')
 def _(work):
     # 위 허브-앤-스포크는 진출입 꼬리끼리 스치는 쪽이었다. 이쪽은 다른 갈래다:
@@ -1458,31 +1294,7 @@ def _(work):
         has(html, f'<h4 id="tb_{name}">', f'{name} reached the document from an old schema')
 
 
-def main():
-    only = sys.argv[1] if len(sys.argv) > 1 else ''
-    cases = [(n, f) for n, f in CASES if only in n]
-    if not cases:
-        print(f'no case matches {only!r}')
-        return 2
-    width = max(len(n) for n, _ in cases)
-    for name, fn in cases:
-        tmp = Path(tempfile.mkdtemp(prefix='erd-selftest-'))
-        try:
-            fn(tmp / 'work')
-            sweep_verify(name, tmp)
-            print(f'  \033[32m✓\033[0m {name}')
-        except Exception as e:                                    # noqa: BLE001
-            FAILED.append((name, e))
-            print(f'  \033[31m✗\033[0m {name.ljust(width)}  {e}')
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-    print()
-    if FAILED:
-        print(f'\033[31m{len(FAILED)} of {len(cases)} failed\033[0m')
-        return 1
-    print(f'\033[32mall {len(cases)} passed\033[0m')
-    return 0
-
-
 if __name__ == '__main__':
+    # 옆에 놓인 `selftest_*.py` 도 같은 목록에 올린다 — 이 파일 하나만 부르면 전부 돈다.
+    load_extras()
     sys.exit(main())

@@ -4,9 +4,9 @@
     python3 selftest_history.py            여기 있는 것 전부
     python3 selftest_history.py introspect  이름에 'introspect' 가 든 것만
 
-`selftest.py` 와 **같은 목록**에 등록된다. 저쪽 파일 끝의 `main()` 이 CASES 를 돌므로,
-저쪽에서 이 모듈을 한 줄 import 하면 두 파일이 한 벌로 돈다. 그 한 줄을 넣기 전에도
-이 파일만 따로 돌려 확인할 수 있게 아래 `__main__` 에서 여기 것만 골라 돌린다.
+`selftest_kit.CASES` 에 등록된다 — `selftest.py` 를 돌리면 `load_extras()` 가 이 파일을
+끌어오므로 두 파일이 한 벌로 돈다. 이 파일만 따로 돌리면 여기 것만 목록에 올라와
+있으니 여기 것만 돈다.
 
 여기 담는 기준은 저쪽과 같다 — **한 번이라도 조용히 깨졌던 것**. 다만 저쪽이
 '고칠 때 함께 남긴 것' 이라면 이쪽은 '고쳤는데 남기지 않은 것' 이다. 그래서 항목마다
@@ -21,10 +21,8 @@ import re
 import shlex
 import sys
 
-from selftest import (CASES, Fail, HERE, case, col, ddl, eq, has, run, table,
-                      verify_recs, write_schema)
-
-_MINE = len(CASES)          # 여기서부터가 이 파일 것 (단독 실행 때 쓴다)
+from selftest_kit import (NOTES, Fail, HERE, case, col, ddl, eq, has, main, run,
+                          table, verify_recs, write_schema)
 
 
 # ── 가짜 psql (2) ────────────────────────────────────────────────────────────
@@ -1190,19 +1188,13 @@ if DOCKER and DOCKER.lower() not in ('0', 'no', 'off'):
         if ',' in DOCKER:
             DB_OLD = DOCKER.split(',')[1].strip()
     _register_db_cases()
-
-
-def main():
-    """이 파일만 따로 돌린다 — selftest.py 에 import 한 줄을 넣기 전에도 확인하게."""
-    import selftest
-    selftest.CASES[:] = CASES[_MINE:]
-    rc = selftest.main()
-    if not DOCKER:
-        print(f'  {_DB_CASES} cases need a real server and were NOT run '
-              f'(ERD_SELFTEST_DOCKER=1 runs them against '
-              f'{DB_NEW} and {DB_OLD}).')
-    return rc
+else:
+    # 안 돌린 것을 결과 옆에 적어 둔다. 함께 돌 때도 보여야 한다 — 그러지 않으면
+    # `install.sh --check` 를 본 사람은 여섯 개가 있다는 것을 영영 모른다.
+    NOTES.append(f'{_DB_CASES} cases need a real server and were NOT run '
+                 f'(ERD_SELFTEST_DOCKER=1 runs them against {DB_NEW} and {DB_OLD}).')
 
 
 if __name__ == '__main__':
+    # 따로 돌리면 목록에 이 파일 것만 올라와 있다 (selftest.py 를 안 거쳤으므로).
     sys.exit(main())

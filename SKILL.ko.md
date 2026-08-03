@@ -253,12 +253,27 @@ HTML 문서는 `doc` 의 아래 키를 더 쓴다 — 전부 선택이다.
 ## 회귀 시험
 
 `selftest.py` 는 만들어 낸 입력으로 스킬 전체를 한 번 돌리고 결과를 검사한다.
-DB 도 docker 도 필요 없고 5초쯤 걸린다.
+DB 도 docker 도 필요 없고 20초쯤 걸린다. 입구는 이 파일 하나다 — 항목은 `selftest.py`
+와 옆의 `selftest_*.py` 들에 나뉘어 있고, `selftest.py` 를 돌리면 전부 함께 돈다.
+`install.sh --check` 가 돌리는 것도 이것이다.
 
 ```bash
-python3 selftest.py            # 전부
+python3 selftest.py            # 전부 (96개)
 python3 selftest.py parse      # 이름에 'parse' 가 든 항목만
+python3 selftest_history.py    # 그 파일 것 36개만 (9초쯤)
 ```
+
+진짜 서버가 있어야 도는 6개가 더 있고 기본으로는 건너뛴다 — 집계 바로 윗줄에 몇 개를
+안 돌렸는지 찍힌다. 가짜 `psql` 로는 흉내 낼 수 없는 것들이다: 타입 정규화,
+`COMMENT ON`, 파티션 부모, 그리고 `pg_constraint.conparentid` 가 없는 PostgreSQL 10.
+
+```bash
+ERD_SELFTEST_DOCKER=1 python3 selftest.py     # 6개까지 (postgres:16-alpine · :10-alpine)
+ERD_SELFTEST_DOCKER=postgres:17,postgres:12 python3 selftest.py   # 다른 이미지로
+```
+
+이미지를 내려받고 일회용 컨테이너를 띄웠다 지운다. 첫 실행은 느리고 `docker` 가
+`PATH` 에 있어야 한다.
 
 그림 품질은 렌더링할 때마다 검증이 찍히지만 그 밖의 기능은 재는 것이 없었다. 그래서
 고칠 때마다 다른 데가 조용히 죽었다 — 인라인 `--` 주석은 두 판을 통째로 빈 문자열인
@@ -283,6 +298,8 @@ install.sh        자동 설치 (배치·의존성·폰트)
 requirements.txt  파이썬 의존성
 scripts/
   selftest.py     회귀 시험 — 만들어 낸 입력으로 스킬을 돌려 본다 (DB 불필요)
+  selftest_kit.py 두 시험이 함께 쓰는 항목 목록·도우미·실행기
+  selftest_history.py  검토 라운드를 소급해 만든 항목들 (+docker 로 도는 6개)
   i18n.py         출력 언어를 고르고 메시지 키를 푼다
   lang/           문구 카탈로그 — en.py · ko.py · ja.py · es.py
   config.py       경로·DB 접속·spec 로딩·영역 자동 분류

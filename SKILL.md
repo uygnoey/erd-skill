@@ -276,12 +276,27 @@ says so and still produces every figure.
 ## Regression test
 
 `selftest.py` runs the whole skill against synthetic input and checks the result. No
-database, no docker — about five seconds.
+database, no docker — about 20 seconds. It is the one entry point: the cases live in
+`selftest.py` and in the `selftest_*.py` files beside it, and running `selftest.py` picks all
+of them up. `install.sh --check` runs exactly this.
 
 ```bash
-python3 selftest.py            # everything
+python3 selftest.py            # everything (96 cases)
 python3 selftest.py parse      # only cases whose name contains 'parse'
+python3 selftest_history.py    # just that file's own 36 (about 9 seconds)
 ```
+
+Six more cases need a real server and are skipped by default — the run says so on the line
+above the tally. They check what a fake `psql` cannot: type normalisation, `COMMENT ON`,
+partitioned parents, and a PostgreSQL 10 server that has no `pg_constraint.conparentid`.
+
+```bash
+ERD_SELFTEST_DOCKER=1 python3 selftest.py     # + the 6, on postgres:16-alpine and :10-alpine
+ERD_SELFTEST_DOCKER=postgres:17,postgres:12 python3 selftest.py   # other images
+```
+
+They pull the images, start throwaway containers and remove them afterwards; the first run is
+slow. `docker` must be on `PATH`.
 
 Diagram quality is verified on every render, but nothing measured the rest — so each fix
 kept quietly breaking something else. Inline `--` comments spent two releases as empty
@@ -307,6 +322,8 @@ install.sh        automated install (placement · dependencies · fonts)
 requirements.txt  Python dependencies
 scripts/
   selftest.py     regression test — runs the skill on synthetic input, no DB needed
+  selftest_kit.py the case list, the helpers and the runner both suites share
+  selftest_history.py  cases reconstructed from the review rounds (+6 behind docker)
   i18n.py         picks the output language, resolves message keys
   lang/           message catalogs — en.py · ko.py · ja.py · es.py
   config.py       paths · DB connection · spec loading · automatic area classification

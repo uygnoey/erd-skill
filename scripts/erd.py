@@ -284,6 +284,32 @@ def tw(text, font):
     return _probe.textlength(text, font=font)
 
 
+# 라벨 자리를 잡을 때 글자 좌우로 두는 여백. 이 값은 **자리를 잡는 쪽과 겹침을 세는
+# 쪽이 반드시 같이 써야 한다** — 한쪽만 바뀌면 세는 쪽이 글자가 아닌 것을 재게 된다.
+LABEL_PAD_X = 3
+
+
+def label_ink_box(box, font, scale):
+    """자리 잡기용 사각형 → 글자가 실제로 칠하는 사각형.
+
+    `box` 는 글자보다 사방이 넉넉하다. 좌우는 LABEL_PAD_X 만큼이고, 위아래는 높이가
+    글꼴과 무관하게 고정(14·16)이라 11pt 글자의 잉크(10px 남짓)보다 넉넉하다. 겹침을
+    그 사각형으로 판정하면 두 줄로 나란히 놓여 멀쩡히 읽히는 라벨이 겹쳤다고 찍힌다.
+
+    라벨을 놓는 두 경로(보통 선의 anchor 'mm', 자기참조 루프의 'rm') 모두 상자를
+    anchor y 를 중심으로 대칭으로 잡으므로, 세로 중심이 곧 글자가 놓인 anchor y 다.
+    거기서 글꼴이 실제로 칠하는 위·아래 폭을 되짚는다. 표본은 어센더·디센더·밑줄을
+    다 담은 'Ag_0y' 라 어떤 라벨보다 넉넉하다 — 이 사각형이 안 닿으면 글자는 확실히
+    안 닿는다.
+    """
+    asc, desc = font.getmetrics()
+    gb = font.getbbox('Ag_0y')
+    mid = (asc + desc) / 2               # anchor 'm' 이 놓이는 자리
+    up, down = (mid - gb[1]) / scale, (gb[3] - mid) / scale
+    cy = (box[1] + box[3]) / 2
+    return (box[0] + LABEL_PAD_X, cy - up, box[2] - LABEL_PAD_X, cy + down)
+
+
 class Tracker:
     """ImageDraw 래퍼 — 그리기 호출의 좌표를 모아 실제 사용 범위를 잰다.
 
@@ -928,8 +954,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                         cx = min(max(x0 + (x1_ - x0) * frac, x0 + bw / 2), x1_ - bw / 2) \
                             if x1_ - x0 > bw else (x0 + x1_) / 2
                         for dy in (-12, 12, -27, 27, -42, 42, -57, 57):
-                            yield (cx - bw / 2 - 3, p[1] + dy - 7,
-                                   cx + bw / 2 + 3, p[1] + dy + 7)
+                            yield (cx - bw / 2 - LABEL_PAD_X, p[1] + dy - 7,
+                                   cx + bw / 2 + LABEL_PAD_X, p[1] + dy + 7)
 
                 def v_cands(p, q):
                     """수직 구간 — 통로 안, 선 좌우로."""
@@ -939,8 +965,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                         if cy - 7 < y0 or cy + 7 > y1_:
                             continue
                         for dx in (-8 - bw / 2, 8 + bw / 2):
-                            yield (p[0] + dx - bw / 2 - 3, cy - 7,
-                                   p[0] + dx + bw / 2 + 3, cy + 7)
+                            yield (p[0] + dx - bw / 2 - LABEL_PAD_X, cy - 7,
+                                   p[0] + dx + bw / 2 + LABEL_PAD_X, cy + 7)
 
                 v_segs_own = [(p, q) for p, q in zip(pts, pts[1:]) if abs(p[0] - q[0]) < 0.5]
 
@@ -962,8 +988,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 box = box or fallback
                 if box is None:                      # 전부 막히면 노드 위쪽 여백으로
                     p, q = segs[0]
-                    box = ((p[0] + q[0]) / 2 - bw / 2 - 3, top - 22,
-                           (p[0] + q[0]) / 2 + bw / 2 + 3, top - 8)
+                    box = ((p[0] + q[0]) / 2 - bw / 2 - LABEL_PAD_X, top - 22,
+                           (p[0] + q[0]) / 2 + bw / 2 + LABEL_PAD_X, top - 8)
                 placed.append(box)
                 # 배경 사각형으로 덮으면 그 아래를 지나던 다른 선이 끊겨 보인다.
                 # 글자 둘레만 배경색으로 두르면 선은 이어진 채로 글자도 읽힌다.
@@ -1109,7 +1135,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 # y 는 루프마다 다른 가로선에 맞춰 서로 겹치지 않는다.
                 lx, ly = pts[1][0] - 6, pts[1][1] - 9
                 bw = tw(label, f['edge']) / S
-                placed.append((lx - bw - 3, ly - 8, lx + 3, ly + 8))
+                placed.append((lx - bw - LABEL_PAD_X, ly - 8,
+                               lx + LABEL_PAD_X, ly + 8))
                 d.text((lx * S, ly * S), label, font=f['edge'], fill=color, anchor='rm',
                        stroke_width=max(2, 2 * S), stroke_fill=BG)
 
@@ -1288,11 +1315,22 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
 
         라벨이 관계선 위에 얹히는 것은 세지 않는다. 라벨은 그 선을 설명하는 것이라
         선 곁에 있는 게 맞고, 글자 둘레를 배경색으로 둘러 읽는 데 지장이 없다.
+
+        `placed` 에 든 것은 **자리 잡기용** 사각형이라 글자보다 사방이 넉넉하다
+        (좌우 LABEL_PAD_X, 위아래로는 글꼴 잉크 바깥까지). 그걸 그대로 판정에 쓰면,
+        두 줄로 나란히 놓여 멀쩡히 읽히는 라벨이 겹쳤다고 찍힌다 — 자기참조가 절반쯤
+        든 무작위 스키마 120개에서 열한 번 그랬고, 열한 번 다 글자 픽셀은 한 점도
+        닿지 않았다(bbox 로 1~4px, 그중 한 번은 0px 맞닿음). 따로 쓴 퍼저 80개에서도
+        같은 자리가 셋 나왔고 잘라서 눈으로 본 셋 다 두 줄로 멀쩡히 읽혔다. [경고] 가
+        그런 식으로 나면 회귀 신호가 아니라 소음이 된다. 그래서 잰다고 말한 것 —
+        사람 눈에 보이는 **글자** — 을 재도록 여백을 걷어 내고(label_ink_box),
+        맞닿은 것은 겹친 것으로 세지 않는다.
         """
         n = 0
-        for i, a in enumerate(placed):
-            for b in placed[i + 1:]:
-                if not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3]):
+        boxes_ = [label_ink_box(b, f['edge'], S) for b in placed]
+        for i, a in enumerate(boxes_):
+            for b in boxes_[i + 1:]:
+                if not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3]):
                     n += 1
         return n
 
