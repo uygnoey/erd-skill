@@ -1,9 +1,9 @@
 {
-  "_comment": "최소 예시 — 전부 선택 항목이다. 없으면 스키마·접두어로 자동 추론된다.",
+  "_comment": "Minimal example — everything here is optional. Without it, areas are inferred from schema names and table-name prefixes. Write these strings in whatever language your document should be in; they are used verbatim, independent of ERD_LANG. A Korean version of this file sits next to it as minimal.ko.spec.json.",
   "areas": [
     [
       "A",
-      "주문",
+      "Orders",
       "public",
       [
         "orders",
@@ -12,7 +12,7 @@
     ],
     [
       "B",
-      "회원",
+      "Members",
       "public",
       [
         "users",
@@ -31,36 +31,36 @@
       "#25324D",
       "#35507D",
       "#4A80C0",
-      "거래"
+      "Transactional"
     ],
     "MASTER": [
       "#1E3A3D",
       "#2B5A5E",
       "#4FA3A3",
-      "마스터"
+      "Master data"
     ]
   },
   "roles": {
-    "orders": "주문 헤더",
-    "order_items": "주문 상세",
-    "users": "회원",
-    "user_profiles": "회원 프로필"
+    "orders": "Order header",
+    "order_items": "Order line items",
+    "users": "Member account",
+    "user_profiles": "Member profile"
   },
   "derives": [
     [
       "ext_feed",
       "orders",
-      "외부 주문 연동"
+      "External order feed"
     ]
   ],
   "doc": {
-    "title": "쇼핑몰 ERD",
-    "subtitle": "public 스키마",
+    "title": "Storefront ERD",
+    "subtitle": "public schema",
     "meta": [
       [
-        "작성일",
+        "Date",
         "2026-07-31",
-        "작성자",
+        "Author",
         ""
       ]
     ]

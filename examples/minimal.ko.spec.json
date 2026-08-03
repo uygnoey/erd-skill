@@ -1,0 +1,68 @@
+{
+  "_comment": "최소 예시 — 전부 선택 항목이다. 없으면 스키마·접두어로 자동 추론된다.",
+  "areas": [
+    [
+      "A",
+      "주문",
+      "public",
+      [
+        "orders",
+        "order_items"
+      ]
+    ],
+    [
+      "B",
+      "회원",
+      "public",
+      [
+        "users",
+        "user_profiles"
+      ]
+    ]
+  ],
+  "layer_of": {
+    "orders": "TX",
+    "order_items": "TX",
+    "users": "MASTER",
+    "user_profiles": "MASTER"
+  },
+  "layers": {
+    "TX": [
+      "#25324D",
+      "#35507D",
+      "#4A80C0",
+      "거래"
+    ],
+    "MASTER": [
+      "#1E3A3D",
+      "#2B5A5E",
+      "#4FA3A3",
+      "마스터"
+    ]
+  },
+  "roles": {
+    "orders": "주문 헤더",
+    "order_items": "주문 상세",
+    "users": "회원",
+    "user_profiles": "회원 프로필"
+  },
+  "derives": [
+    [
+      "ext_feed",
+      "orders",
+      "외부 주문 연동"
+    ]
+  ],
+  "doc": {
+    "title": "쇼핑몰 ERD",
+    "subtitle": "public 스키마",
+    "meta": [
+      [
+        "작성일",
+        "2026-07-31",
+        "작성자",
+        ""
+      ]
+    ]
+  }
+}
