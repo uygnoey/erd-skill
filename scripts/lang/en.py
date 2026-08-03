@@ -88,6 +88,7 @@ M = {
     'erd.sub_ext': ' · external references {n}',
     'verify.label_table': 'label↔table',
     'verify.thru': 'line↔table',
+    'verify.label_x': 'label↔label',
     'verify.v_overlap': 'vertical overlap',
     'verify.h_overlap': 'horizontal overlap',
 
@@ -216,6 +217,7 @@ M = {
     'log.merge_part': '  {label}  tables {tables} · columns {columns}',
     'log.merge_total': 'total  tables {tables} · columns {columns} · FKs {fks} → {path}',
     'log.ddl_parsed': 'tables {n} → {path}',
+    'log.ddl_no_db': '  {n} tables are only referenced, never defined in the DDL — drawn as name-only boxes (set ERD_DB/ERD_PSQL to fill them in): {list}',
     'log.ddl_row': 'cols {columns}{added} FK {fks}  · {note}',
     'log.ddl_added': ' (+{n} new)',
     'log.graphml': 'GraphML  nodes {nodes} · relationships {edges}  → {name}',

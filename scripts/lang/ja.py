@@ -88,6 +88,7 @@ M = {
     'erd.sub_ext': ' · 外部参照 {n}件',
     'verify.label_table': 'ラベル↔テーブル',
     'verify.thru': '線↔テーブル',
+    'verify.label_x': 'ラベル↔ラベル',
     'verify.v_overlap': '縦線の重なり',
     'verify.h_overlap': '横線の重なり',
 
@@ -207,6 +208,7 @@ M = {
     'log.merge_part': '  {label} テーブル {tables} · カラム {columns}',
     'log.merge_total': '合計 テーブル {tables} · カラム {columns} · FK {fks} → {path}',
     'log.ddl_parsed': 'テーブル {n}件 → {path}',
+    'log.ddl_no_db': '  DDL に定義がなく参照されるだけのテーブル {n}件 — 名前だけの箱で描く (ERD_DB/ERD_PSQL を与えると中身を埋める): {list}',
     'log.ddl_row': 'カラム {columns}{added} FK {fks}  · {note}',
     'log.ddl_added': ' (+{n} 追加)',
     'log.graphml': 'GraphML  ノード {nodes} · 関係 {edges}  → {name}',

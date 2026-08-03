@@ -27,9 +27,20 @@ SCHEMA = {k: v for k, v in json.loads(SCHEMA_JSON.read_text()).items() if not ex
 # 여기서 한 번에 걷어내고, 사라진 테이블을 가리키던 FK 도 같이 떨군다.
 if not SCHEMA:
     raise SystemExit(T('err.no_schema_tables', path=SCHEMA_JSON))
-for _t in SCHEMA.values():
-    _t['fks'] = [fk for fk in _t.get('fks', []) if fk.get('ref_table') in SCHEMA]
-    for _c in _t.get('columns', []):
+# 예전 판이 만든 schema.json 이나 사람이 손댄 파일에는 지금 코드가 기대하는 키가
+# 없을 수 있다. 없다고 traceback 을 뱉는 대신 기본값으로 채워 그린다.
+for _n, _t in SCHEMA.items():
+    _t.setdefault('name', _n)
+    for _k, _v in (('pk', []), ('fks', []), ('uniques', []), ('checks', []),
+                   ('indexes', []), ('columns', []), ('schema', 'public'),
+                   ('origin', 'existing'), ('note', ''), ('db', '')):
+        _t.setdefault(_k, _v)
+    _t['fks'] = [fk for fk in _t['fks'] if fk.get('ref_table') in SCHEMA]
+    for _c in _t['columns']:
+        _c.setdefault('added', False)
+        _c.setdefault('not_null', False)
+        _c.setdefault('default', '')
+        _c.setdefault('type', '')
         _c['comment'] = clean(_c.get('comment'))
     _t['note'] = clean(_t.get('note'))
 
@@ -882,6 +893,23 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 if src in inside and dst in inside:
                     edges.append((route(src, dst), '#B0885A', label, True))
 
+        # 자기참조를 먼저 자리잡는다. 루프의 세로선을 통로 예약에 넣어야 뒤이어
+        # 계산되는 경로들이 그 자리를 피한다 — 안 그러면 겹쳐 그려진다.
+        for tname in tnames:
+            if tname in stubs:
+                continue
+            for fk in SCHEMA[tname]['fks']:
+                if fk['ref_table'] != tname:
+                    continue
+                k = sum(1 for lp in self_loops if lp[3] == tname)
+                x1, y1, _x2, y2 = rect(tname)
+                cy = (y1 + y2) / 2
+                dx, dy = 30 + k * 22, 16 + k * 24
+                used_vx.append(x1 - dx)
+                self_loops.append(([(x1, cy - dy), (x1 - dx, cy - dy),
+                                    (x1 - dx, cy + dy), (x1, cy + dy)],
+                                   EDGE, fk['column'], tname))
+
         for tname in tnames:
             if tname in stubs:
                 continue
@@ -889,18 +917,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 ref = fk['ref_table']
                 color = EDGE          # 선은 FK(실선)·ETL(점선) 두 종류만 쓴다
                 lbl = f"{fk['column']}: {fk['ref_column']}"
-                if ref == tname:                          # 자기참조 — 좌측 ㄷ자 루프
-                    # 루프 크기가 노드 위치만으로 정해져 있어서, 자기참조가 둘이면
-                    # 완전히 같은 자리에 겹쳐 그려졌다 — 하나로 보이고 라벨도 포개졌다.
-                    # 이미 그린 루프 수만큼 밖으로 물린다.
-                    k = sum(1 for lp in self_loops if lp[3] == tname)
-                    x1, y1, _x2, y2 = rect(tname)
-                    cy = (y1 + y2) / 2
-                    dx, dy = 30 + k * 16, 16 + k * 10
-                    self_loops.append(([(x1, cy - dy), (x1 - dx, cy - dy),
-                                        (x1 - dx, cy + dy), (x1, cy + dy)],
-                                       color, fk['column'], tname))
-                    continue
+                if ref == tname:
+                    continue                              # 자기참조는 위에서 처리했다
                 if ref not in inside:
                     continue
                 edges.append((route(tname, ref, fk['column'], fk['ref_column']),
@@ -961,6 +979,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             draw_edge(pts, color, -1)
             crow_foot(pts, color)
             one_bar(pts, color)
+        for pts, color, label, _owner in self_loops:
             if edge_labels:
                 # 다른 라벨과 같은 대우 — 글자 둘레를 배경색으로 둘러 통로의 선이
                 # 글자를 관통해 보이지 않게 하고, 겹침 판정 대상에도 넣는다.
@@ -969,7 +988,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 # 오른쪽 끝을 노드 앞에서 끊는다. 가운데 정렬로 두면 라벨이 길 때
                 # 오른쪽 절반이 테이블을 파고든다 (새 검증 항목이 바로 잡아냈다).
                 # y 는 루프마다 다른 가로선에 맞춰 서로 겹치지 않는다.
-                lx, ly = pts[0][0] - 5, pts[1][1] - 9
+                lx, ly = pts[1][0] - 6, pts[1][1] - 9
                 bw = tw(label, f['edge']) / S
                 placed.append((lx - bw - 3, ly - 8, lx + 3, ly + 8))
                 d.text((lx * S, ly * S), label, font=f['edge'], fill=color, anchor='rm',
@@ -1118,7 +1137,24 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     n += 1
         return n
 
+    def lab_hits():
+        """라벨끼리 포개진 수.
+
+        라벨↔테이블만 재고 있어서 라벨 둘이 겹쳐도 0 이 찍혔다 — 자기참조가 둘인
+        테이블에서 실제로 두 라벨이 포개졌다.
+
+        라벨이 관계선 위에 얹히는 것은 세지 않는다. 라벨은 그 선을 설명하는 것이라
+        선 곁에 있는 게 맞고, 글자 둘레를 배경색으로 둘러 읽는 데 지장이 없다.
+        """
+        n = 0
+        for i, a in enumerate(placed):
+            for b in placed[i + 1:]:
+                if not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3]):
+                    n += 1
+        return n
+
     report = {T('verify.label_table'): lab_hit,
+              T('verify.label_x'): lab_hits(),
               T('verify.thru'): thru_nodes(),
               T('verify.v_overlap'): overlaps(segs_v),
               T('verify.h_overlap'): overlaps(segs_h)}

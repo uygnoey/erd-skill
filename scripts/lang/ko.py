@@ -88,6 +88,7 @@ M = {
     'erd.sub_ext': ' · 외부 참조 {n}개',
     'verify.label_table': '라벨↔테이블',
     'verify.thru': '선↔테이블',
+    'verify.label_x': '라벨↔라벨',
     'verify.v_overlap': '세로선 중첩',
     'verify.h_overlap': '가로선 중첩',
 
@@ -206,6 +207,7 @@ M = {
     'log.merge_part': '  {label} 테이블 {tables} · 컬럼 {columns}',
     'log.merge_total': '합계 테이블 {tables} · 컬럼 {columns} · FK {fks} → {path}',
     'log.ddl_parsed': '테이블 {n}개 → {path}',
+    'log.ddl_no_db': '  DDL 에 정의가 없고 참조만 되는 테이블 {n}개 — 이름만 있는 상자로 그린다 (ERD_DB/ERD_PSQL 을 주면 컬럼을 채운다): {list}',
     'log.ddl_row': '컬럼 {columns}{added} FK {fks}  · {note}',
     'log.ddl_added': ' (+{n} 추가)',
     'log.graphml': 'GraphML  노드 {nodes} · 관계 {edges}  → {name}',
