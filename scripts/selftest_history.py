@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 
 from selftest_kit import (NOTES, Fail, HERE, case, col, ddl, eq, has, main, run,
@@ -990,6 +991,337 @@ def _(work):
                        'yEd and browsers reject the file')
     if not (work / 'T.docx').exists():
         raise Fail('the docx was never written')
+
+
+# ── 그린 것을 픽셀로 되짚는 자리 ─────────────────────────────────────────────
+# 15라운드. 다섯 카운터는 전부 **계획한 좌표**를 읽는다 — 어디에 그리기로 했는지.
+# 그러니 결함이 좌표가 아니라 **칠하는 순서**에 있으면 다섯 다 0 을 찍는다. 자기참조
+# 라벨이 노드보다 먼저 칠해져 테이블에 지워지고 있었는데, 카운터는 '라벨을 거기
+# 뒀다' 만 알고 '그 라벨이 아직 보이는가' 는 아무도 묻지 않았다. 눈으로도 못 잡는다 —
+# 지워진 라벨은 그냥 없는 라벨처럼 보인다.
+#
+# 그래서 ImageDraw 를 감싸 **무엇을 어떤 순서로 칠했는지** 받아 적고, 같은 그림을
+# 라벨만 빼고 한 번 더 그려 두 PNG 를 뺀다. 남는 픽셀이 그 라벨이 실제로 보이는
+# 분량이다. 색을 따지지 않으므로 팔레트가 바뀌어도 그대로 잰다.
+#
+# 자를 erd.py 안에 넣지 않는다 — 재는 코드가 재는 대상 안에 있으면 같이 죽는다.
+_PAINT_PROBE = '''\
+import json
+import sys
+
+from PIL import Image, ImageChops, ImageDraw as RID
+
+import erd
+
+MODE = sys.argv[1]
+EV, SUP = [], [False]
+NODE_FILL = ({v[0] for v in erd.LAYERS.values()}
+             | {v[1] for v in erd.LAYERS.values()})
+LINE_COL = {erd.EDGE, erd.EDGE_CASCADE}
+
+
+class Rec:
+    """ImageDraw 래퍼 — 무엇을 어떤 차례로 칠했는지 받아 적는다."""
+
+    def __init__(self, img):
+        self._d = RID.Draw(img)
+        self._on = img.size != (1, 1)      # 1×1 은 자리를 재는 판이지 칠하는 판이 아니다
+
+    def __getattr__(self, name):
+        fn = getattr(self._d, name)
+        if not self._on:
+            return fn
+        if name == 'text':
+            def txt(xy, text, font=None, anchor=None, **kw):
+                if 'stroke_width' in kw:           # 테두리를 두른 글자 = 관계 라벨
+                    EV.append(['label', len(EV), text,
+                               [float(v) for v in
+                                self._d.textbbox(xy, text, font=font, anchor=anchor)]])
+                    if SUP[0]:
+                        return None
+                return fn(xy, text, font=font, anchor=anchor, **kw)
+            return txt
+        if name == 'rectangle':
+            def rect(xy, **kw):
+                if kw.get('fill') in NODE_FILL:
+                    b = ([xy[0][0], xy[0][1], xy[1][0], xy[1][1]]
+                         if isinstance(xy[0], (list, tuple)) else list(xy))
+                    EV.append(['node', len(EV), '', [float(v) for v in b]])
+                return fn(xy, **kw)
+            return rect
+        if name == 'line':
+            def ln(xy, **kw):
+                if kw.get('fill') in LINE_COL:
+                    EV.append(['line', len(EV), '',
+                               [float(xy[0][0]), float(xy[0][1]),
+                                float(xy[1][0]), float(xy[1][1])]])
+                return fn(xy, **kw)
+            return ln
+
+        def other(*a, **kw):
+            EV.append([name, len(EV), '', []])
+            return fn(*a, **kw)
+        return other
+
+
+erd.ImageDraw = type('m', (), {'Draw': Rec})
+_code, _name, _schema, tables = erd.AREAS[0]
+apos, aboxes, ext = erd.layout_area(tables, with_desc=True)
+png = erd.OUT / 'probe.png'
+erd.draw_erd(png, tables + ext, apos, aboxes, 'probe', with_desc=True, scale=2,
+             stubs=set(ext), legend=True)
+ev = list(EV)
+
+nodes = [e[3] for e in ev if e[0] == 'node']
+labels = [e for e in ev if e[0] == 'label']
+res = {'n_labels': len(labels), 'n_lines': sum(1 for e in ev if e[0] == 'line'),
+       'last_node': max((e[1] for e in ev if e[0] == 'node'), default=-1),
+       'first_label': min((e[1] for e in labels), default=-1),
+       'self_labels': sum(1 for e in labels if e[2].startswith('parent_')),
+       'thru': [], 'ratios': [], 'dead': []}
+
+# 계획이 아니라 **칠한 것**으로 센다 — d.line() 이 테이블 상자 안을 지났는가.
+for e in ev:
+    if e[0] != 'line':
+        continue
+    x0, y0, x1, y1 = e[3]
+    for n in nodes:
+        ix0, ix1 = max(min(x0, x1), n[0] + 2), min(max(x0, x1), n[2] - 2)
+        iy0, iy1 = max(min(y0, y1), n[1] + 2), min(max(y0, y1), n[3] - 2)
+        if abs(x1 - x0) < 1 and n[0] + 2 < x0 < n[2] - 2 and iy1 - iy0 > 8:
+            res['thru'].append(['V', x0, iy0, iy1, n])
+        elif abs(y1 - y0) < 1 and n[1] + 2 < y0 < n[3] - 2 and ix1 - ix0 > 8:
+            res['thru'].append(['H', y0, ix0, ix1, n])
+
+if MODE == 'pixels':
+    # 같은 그림을 **라벨 글자만 빼고** 한 번 더. 자리 잡기는 그대로 도므로 좌표는
+    # 한 점도 다르지 않고, 두 PNG 가 다른 픽셀이 곧 그 라벨이 실제로 보이는 분량이다.
+    SUP[0] = True
+    EV.clear()
+    bare = erd.OUT / 'probe_bare.png'
+    erd.draw_erd(bare, tables + ext, apos, aboxes, 'probe', with_desc=True, scale=2,
+                 stubs=set(ext), legend=True)
+    A = Image.open(png).convert('RGB')
+    B = Image.open(bare).convert('RGB')
+    D = ImageChops.difference(A, B).convert('L')
+    for e in labels:
+        g = e[3]
+        x0, y0 = max(int(g[0]), 0), max(int(g[1]), 0)
+        x1, y1 = min(int(g[2]), A.size[0]), min(int(g[3]), A.size[1])
+        ink = 0 if x1 <= x0 or y1 <= y0 else sum(
+            D.crop((x0, y0, x1, y1)).histogram()[1:])
+        area = max((x1 - x0) * (y1 - y0), 1)
+        res['ratios'].append([e[2], ink, area])
+
+print(json.dumps(res))
+'''
+
+
+def _long_name_fixture(work, n=9):
+    """자기참조 둘 · 이름이 긴 컬럼 — 팔이 통로보다 길어지고 싶어 하는 모양.
+
+    이 모양이라야 '팔이 테이블을 피하는가' 를 실제로 묻는다. 짧은 이름이면 팔이
+    통로 안에 그냥 들어가서, 피하는 장치를 통째로 들어내도 그림이 멀쩡하다 —
+    수정을 되돌려 확인했다(짧은 이름 판은 초록, 이 판은 관통 31개).
+    """
+    def fk(c, r):
+        return {'column': c, 'ref_table': r, 'ref_column': 'id', 'on_delete': 'CASCADE'}
+
+    longs = ['parent_organization_unit_registry_identifier',
+             'root_organization_unit_registry_identifier']
+    names = [f'organization_unit_registry_{i:02d}' for i in range(n)]
+    t = {}
+    for i, nm in enumerate(names):
+        cols, fks = [col('id')], []
+        for c in longs:
+            cols.append(col(c))
+            fks.append(fk(c, nm))
+        if i:
+            cols.append(col('reference_to_first_identifier'))
+            fks.append(fk('reference_to_first_identifier', names[0]))
+        t[nm] = table(nm, cols, pk=['id'], fks=fks)
+    write_schema(work, t)
+    return t
+
+
+def _self_ref_fixture(work, n=11, k=3):
+    """자기참조가 테이블마다 k 개 — 15라운드의 재현 스키마 그대로.
+
+    하나로는 안 난다. 라운드 13·14 의 퍼저가 테이블당 자기참조를 **하나만** 뒀고,
+    그래서 '무작위 200판에 경고 0' 이 셋 이상에서 거짓인 것을 두 라운드가 못 봤다.
+    """
+    def fk(c, r):
+        return {'column': c, 'ref_table': r, 'ref_column': 'id', 'on_delete': 'CASCADE'}
+
+    names = [f't{i:02d}' for i in range(n)]
+    t = {}
+    for nm in names:
+        cols = [col('id')] + [col(f'parent_{j}_id') for j in range(k)]
+        t[nm] = table(nm, cols, pk=['id'],
+                      fks=[fk(f'parent_{j}_id', nm) for j in range(k)])
+    for src, dst in (('t01', 't05'), ('t05', 't10'), ('t06', 't10'),
+                     ('t07', 't03'), ('t09', 't07')):
+        t[src]['columns'].append(col(f'{dst}_id'))
+        t[src]['fks'].append(fk(f'{dst}_id', dst))
+    write_schema(work, t)
+    return t
+
+
+def _paint(work, mode):
+    e = {k: v for k, v in os.environ.items() if not k.startswith('ERD_')}
+    e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(work), 'ERD_LANG': 'en',
+              'ERD_DOCNAME': 'T', 'ERD_SVG': '0'})
+    r = subprocess.run([sys.executable, '-c', _PAINT_PROBE, mode],
+                       capture_output=True, text=True, env=e, cwd=str(HERE))
+    if r.returncode != 0:
+        raise Fail(f'the paint probe died:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+@case('render: a self-reference label is still there after the tables are painted')
+def _(work):
+    # 15라운드. README 는 '라벨은 노드 **다음에** 그린다. 안 그러면 노드가 덮는다' 고
+    # 못박아 두었고, 자기참조 라벨 옆 주석은 '다른 라벨과 같은 대우' 라고 적어 두었다.
+    # 둘 다 거짓이었다 — 그 라벨만 노드 블록 **앞에서** 바로 그려졌고, 자리도
+    # pts[1][0]-6 에 못박혀 후보 탐색이 없었다. 테이블에 걸친 라벨은 그대로 지워졌다.
+    #
+    # 다섯 카운터 중 어느 것도 이것을 볼 수 없다. 전부 '어디에 그리기로 했는가' 를
+    # 읽지 '그것이 아직 보이는가' 를 읽지 않는다 — 그래서 이 케이스는 카운터를 묻지
+    # 않고 **칠한 차례와 픽셀**을 본다.
+    #
+    # 되돌리면 빨강인 것을 확인하고 남긴다: 수정 전 이 그림은 라벨 38개 중 하나가
+    # 잉크 0(2486px 짜리 상자에 한 점도 없음), 하나가 성한 것들의 3분의 2 미만이었고,
+    # 라벨 첫 붓질이 노드 마지막 붓질보다 **앞**이었다(265 대 399).
+    _self_ref_fixture(work)
+    got = _paint(work, 'pixels')
+    if got['n_labels'] < 20 or got['self_labels'] < 20:
+        raise Fail(f'nothing to measure — the fixture drew {got["n_labels"]} labels '
+                   f'({got["self_labels"]} of them self-references)')
+    if got['first_label'] <= got['last_node']:
+        raise Fail('a relationship label is painted before the tables are '
+                   f'(first label {got["first_label"]}, last table '
+                   f'{got["last_node"]}) — whatever lands on a box is erased')
+    inked = sorted(ink / area for _t, ink, area in got['ratios'])
+    mid = inked[len(inked) // 2]
+    if mid < 0.05:
+        raise Fail(f'even the median label is nearly blank ({mid:.3f}) — the probe '
+                   'is measuring the wrong pixels, not the labels')
+    # 절대값 대신 **같은 그림의 다른 라벨**과 견준다 (글꼴이 바뀌어도 성립한다).
+    faint = [(t, ink, area) for t, ink, area in got['ratios']
+             if ink / area < mid * 0.7]
+    if faint:
+        raise Fail('a label reaches the page rubbed out — its glyph box holds far '
+                   f'less ink than the rest of this diagram (median {mid:.3f}): '
+                   + ', '.join(f'{t!r} {ink}/{area}' for t, ink, area in faint[:5]))
+
+
+@case('render: a self-reference loop is not painted through a table')
+def _(work):
+    # 15라운드. `slot()` 은 **다른 선**만 피하고 테이블은 피하지 않는다. 통로 라우터는
+    # gutter_bounds() 로 테이블을 피하는데 자기참조 팔은 그 장치를 쓰지 않아,
+    # x 가 x1-600..x1-12 라는 넓은 창 안에서 아무 데나 잡혔다 — 그 '아무 데' 가
+    # 왼쪽 테이블 속이었다. 선은 노드보다 먼저 칠하므로 눈에도 안 보인다.
+    #
+    # 여기서 세는 것은 `thru` 카운터가 아니라 **실제 d.line() 호출**이다. 카운터가
+    # 계획을 잘못 읽어도(또는 자기참조를 빼먹어도 — 한 번 그랬다) 이 케이스는 잡는다.
+    #
+    # **판을 둘 건다.** 한 판으로는 모자란 것을 되돌려 보고 알았다:
+    #   · 자기참조 셋짜리 판은 옛 결함(600px 창)을 잡는다 — 그때 관통 4개.
+    #     그런데 지금 코드에서 테이블 피하기를 들어내도 이 판은 초록이다.
+    #   · 이름이 긴 판은 그 반대다. 팔은 제 라벨만큼 길어지려 하므로 통로 밖까지
+    #     뻗고 싶어 하고, 피하기를 들어내면 관통 31개가 난다. 대신 옛 코드에서는
+    #     팔이 짧아서(30+k·22) 이 판이 0 이다.
+    # 둘 다 걸어야 '어느 쪽으로 되돌려도 빨강' 이 된다.
+    for name, fixture in (('long column names', _long_name_fixture),
+                          ('three self-references each', _self_ref_fixture)):
+        w = work if fixture is _long_name_fixture else work.parent / 'work2'
+        fixture(w)
+        got = _paint(w, 'lines')
+        if got['n_lines'] < 50:
+            raise Fail(f'nothing to measure ({name}) — only {got["n_lines"]} '
+                       'relationship line segments were painted')
+        if got['thru']:
+            first = got['thru'][0]
+            raise Fail(f'{len(got["thru"])} painted line segment(s) run inside a table '
+                       f'box ({name}); first: {first[0]} at {first[1:4]} '
+                       f'through node {first[4]}')
+    # 계획을 읽는 카운터도 같은 말을 해야 한다 — 둘이 갈리면 하나가 거짓말 중이다.
+    run('build_erd.py', work)
+    for r in verify_recs(work):
+        if r['counts'].get('thru'):
+            raise Fail(f'{r["file"]}: the thru counter says {r["counts"]["thru"]} '
+                       'while the paint probe found none — they read the same figure')
+
+
+@case('verify: the two label checks use one box and one rule')
+def _(work):
+    # 15라운드. `라벨↔라벨` 만 잉크로 재도록 고치고 `라벨↔테이블` 은 자리 잡기용 여백
+    # 상자를 그대로 뒀다. 게다가 맞닿음 규칙이 **서로 반대**였다 — 라벨↔테이블은
+    # `b[2] < o[0]` 라 스치기만 해도 세고, 라벨↔라벨은 `<=` 라 안 셌다. 같은 것을
+    # 재면서 다른 자를 쓴 것이고, 이 저장소가 다섯 번 되풀이한 '같은 버그를 반만
+    # 고쳤다' 의 모양 그대로다.
+    #
+    # 그리고 테두리를 어느 쪽에 넣을지도 여기서 못박는다. 라벨은 글자 둘레를 배경색
+    # 으로 두르고 그려지므로 그 테두리도 **칠하는 것**이다 — 남의 글자 위에 얹히면
+    # 지운다. 그래서 잉크 상자는 글자 + 테두리의 절반이다. 절반인 이유는 두 상자가
+    # 겹친다는 것이 곧 '한쪽 테두리가 다른 쪽 **글자**에 닿는다' 가 되기 때문이다.
+    #
+    # ⚠ 한계: 아래 (2) 는 코드 본문을 읽는다. 규칙이 다시 갈라지는 것은 잡지만,
+    # 두 검사가 같은 자로 **틀린** 것을 재는 것은 못 잡는다.
+    write_schema(work, {'a': table('a', [col('id')])})
+    e = {k: v for k, v in os.environ.items() if not k.startswith('ERD_')}
+    e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(work), 'ERD_LANG': 'en',
+              'ERD_DOCNAME': 'T'})
+    probe = '''
+import json, erd
+S = 2
+f = erd.load_fonts(S)['edge']
+P, halo = erd.LABEL_PAD_X, max(2, 2 * S) / S / 2
+
+
+def placed(cx, cy, w=60.0):
+    return (cx - w / 2 - P, cy - 8, cx + w / 2 + P, cy + 8)
+
+
+ink = erd.label_ink_box(placed(100.0, 100.0), f, S)
+print(json.dumps({
+    # (1) 규칙: 맞닿은 것은 겹친 것이 아니다 — 양쪽 검사가 이 함수 하나를 쓴다
+    'touch_edge': erd.boxes_touch((0, 0, 10, 10), (10, 0, 20, 10)),
+    'touch_over': erd.boxes_touch((0, 0, 10, 10), (9.5, 0, 20, 10)),
+    # (2) 테두리가 상자에 들어 있는가 — 글자 잉크보다 halo 만큼 넓어야 한다
+    'halo_in_box': [ink[0] <= placed(100.0, 100.0)[0] + P - halo + 1e-9,
+                    ink[2] >= placed(100.0, 100.0)[2] - P + halo - 1e-9],
+    # 글자끼리 테두리 폭보다 가까우면 서로 지운다 — 세어야 한다.
+    # (ink 높이 = 글자 높이 + 테두리 절반씩. 중심 거리에서 글자 높이를 빼면 틈이다.)
+    'apart_half_halo': erd.boxes_touch(ink, erd.label_ink_box(
+        placed(100.0, 100.0 + (ink[3] - ink[1]) - halo), f, S)),
+    # 테두리 폭보다 멀면 안 센다 (두 줄로 멀쩡히 읽힌다 — 14라운드가 재 본 자리)
+    'apart_two_halo': erd.boxes_touch(ink, erd.label_ink_box(
+        placed(100.0, 100.0 + (ink[3] - ink[1]) + halo), f, S)),
+}))
+'''
+    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True,
+                       env=e, cwd=str(HERE))
+    if r.returncode != 0:
+        raise Fail(f'the label rule probe died:\n{r.stdout}\n{r.stderr}')
+    got = json.loads(r.stdout.strip().splitlines()[-1])
+    eq(got['touch_edge'], False, 'boxes that merely touch do not overlap')
+    eq(got['touch_over'], True, 'boxes that really overlap do')
+    eq(got['halo_in_box'], [True, True],
+       'the measured box must include the background halo the label paints')
+    eq(got['apart_half_halo'], True,
+       'glyphs closer than one halo erase each other — that must still be counted')
+    eq(got['apart_two_halo'], False,
+       'and further apart they read as two lines, which is not a defect')
+
+    src = (HERE / 'erd.py').read_text(encoding='utf-8')
+    shared = src[src.index('lab_boxes = '):src.index('def thru_nodes')]
+    if shared.count('lab_boxes') < 2 or 'boxes_touch' not in shared:
+        raise Fail('label↔table and label↔label no longer read the same box list — '
+                   'that split is exactly how the round before left one half fixed')
+    body = src[src.index('def lab_hits'):src.index('    checks = [')]
+    if 'label_ink_box(' in body or 'boxes_touch' not in body:
+        raise Fail('lab_hits() builds its own boxes or its own rule again')
 
 
 # ── 진짜 서버가 있어야만 재는 것 ─────────────────────────────────────────────

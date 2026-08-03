@@ -289,6 +289,16 @@ def tw(text, font):
 LABEL_PAD_X = 3
 
 
+def boxes_touch(a, b):
+    """두 사각형이 실제로 겹치는가. 맞닿기만 한 것은 겹친 것이 아니다.
+
+    라벨 검사 세 곳(라벨↔라벨, 라벨↔테이블, 자리잡기)이 **이 함수 하나**를 쓴다.
+    예전엔 라벨↔테이블만 `<` 라 스치기만 해도 세고 라벨↔라벨은 `<=` 라 안 셌다 —
+    같은 것을 재면서 반대 규칙을 쓰고 있었다.
+    """
+    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+
 def label_ink_box(box, font, scale):
     """자리 잡기용 사각형 → 글자가 실제로 칠하는 사각형.
 
@@ -301,13 +311,24 @@ def label_ink_box(box, font, scale):
     거기서 글꼴이 실제로 칠하는 위·아래 폭을 되짚는다. 표본은 어센더·디센더·밑줄을
     다 담은 'Ag_0y' 라 어떤 라벨보다 넉넉하다 — 이 사각형이 안 닿으면 글자는 확실히
     안 닿는다.
+
+    **테두리(halo) 의 절반을 더한다.** 라벨은 `stroke_width` 만큼 배경색 테두리를
+    두르고 그려진다 — 그 테두리도 칠하는 것이라, 남의 글자 위에 얹히면 글자를
+    지운다. 글자 상자만 재면 3 떨어진 두 라벨이 0 으로 나오는데 실제로는 한쪽
+    테두리가 다른 쪽 글자 가장자리를 파먹는다. 절반씩 더하면 두 상자가 겹치는
+    것이 곧 '한쪽 테두리가 다른 쪽 **글자**에 닿는다' 와 같아진다. 온전히 더하지
+    않는 이유는 테두리끼리 겹치는 것은 배경색 위 배경색이라 아무것도 안 지우기
+    때문이다. 라벨↔테이블도 같은 상자로 잰다 — 두 검사가 다른 자를 쓰면 같은
+    버그를 반만 고치게 된다.
     """
     asc, desc = font.getmetrics()
     gb = font.getbbox('Ag_0y')
     mid = (asc + desc) / 2               # anchor 'm' 이 놓이는 자리
     up, down = (mid - gb[1]) / scale, (gb[3] - mid) / scale
+    halo = max(2, 2 * scale) / scale / 2         # 그리는 쪽 stroke_width 의 절반
     cy = (box[1] + box[3]) / 2
-    return (box[0] + LABEL_PAD_X, cy - up, box[2] - LABEL_PAD_X, cy + down)
+    return (box[0] + LABEL_PAD_X - halo, cy - up - halo,
+            box[2] - LABEL_PAD_X + halo, cy + down + halo)
 
 
 class Tracker:
@@ -747,20 +768,35 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
 
         used_vx, used_hy = [], []
 
-        def slot(base, used, pitch, limit=64, lo=None, hi=None):
+        INF = float('inf')
+
+        def slot(base, used, pitch, limit=64, lo=None, hi=None, span=None):
             """base 근처에서 이미 쓰인 좌표를 피해 좌우(상하) 번갈아 자리를 잡는다.
 
             lo·hi 는 넘어서면 안 되는 경계다 — 통로 밖은 테이블 속이다. 예전엔 경계가
             없어서 통로에 들어갈 선이 많으면 남는 선이 테이블을 뚫고 지나갔다. 선은
             노드보다 먼저 그리므로 그 관통은 노드에 덮여 눈에 보이지도 않았다.
+
+            span 은 이 선이 **반대 축으로 차지하는 구간**이다 (세로선이면 y 범위).
+            두 세로선은 x 가 가까워도 y 가 안 겹치면 겹쳐 보이지 않는다 — 검증이
+            세는 규칙도 그렇다. 그런데 자리를 나눠 주는 쪽은 x 만 보고 통로 한 칸을
+            통째로 잡아, 서로 만날 일이 없는 선끼리 자리를 다퉜다. 통로가 그렇게
+            꽉 차면 위 fallback 이 남의 선 **위에** 얹는다. span 을 모르는 자리는
+            예전대로 (-∞, ∞) 로 두어 보수적으로 잡는다.
             """
+            a0, a1 = span or (-INF, INF)
+
+            def far(v):
+                return all(abs(v - u) >= pitch - 1 or ub <= a0 or ua >= a1
+                           for u, ua, ub in used)
+
             for k in range(1, 2 * limit + 2):
                 off = (k // 2) * pitch * (1 if k % 2 else -1)
                 v = base + off
                 if lo is not None and not (lo <= v <= hi):
                     continue
-                if all(abs(v - u) >= pitch - 1 for u in used):
-                    used.append(v)
+                if far(v):
+                    used.append((v, a0, a1))
                     return v
             if lo is not None and hi > lo:
                 # 통로가 꽉 찼다. 선끼리 붙는 편이 테이블을 뚫는 것보다 낫다 —
@@ -768,13 +804,14 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 best, bestd = (lo + hi) / 2, -1.0
                 for i in range(1, 128):
                     c = lo + (hi - lo) * i / 128
-                    dmin = min((abs(c - u) for u in used), default=1e9)
+                    dmin = min((abs(c - u) for u, ua, ub in used
+                                if not (ub <= a0 or ua >= a1)), default=1e9)
                     if dmin > bestd:
                         best, bestd = c, dmin
-                used.append(best)
+                used.append((best, a0, a1))
                 return best
-            v = max(used, default=base) + pitch
-            used.append(v)
+            v = max((u for u, _a, _b in used), default=base) + pitch
+            used.append((v, a0, a1))
             return v
 
         def gutter_bounds(i):
@@ -838,7 +875,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             남던 이유다. 그래서 y 부터 전부 잡아 두고 경로는 그 다음에 만든다.
             """
             ya, yb = col_y(a, ca), col_y(b, cb)
-            used_hy.extend((ya, yb))     # 통과선이 진출입선의 y 를 피하도록 등록
+            # 진출입 꼬리의 x 범위는 경로를 만들기 전이라 아직 모른다 — 보수적으로 둔다
+            used_hy.extend(((ya, -INF, INF), (yb, -INF, INF)))
             return ya, yb
 
         def route(a, b, ys):
@@ -853,7 +891,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             bx1, _t3, bx2, _t4 = rect(b)
             if ia == ib:                                  # 같은 열 — 왼쪽 통로로 우회
                 lo, hi = gutter_bounds(ia - 1)
-                gx = slot(gutter_x(ia - 1), used_vx, 14, lo=lo, hi=hi)
+                gx = slot(gutter_x(ia - 1), used_vx, 14, lo=lo, hi=hi,
+                          span=(min(ya, yb), max(ya, yb)))
                 pts = [(ax1, ya), (gx, ya), (gx, yb), (bx1, yb)]
             else:
                 right = ib > ia
@@ -864,11 +903,24 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 y = ya
                 for k, gi in enumerate(gidx):
                     lo, hi = gutter_bounds(gi)
-                    gx = slot(gutter_x(gi), used_vx, 14, lo=lo, hi=hi)
+                    # 이 통로에서 세로로 얼마나 내려가는지 **먼저** 알아야 자리를
+                    # 나눌 때 y 를 볼 수 있다. 중간 열로 건널 때는 그 열의 빈 구간
+                    # 안에서 정해지므로 구간째로 잡아 둔다 (아직 어디일지는 모른다).
+                    if k < len(mids):
+                        yc, ylo, yhi = free_y(mids[k], yb)
+                        span = (min(y, ylo), max(y, yhi))
+                    else:
+                        span = (min(y, yb), max(y, yb))
+                    gx = slot(gutter_x(gi), used_vx, 14, lo=lo, hi=hi, span=span)
                     pts.append((gx, y))
                     if k < len(mids):                     # 중간 열은 노드 사이로 건넌다
-                        yc, ylo, yhi = free_y(mids[k], yb)
-                        yp = slot(yc, used_hy, 13, lo=ylo, hi=yhi)
+                        # 이 가로 구간은 지금 통로에서 **다음** 통로까지만 간다.
+                        # 다음 통로의 x 는 아직 안 정했지만 그 통로가 쓸 수 있는
+                        # 범위는 안다 — 넉넉하게 그 범위까지로 잡는다. 넓게 잡는
+                        # 쪽이 안전하다: 좁게 잡으면 안 겹친다고 잘못 볼 수 있다.
+                        nlo, nhi = gutter_bounds(gidx[k + 1])
+                        yp = slot(yc, used_hy, 13, lo=ylo, hi=yhi,
+                                  span=(min(gx, nlo), max(gx, nhi)))
                         pts.append((gx, yp))
                         y = yp
                 pts.append((pts[-1][0], yb))
@@ -930,10 +982,29 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
         def flush_labels():
             """노드·다른 라벨을 피해 라벨을 배치한다. 노드 렌더 이후에 호출."""
             node_rects = [rect(n) for n in tnames]
+            placed_ink = []          # placed 와 나란히 — 겹침 판정은 잉크로 한다
 
-            def hits(box, others):
-                return any(not (box[2] < o[0] or box[0] > o[2]
-                                or box[3] < o[1] or box[1] > o[3]) for o in others)
+            def on_a_table(cand):
+                """이 자리가 테이블을 건드리는가 — **검증이 세는 것과 같은 자로.**
+
+                예전엔 자리 잡기용 여백 상자로 봤다. 그런데 그 상자는 높이가 14 로
+                고정이라 글꼴 잉크(위 4.25·아래 6.25)에 테두리를 더한 것보다 아래쪽이
+                **좁다**. 그래서 여백 상자로는 노드에 안 닿는데 실제로 칠하는 것은
+                닿는 자리가 생겼고, 자리잡기가 통과시킨 것을 검증이 `라벨↔테이블 1`
+                로 잡았다 — 둘이 다른 상자를 보고 있었던 것이다.
+                """
+                a = label_ink_box(cand, f['edge'], S)
+                return any(boxes_touch(a, o) for o in node_rects)
+
+            def clashes(cand):
+                """다른 라벨과 겹치는가 — **검증이 세는 것과 같은 자로** 잰다.
+
+                자리를 잡는 쪽이 여백 상자로 보고 검증이 잉크로 보면, 검증이 통과시킬
+                자리를 자리잡기가 거부한다. 그러면 멀쩡한 후보를 버리고 여백으로
+                밀려나는 라벨이 생긴다 — 둘이 같은 자를 써야 한다.
+                """
+                a = label_ink_box(cand, f['edge'], S)
+                return any(boxes_touch(a, b) for b in placed_ink)
 
             # 긴 경로부터 자리를 잡는다 (짧은 쪽이 밀려날 여지가 크다)
             for pts, text, color in sorted(
@@ -976,21 +1047,38 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 for gen, args in ([(h_cands, s) for s in segs]
                                   + [(v_cands, s) for s in v_segs_own]):
                     for cand in gen(*args):
-                        if hits(cand, node_rects):
+                        if on_a_table(cand):
                             continue
-                        if not hits(cand, placed):
+                        if not clashes(cand):
                             box = cand
                             break
                         if fallback is None:
                             fallback = cand
                     if box:
                         break
-                box = box or fallback
-                if box is None:                      # 전부 막히면 노드 위쪽 여백으로
+                if box is None:
+                    # 전부 막히면 노드 위쪽 여백으로. **한 줄에 몰아 놓지 않는다** —
+                    # 예전엔 자리가 하나뿐이라 밀려난 라벨들이 같은 높이에 나란히
+                    # 쌓였고, 긴 컬럼명이 여럿이면 그대로 서로를 덮었다(`라벨↔라벨`
+                    # 이 남던 자리다). 여백은 노드 위라 얼마든지 넓힐 수 있으니
+                    # 줄을 늘리고 좌우로도 비켜 가며 빈자리를 찾는다.
                     p, q = segs[0]
-                    box = ((p[0] + q[0]) / 2 - bw / 2 - LABEL_PAD_X, top - 22,
-                           (p[0] + q[0]) / 2 + bw / 2 + LABEL_PAD_X, top - 8)
+                    cx = (p[0] + q[0]) / 2
+                    ymax = min((r[1] for r in node_rects), default=top)
+                    for row in range(40):
+                        for sx in (0, bw + 14, -(bw + 14), 2 * bw + 28, -2 * bw - 28):
+                            cand = (cx + sx - bw / 2 - LABEL_PAD_X, ymax - 22 - row * 19,
+                                    cx + sx + bw / 2 + LABEL_PAD_X, ymax - 8 - row * 19)
+                            if not clashes(cand):
+                                box = cand
+                                break
+                        if box:
+                            break
+                    # 그래도 없으면 겹치더라도 제 선 곁에 둔다 (여백 끝까지 찼다는 뜻).
+                    box = box or fallback or (cx - bw / 2 - LABEL_PAD_X, ymax - 22,
+                                              cx + bw / 2 + LABEL_PAD_X, ymax - 8)
                 placed.append(box)
+                placed_ink.append(label_ink_box(box, f['edge'], S))
                 # 배경 사각형으로 덮으면 그 아래를 지나던 다른 선이 끊겨 보인다.
                 # 글자 둘레만 배경색으로 두르면 선은 이어진 채로 글자도 읽힌다.
                 d.text(((box[0] + box[2]) / 2 * S, (box[1] + box[3]) / 2 * S), text,
@@ -1038,6 +1126,30 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
         # 났고, 그것은 세는 실수가 아니라 실제로 겹쳐 그린 선이었다 (팔과 다른 선의
         # 꼬리가 1px 차이로 50px 넘게 나란히 달렸다). [경고] 가 흔해지면 회귀 신호가
         # 아니라 소음이 되므로 그림보다 이쪽이 더 아프다.
+        all_rects = [(m, rect(m)) for m in tnames]   # 루프 자리 재기용 — 한 번만 만든다
+
+        def loop_room(self_n, ylo, yhi):
+            """루프가 테이블을 건드리지 않고 쓸 수 있는 x 구간 — (왼쪽 끝, 오른쪽 끝).
+
+            루프는 세 구간(가로 둘·세로 하나)이 전부 ylo..yhi 띠 안에 있다. 그러니
+            그 띠와 세로로 겹치는 다른 테이블의 가장자리를 넘어가면 안 된다 —
+            넘어가면 팔이 그 테이블을 관통한다. slot() 은 **다른 선**만 피하지
+            테이블은 안 피하고, 테이블을 피하는 장치(gutter_bounds)는 통로 전용이라
+            루프에는 쓰이지 않았다. 그래서 여기서 루프 몫으로 한 번 더 잰다.
+            """
+            sx1, _sy1, sx2, _sy2 = rect(self_n)
+            left, right = sx1 - 600, sx2 + 600     # 바깥은 넉넉히, 그래도 유한하게
+            for m, (ox1, oy1, ox2, oy2) in all_rects:
+                if m == self_n:
+                    continue
+                if oy2 <= ylo or oy1 >= yhi:       # 세로로 안 겹치면 팔이 지날 일 없다
+                    continue
+                if ox2 <= sx1:
+                    left = max(left, ox2 + 10)
+                if ox1 >= sx2:
+                    right = min(right, ox1 - 10)
+            return left, right
+
         for tname in tnames:
             if tname in stubs:
                 continue
@@ -1045,24 +1157,90 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 if fk['ref_table'] != tname:
                     continue
                 k = sum(1 for lp in self_loops if lp[3] == tname)
-                x1, y1, _x2, y2 = rect(tname)
+                x1, y1, x2, y2 = rect(tname)
                 cy = (y1 + y2) / 2
-                dx, dy = 30 + k * 22, 16 + k * 24
-                # 두 팔이 **모두** 비어 있는 높이까지 벌린다. 팔은 좌우 대칭이라
-                # 하나씩 따로 잡을 수 없다 — 한 쌍으로 놓고 한 칸씩 넓힌다.
+                dy0 = 16 + k * 24
+                # 팔은 제 라벨을 담을 만큼 길어야 한다. 짧으면 라벨이 놓일 자리가
+                # 노드 위밖에 안 남아 flush_labels() 가 그림 밖 여백으로 밀어낸다.
+                need = tw(fk['column'], f['edge']) / S + 16 if edge_labels else 40
+                want = max(30 + k * 22, min(need, 320))
+
+                # 높이와 좌우를 **함께** 고른다. 높이를 먼저 못박으면 그 띠에서
+                # 남는 폭이 얼마든 그대로 써야 하는데, 한 칸 더 벌리면 옆 테이블을
+                # 벗어나 팔을 온전히 놓을 수 있는 경우가 많다.
+                best, spare = None, None
                 for step in range(40):
-                    cand = dy + step * 13
-                    if all(abs(cy - cand - u) >= 12 and abs(cy + cand - u) >= 12
-                           for u in used_hy):
-                        dy = cand
+                    cand = dy0 + step * 13
+                    clear = min((min(abs(cy - cand - u), abs(cy + cand - u))
+                                 for u, _ua, _ub in used_hy), default=1e9)
+                    lft, rgt = loop_room(tname, cy - cand, cy + cand)
+                    room_l, room_r = x1 - 12 - lft, rgt - (x2 + 12)
+                    side, room = (('L', room_l) if room_l >= min(want, room_r)
+                                  else ('R', room_r))
+                    entry = (cand, side, room, lft, rgt)
+                    if clear < 12:
+                        # 이 높이는 다른 가로선과 겹친다. 그래도 **가장 덜 겹치는**
+                        # 것을 하나 챙겨 둔다 — 예전엔 전부 버리고 처음 높이로
+                        # 돌아갔고, 자기참조가 셋 넘게 붙으면 그 처음 높이가 남의
+                        # 선 위였다.
+                        if spare is None or clear > spare[0]:
+                            spare = (clear, entry)
+                        continue
+                    if best is None or room > best[2]:
+                        best = entry
+                    if room >= want:
                         break
+                if best is None:
+                    best = spare[1] if spare else (dy0, 'L', 0, x1 - 600, x2 + 600)
+                dy, side, room, lft, rgt = best
+
+                # 어느 쪽으로 나갈지는 넓이만으로 못 고른다. 넓어도 그 통로가 이미
+                # 꽉 찼으면 slot() 이 남의 선 위에 얹는다(그쪽이 테이블을 뚫는 것보다
+                # 낫다는 판단이라 그렇게 만들어져 있다). 테이블 하나에 통로가 둘
+                # 있는데 한쪽만 보고 포기할 이유가 없으므로, **비어 있는 차선이
+                # 있는 쪽**을 먼저 고른다.
+                def clean_lane(base, lo, hi):
+                    """slot() 이 깨끗이 잡을 자리가 있는가 — 등록하지 않고 본다."""
+                    if hi <= lo:
+                        return None
+                    for step in range(1, 130):
+                        off = (step // 2) * 14 * (1 if step % 2 else -1)
+                        v = base + off
+                        if lo <= v <= hi and all(
+                                abs(v - u) >= 13 or ub <= cy - dy or ua >= cy + dy
+                                for u, ua, ub in used_vx):
+                            return v
+                    return None
+
+                lo_l, hi_l = min(max(lft, x1 - 600), x1 - 13), x1 - 12
+                lo_r, hi_r = x2 + 12, max(min(rgt, x2 + 600), x2 + 13)
+                free_l = clean_lane(x1 - max(min(want, x1 - 12 - lo_l), 12), lo_l, hi_l)
+                free_r = clean_lane(x2 + max(min(want, hi_r - lo_r), 12), lo_r, hi_r)
+                if side == 'L' and free_l is None and free_r is not None:
+                    side, room = 'R', hi_r - lo_r
+                elif side == 'R' and free_r is None and free_l is not None:
+                    side, room = 'L', hi_l - lo_l
+                arm = max(min(want, room), 12)
                 # 세로 팔도 자리를 **잡아서** 쓴다. 예전엔 x1-dx 를 그냥 등록만 해
                 # 뒤에 오는 통로만 피하게 했는데, 그러면 이미 그 자리를 쓰고 있는
                 # 선과는 겹친다 — 팔이 길어질수록 더 그렇다.
-                dx = x1 - slot(x1 - dx, used_vx, 14, lo=x1 - 600, hi=x1 - 12)
-                used_hy.extend((cy - dy, cy + dy))   # 팔도 가로선이다 — 통로가 피하게
-                self_loops.append(([(x1, cy - dy), (x1 - dx, cy - dy),
-                                    (x1 - dx, cy + dy), (x1, cy + dy)],
+                # lo < hi 를 반드시 지킨다. 같거나 뒤집히면 slot() 이 경계를 버리고
+                # 아무 데나 자리를 잡는다 — 그 '아무 데나' 가 테이블 속이다.
+                if side == 'L':
+                    hi = x1 - 12
+                    lo = min(max(lft, x1 - 600), hi - 1)
+                    ax, near = slot(x1 - arm, used_vx, 14, lo=lo, hi=hi,
+                                    span=(cy - dy, cy + dy)), x1
+                else:
+                    lo = x2 + 12
+                    hi = max(min(rgt, x2 + 600), lo + 1)
+                    ax, near = slot(x2 + arm, used_vx, 14, lo=lo, hi=hi,
+                                    span=(cy - dy, cy + dy)), x2
+                # 팔도 가로선이다 — 통로가 피하게. x 범위는 팔이 실제로 덮는 만큼만.
+                _ax0, _ax1 = min(ax, near), max(ax, near)
+                used_hy.extend(((cy - dy, _ax0, _ax1), (cy + dy, _ax0, _ax1)))
+                self_loops.append(([(near, cy - dy), (ax, cy - dy),
+                                    (ax, cy + dy), (near, cy + dy)],
                                    EDGE, fk['column'], tname))
 
         # 진출입 y 가 다 모인 뒤에야 통로 lane 을 고른다 — 위 entry_ys() 참고.
@@ -1126,19 +1304,15 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             one_bar(pts, color)
         for pts, color, label, _owner in self_loops:
             if edge_labels:
-                # 다른 라벨과 같은 대우 — 글자 둘레를 배경색으로 둘러 통로의 선이
-                # 글자를 관통해 보이지 않게 하고, 겹침 판정 대상에도 넣는다.
-                # 루프마다 높이가 다르므로 위쪽 가로선에 얹으면 서로 겹치지 않는다.
-                # 세로 구간 한가운데에 두면 자기참조가 둘일 때 라벨이 포개졌다.
-                # 오른쪽 끝을 노드 앞에서 끊는다. 가운데 정렬로 두면 라벨이 길 때
-                # 오른쪽 절반이 테이블을 파고든다 (새 검증 항목이 바로 잡아냈다).
-                # y 는 루프마다 다른 가로선에 맞춰 서로 겹치지 않는다.
-                lx, ly = pts[1][0] - 6, pts[1][1] - 9
-                bw = tw(label, f['edge']) / S
-                placed.append((lx - bw - LABEL_PAD_X, ly - 8,
-                               lx + LABEL_PAD_X, ly + 8))
-                d.text((lx * S, ly * S), label, font=f['edge'], fill=color, anchor='rm',
-                       stroke_width=max(2, 2 * S), stroke_fill=BG)
+                # **다른 라벨과 정말로 같은 대우.** 예전엔 여기서 바로 그렸다 —
+                # 노드보다 먼저 그리는 자리라, 라벨이 테이블에 걸치면 그대로 지워졌다
+                # (겹친 자리의 글자 픽셀이 한 점도 안 남는 것을 재서 확인했다).
+                # 자리도 pts[1][0]-6 에 못박혀 있어 후보 탐색이 아예 없었다. 그래서
+                # 문서가 말하는 '라벨은 노드 다음에' 도, SKILL.md 가 말하는
+                # flush_labels() 의 후보 넓히기도 이 라벨에는 해당이 없었다.
+                # 이제 다른 라벨과 같은 큐에 넣는다 — 노드를 피하는 것이 강제 조건이고,
+                # 그리는 것은 노드 다음이다.
+                path_label(pts, label, color)
 
         # ── 노드 ──
         for n in tnames:
@@ -1232,8 +1406,12 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
     node_rects = [(pos[n][0] + off_x, pos[n][1] + off_y,
                    pos[n][0] + off_x + boxes[n]['w'], pos[n][1] + off_y + boxes[n]['h'])
                   for n in tnames]
-    lab_hit = sum(1 for b in placed for o in node_rects
-                  if not (b[2] < o[0] or b[0] > o[2] or b[3] < o[1] or b[1] > o[3]))
+    # 라벨 상자는 **한 벌만** 만든다. 예전엔 라벨↔라벨만 잉크(label_ink_box)로 재고
+    # 라벨↔테이블은 자리 잡기용 여백 상자를 그대로 썼다. 게다가 맞닿음 규칙이 서로
+    # 반대였다 — 이쪽은 `<` 라 스치기만 해도 겹쳤다고 세고, 저쪽은 `<=` 라 안 셌다.
+    # 같은 버그를 반만 고친 자리라, 자를 하나로 합친다.
+    lab_boxes = [label_ink_box(b, f['edge'], S) for b in placed]
+    lab_hit = sum(1 for b in lab_boxes for o in node_rects if boxes_touch(b, o))
     # 세그먼트마다 그 선의 양 끝(출발·도착 지점)을 달아 둔다 — 같은 지점으로 모여드는
     # 합류와, 아무 상관 없이 같은 자리에 겹쳐 그려진 것을 구분하기 위해서다.
     # 그리고 그 구간의 y 를 라우터가 골랐는지(pin=False) 컬럼 행에 못박혀 있는지
@@ -1327,10 +1505,9 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
         맞닿은 것은 겹친 것으로 세지 않는다.
         """
         n = 0
-        boxes_ = [label_ink_box(b, f['edge'], S) for b in placed]
-        for i, a in enumerate(boxes_):
-            for b in boxes_[i + 1:]:
-                if not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3]):
+        for i, a in enumerate(lab_boxes):        # 라벨↔테이블과 **같은 상자·같은 규칙**
+            for b in lab_boxes[i + 1:]:
+                if boxes_touch(a, b):
                     n += 1
         return n
 
