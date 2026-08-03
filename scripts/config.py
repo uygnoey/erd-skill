@@ -96,17 +96,70 @@ SEP = '\x1f'          # 구분자. | 는 기본값·코멘트에 섞여 나와 �
 RS = '\x1e'           # 레코드 구분자. 개행으로 행을 가르면 값 속 개행이 가짜 행이 된다
 
 
+class QueryFailed(RuntimeError):
+    """조회를 끝까지 읽지 못했다.
+
+    부분 결과를 참으로 받아들이면 반쯤 읽은 DB 가 완성된 문서로 나온다. 부르는 쪽이
+    '못 읽었다' 와 '읽었더니 0 건이다' 를 구분할 수 있게 예외로 알린다.
+    """
+
+
+def _run(query, rs='\n'):
+    """psql 을 한 번 돌린다. 실패는 **부분 출력이 있어도** 반드시 알린다.
+
+    예전엔 `returncode != 0 and not r.stdout` 일 때만 경고했다. 그래서 몇 행 흘리고
+    죽은 조회(문 타임아웃·서버 재기동)는 경고 한 줄 없이 지나갔다 — 21개 테이블이
+    조용히 4개가 됐다.
+    """
+    r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-R', rs, '-c', query],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print(T('log.query_fail', err=_why(r)))
+    return r
+
+
+def _why(r):
+    """psql 이 남긴 실패 사유 한 줄."""
+    return r.stderr.strip()[:200] or f'exit {r.returncode}'
+
+
 def psql(query, rs='\n'):
-    """DB 조회 — 결과를 SEP 구분 문자열로 돌려준다. 실패하면 빈 문자열.
+    """DB 조회 — 결과를 SEP 구분 문자열로 돌려준다.
 
     행 구분은 rs 로 한다. 기본값에 개행이 든 컬럼(DEFAULT E'a\\nb')이 행 하나를
     둘로 쪼개 유령 테이블을 만들었다 — 개행이 들어올 수 있는 조회는 rs=RS 로 부른다.
     """
-    r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-R', rs, '-c', query],
-                       capture_output=True, text=True)
-    if r.returncode != 0 and not r.stdout:
-        print(T('log.query_fail', err=r.stderr.strip()[:200]))
-    return r.stdout
+    return _run(query, rs).stdout
+
+
+def psql_rows(query, n):
+    """조회 결과를 필드 n개짜리 행 목록으로 돌려준다. 못 읽으면 QueryFailed.
+
+    값을 구분자로 이어 붙여 받지 않고 **행마다 JSON 한 줄**로 받는다. 구분자를 무엇으로
+    고르든 값이 그 바이트를 품을 수 있기 때문이다 — `|` 다음엔 개행이, 개행 다음엔
+    \\x1e 가 똑같은 유령 행을 만들었다(값 하나에 \\x1e 가 들어 있으면 테이블 하나짜리
+    DB 가 테이블 4개로 읽혔다). JSON 은 제어문자를 \\uXXXX 로 적으므로 한 행이 결코
+    한 줄을 넘지 않고, 값이 담을 수 있는 어떤 바이트도 구분자로 오해되지 않는다.
+
+    ORDER BY 는 서브쿼리 안으로 들어가지만 바깥은 행을 재배열하지 않는 단순 투영이라
+    컬럼 순서(ordinal_position)는 그대로 지켜진다.
+    """
+    cols = ', '.join(f'c{i}' for i in range(n))
+    r = _run(f'select row_to_json(_r) from ({query}\n) _r({cols})')
+    out = []
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            # 흘리다 끊기면 마지막 줄이 잘린 JSON 으로 남는다 — 지어내지 않고 실패로 센다
+            raise QueryFailed(T('err.query_truncated')) from None
+        out.append(['' if row.get(f'c{i}') is None else str(row[f'c{i}'])
+                    for i in range(n)])
+    if r.returncode != 0:
+        raise QueryFailed(_why(r))
+    return out
 
 
 def excluded(table):

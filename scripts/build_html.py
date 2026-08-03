@@ -21,6 +21,7 @@ import re
 from html import escape
 from pathlib import Path
 
+from build_erd import require_fresh
 from config import DOCNAME, OUT, PROJ
 from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, SCHEMA, SPEC, layer
 from i18n import LANG, t as T
@@ -325,6 +326,11 @@ def build():
 
 
 def main():
+    # 박을 그림이 지금 스키마의 것인지 먼저 본다 — 쓰고 나서 알려 줘 봐야 이미
+    # 어긋난 문서가 나간 뒤다. SVG 를 쓰더라도 없으면 PNG 로 떨어지므로 둘 다 본다.
+    require_fresh(['erd_overview'] + [f'erd_area_{a[0]}' for a in AREAS]
+                  + (['erd_full'] if WANT_FULL else []),
+                  ('.svg', '.png') if USE_SVG else ('.png',))
     out = Path(os.environ.get('ERD_HTML_OUT', PROJ / f'{DOCNAME}.html')).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     html = build()

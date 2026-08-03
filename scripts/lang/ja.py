@@ -92,6 +92,7 @@ M = {
     'verify.v_overlap': '縦線の重なり',
     'verify.h_overlap': '横線の重なり',
     'verify.tolerated': '{n}(許容)',
+    'verify.na': '該当なし',
     'verify.warn': '  [警告] 0 でなければならない: {list}',
 
     # ── docx 文書 ─────────────────────────────────────────────────────────
@@ -190,9 +191,21 @@ M = {
     'err.spec_layer': 'レイヤー {key} の形式が不正だ: {value}\n'
                       '  [塗り, ヘッダ, 枠, ラベル] で、色は #rrggbb でなければならない',
     'err.spec_json': '{path} が正しい JSON ではない: {err}',
+    'err.stale_figs': '図 {n}枚が {path} より古い: {list}\n'
+                      '  以前のスキーマを描いた図である — 表と図が別のスキーマを語る'
+                      '文書になる。\n'
+                      '  build_erd.py を実行し直すか、そのまま入れるなら ERD_STALE=warn。',
+    'err.pg_too_old': 'PostgreSQL {found} は古すぎる — {need} 以上が必要である。\n'
+                      '  それ以前のサーバはサブクエリの別名を row_to_json のキーにしない'
+                      'ため全ての値が空になり、外部キーのクエリに要る WITH ORDINALITY も無い。',
+    'err.query_failed': 'DB から {what} を読めなかった: {err}\n'
+                        '  何も書いていない。スキーマを半分しか読めなかった実行は、'
+                        '完成して見えるだけの文書を作る。',
+    'err.query_truncated': '結果が行の途中で切れた',
 
     # ── 進行状況の出力 ────────────────────────────────────────────────────
     'log.query_fail': '  [警告] DB クエリ失敗: {err}',
+    'log.query_incomplete': '  [警告] 読めなかったもの: {list} — 文書からちょうどその分が欠ける',
     'log.spec_empty': '  [警告] 使えるテーブルがない領域を飛ばす: {list}',
     'log.spec_dup': '  [警告] テーブル {n}件が複数の領域に重複 — 最初の領域だけに置く: {list}',
     'log.spec_missing': '  [警告] spec が指すテーブル {n}件がスキーマにない: {list}',
@@ -207,6 +220,8 @@ M = {
     'log.doc_inherited': '  以前の文書からカラム説明 {n}件を引き継ぎ: {name}',
     'log.by_source': '説明の出典別カラム数:',
     'log.no_desc': 'まだ説明のないカラム:',
+    'log.desc_ambiguous': '  [警告] 同名のテーブルが複数あるため無視したキー {n}件 — '
+                          '前置きを付けたキーを使うこと: {list}',
     'log.merge_part': '  {label} テーブル {tables} · カラム {columns}',
     'log.merge_total': '合計 テーブル {tables} · カラム {columns} · FK {fks} → {path}',
     'log.ddl_parsed': 'テーブル {n}件 → {path}',
@@ -224,5 +239,7 @@ M = {
                      '{mb}MB → {name}',
     'log.html_missing': '  [警告] 図のない領域 {n}件: {list}  '
                         '→ 先に build_erd.py を実行すること',
+    'log.stale_figs': '  [警告] スキーマより古い図 {n}枚をそのまま埋め込む '
+                      '(ERD_STALE): {list}',
     'log.docx_saved': '保存: {name} ({kb} KB)',
 }

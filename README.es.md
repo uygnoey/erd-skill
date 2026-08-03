@@ -61,13 +61,15 @@ verificación.
 
 ```
 verificación erd_area_A.png: etiqueta↔tabla 0 · etiqueta↔etiqueta 0 · línea↔tabla 0 · solape vertical 0 · solape horizontal 0
+verificación erd_overview.png: etiqueta↔tabla n/d · etiqueta↔etiqueta n/d · línea↔tabla 0 · solape vertical 0 · solape horizontal 0
 ```
 
 Una etiqueta que cubre una tabla, o líneas montadas una sobre otra, se manifiestan como un
-número. Los diagramas de detalle por área deben dar 0 en todo. El diagrama general y el
-completo pueden conservar unos pocos solapes horizontales — se imprimen como
-`3(tolerado)`; cualquier valor que deba ser 0 y no lo sea añade una cola `[aviso]` en la
-misma línea.
+número. Todos los contadores deben dar 0; cualquier valor que deba ser 0 y no lo sea añade
+una cola `[aviso]` en la misma línea. `n/d` significa que esa comprobación no se aplica a
+ese diagrama — el diagrama general no dibuja etiquetas de relación, así que los contadores
+de etiquetas no tienen nada que medir, e imprimir 0 afirmaría un resultado limpio de una
+comprobación que nunca se ejecutó.
 
 ## Instalación
 
@@ -92,6 +94,9 @@ Los detalles están en [INSTALL.es.md](INSTALL.es.md).
 
 - Python 3.9+ / `python-docx` / `pillow`
 - `psql` o `docker`
+- PostgreSQL **9.4 o posterior** en el servidor (verificado en 9.4, 9.6, 10, 11, 12, 16
+  y 17). Cualquier versión anterior se rechaza con un mensaje en lugar de producir un
+  esquema leído a medias
 - Una fuente con la cobertura que el esquema necesite — el cuerpo del texto usa Pretendard
   (se instala automáticamente); si falta, entra la fuente por defecto del sistema
 

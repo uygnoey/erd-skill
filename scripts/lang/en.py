@@ -92,6 +92,7 @@ M = {
     'verify.v_overlap': 'vertical overlap',
     'verify.h_overlap': 'horizontal overlap',
     'verify.tolerated': '{n}(tolerated)',
+    'verify.na': 'n/a',
     'verify.warn': '  [warn] must be 0: {list}',
 
     # ── docx document ─────────────────────────────────────────────────────
@@ -199,9 +200,23 @@ M = {
     'err.spec_layer': 'layer {key} is malformed: {value}\n'
                       '  expected [fill, header, border, label] with #rrggbb colors',
     'err.spec_json': '{path} is not valid JSON: {err}',
+    'err.stale_figs': '{n} diagrams are older than {path}: {list}\n'
+                      '  They depict an earlier schema — the document would show one thing '
+                      'in the tables and another in the figures.\n'
+                      '  Run build_erd.py again, or set ERD_STALE=warn to embed them as they are.',
+    'err.pg_too_old': 'PostgreSQL {found} is too old — {need} or later is required.\n'
+                      '  Older servers do not carry a subquery alias into row_to_json, so '
+                      'every value would come back empty, and the foreign-key query needs '
+                      'WITH ORDINALITY.',
+    'err.query_failed': 'could not read {what} from the database: {err}\n'
+                        '  Nothing was written. A run that read only part of the schema '
+                        'produces a document that looks complete and is not.',
+    'err.query_truncated': 'the result stopped in the middle of a row',
 
     # ── progress output ───────────────────────────────────────────────────
     'log.query_fail': '  [warn] database query failed: {err}',
+    'log.query_incomplete': '  [warn] could not be read: {list} — the document is missing '
+                            'exactly those parts',
     'log.spec_empty': '  [warn] areas with no usable table, skipped: {list}',
     'log.spec_dup': '  [warn] {n} tables appear in more than one area — kept in the first: {list}',
     'log.spec_missing': '  [warn] spec names {n} tables that are not in the schema: {list}',
@@ -216,6 +231,8 @@ M = {
     'log.doc_inherited': '  column descriptions carried over from {name}: {n}',
     'log.by_source': 'columns by description source:',
     'log.no_desc': 'columns still without a description:',
+    'log.desc_ambiguous': '  [warn] {n} keys name a table that exists more than once and '
+                          'were ignored — use the qualified key: {list}',
     'log.merge_part': '  {label}  tables {tables} · columns {columns}',
     'log.merge_total': 'total  tables {tables} · columns {columns} · FKs {fks} → {path}',
     'log.ddl_parsed': 'tables {n} → {path}',
@@ -233,5 +250,7 @@ M = {
                      '{mb}MB → {name}',
     'log.html_missing': '  [warn] areas with no diagram: {n} ({list})  '
                         '→ run build_erd.py first',
+    'log.stale_figs': '  [warn] embedding {n} diagrams older than the schema '
+                      '(ERD_STALE): {list}',
     'log.docx_saved': 'saved: {name} ({kb} KB)',
 }

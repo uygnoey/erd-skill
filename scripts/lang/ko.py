@@ -92,6 +92,7 @@ M = {
     'verify.v_overlap': '세로선 중첩',
     'verify.h_overlap': '가로선 중첩',
     'verify.tolerated': '{n}(허용)',
+    'verify.na': '해당 없음',
     'verify.warn': '  [경고] 0 이어야 한다: {list}',
 
     # ── docx 문서 ─────────────────────────────────────────────────────────
@@ -189,9 +190,21 @@ M = {
     'err.spec_layer': '레이어 {key} 의 형식이 잘못됐다: {value}\n'
                       '  [채움, 헤더, 테두리, 라벨] 이어야 하고 색은 #rrggbb 다',
     'err.spec_json': '{path} 가 올바른 JSON 이 아니다: {err}',
+    'err.stale_figs': '그림 {n}장이 {path} 보다 오래됐다: {list}\n'
+                      '  옛 스키마를 그린 그림이다 — 표와 그림이 서로 다른 스키마를 '
+                      '말하는 문서가 된다.\n'
+                      '  build_erd.py 를 다시 돌리거나, 그대로 넣으려면 ERD_STALE=warn.',
+    'err.pg_too_old': 'PostgreSQL {found} 은 너무 낮다 — {need} 이상이 필요하다.\n'
+                      '  그 아래 서버는 서브쿼리 별칭을 row_to_json 의 키로 쓰지 않아 '
+                      '모든 값이 빈 문자열로 오고, FK 조회의 WITH ORDINALITY 도 없다.',
+    'err.query_failed': 'DB 에서 {what} 을(를) 읽지 못했다: {err}\n'
+                        '  아무것도 쓰지 않았다. 스키마를 반만 읽은 실행은 완성된 것처럼 '
+                        '보이는 문서를 만든다.',
+    'err.query_truncated': '결과가 행 도중에 끊겼다',
 
     # ── 진행 출력 ─────────────────────────────────────────────────────────
     'log.query_fail': '  [경고] DB 조회 실패: {err}',
+    'log.query_incomplete': '  [경고] 읽지 못한 것: {list} — 문서에서 딱 그만큼이 빠진다',
     'log.spec_empty': '  [경고] 쓸 테이블이 없는 영역을 건너뛴다: {list}',
     'log.spec_dup': '  [경고] 테이블 {n}개가 여러 영역에 겹친다 — 처음 영역에만 둔다: {list}',
     'log.spec_missing': '  [경고] spec 이 가리키는 테이블 {n}개가 스키마에 없다: {list}',
@@ -206,6 +219,8 @@ M = {
     'log.doc_inherited': '  이전 문서에서 컬럼 설명 {n}건 인계: {name}',
     'log.by_source': '설명 출처별 컬럼 수:',
     'log.no_desc': '아직 설명 없는 컬럼:',
+    'log.desc_ambiguous': '  [경고] 이름이 겹치는 테이블을 가리켜 무시한 키 {n}개 — '
+                          '앞을 붙인 키를 쓸 것: {list}',
     'log.merge_part': '  {label} 테이블 {tables} · 컬럼 {columns}',
     'log.merge_total': '합계 테이블 {tables} · 컬럼 {columns} · FK {fks} → {path}',
     'log.ddl_parsed': '테이블 {n}개 → {path}',
@@ -223,5 +238,7 @@ M = {
                      '{mb}MB → {name}',
     'log.html_missing': '  [경고] 그림이 없는 영역 {n}개: {list}  '
                         '→ build_erd.py 를 먼저 돌릴 것',
+    'log.stale_figs': '  [경고] 스키마보다 오래된 그림 {n}장을 그대로 넣는다 '
+                      '(ERD_STALE): {list}',
     'log.docx_saved': '저장: {name} ({kb} KB)',
 }

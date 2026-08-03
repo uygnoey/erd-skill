@@ -23,6 +23,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 import erd
+from build_erd import require_fresh
 from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, ROLE, SCHEMA, layer
 
 from config import DOCNAME, OUT, PROJ
@@ -189,6 +190,10 @@ OPEN_ITEMS = [list(r) for r in DOC.get('open_items', [])]
 
 
 def build():
+    # 문서에 박히는 그림은 PNG 뿐이다. 스키마보다 오래된 것이 하나라도 있으면
+    # 4장 컬럼표와 2~3장 그림이 서로 다른 스키마를 말하게 된다 — 만들기 전에 멈춘다.
+    require_fresh(['erd_overview', 'erd_full'] + [f'erd_area_{a[0]}' for a in AREAS],
+                  ('.png',))
     doc = Document()
     s = doc.sections[0]
     s.page_width, s.page_height = Cm(21.0), Cm(29.7)

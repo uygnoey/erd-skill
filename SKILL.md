@@ -134,6 +134,12 @@ ERD_DOC_HTML=previous.html python3 merge_desc.py
 
 Either `ERD_PSQL` or `ERD_DB` is enough. If both are set, `ERD_PSQL` wins.
 
+The server must be **PostgreSQL 9.4 or later** — `introspect.py` reads the version first
+and stops with a message on anything older, rather than handing back a schema it could
+only half read. Verified on 9.4, 9.6, 10, 11, 12, 16 and 17; the foreign-key query drops
+its partition-copy filter on servers below 11, where `pg_constraint.conparentid` does not
+exist yet (and neither do per-partition copies).
+
 ## Column descriptions (the important part)
 
 An ERD is worth something because of its descriptions. They are filled in this order:
@@ -227,23 +233,41 @@ run off the page. On landscape A4 the usable area is 26.7 × 18.0 cm.
 Printed on every render. Do not judge it by eye.
 
 ```
+verify erd_overview.png: label↔table n/a · label↔label n/a · line↔table 0 · vertical overlap 0 · horizontal overlap 0
+verify erd_full.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
 verify erd_area_A.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
-verify erd_full.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 3(tolerated)
 ```
 
-A non-zero that is acceptable prints as `(tolerated)`. A counter that must be 0 but is not
-gets a `[warn] must be 0: …` tail on the same line — **a `[warn]` means a regression.**
+A counter that must be 0 but is not gets a `[warn] must be 0: …` tail on the same line —
+**a `[warn]` means a regression.** A non-zero the caller has declared acceptable for that
+diagram prints as `3(tolerated)` instead of warning.
+
+`n/a` means the check **did not run on that diagram**, and is never a substitute for 0. The
+overview draws no relationship labels, so the two label counters have nothing to measure
+there; printing 0 would claim a clean result from a check that never happened.
 
 - **label↔table** — must be 0. Otherwise widen the candidate range in `flush_labels()`.
 - **line↔table** — must be 0. A line running through a table is invisible (nodes are
   drawn over the edges), so this counter is the only way to see it. Non-zero means a
   corridor overflowed; widen `hgap` in the layout call, or split the area.
-- **vertical overlap** — must be 0. Happens when `slot()` gives up finding a lane.
-- **horizontal overlap** — merges into the same column are not counted. Per-area detail
-  diagrams should come out 0; the full and overview diagrams may keep a few, since the exit
-  y of a node is fixed there — only on those two it prints as `(tolerated)`. A stubborn non-zero on one area usually means too many edges
-  arrive at one column row — widen `hgap`, or split that area in the spec.
+- **vertical overlap** — must be 0. Happens when `slot()` gives up finding a lane. Very
+  dense areas can still hit this; it is a real defect, not noise.
+- **horizontal overlap** — must be 0 on every diagram. Two things are deliberately not
+  counted, because the router does not choose them: merges into the same column row, and
+  two entry/exit tails grazing each other. A tail's y is the **actual column row** the line
+  leaves from — a hard invariant of this layout — so when two unrelated tables happen to
+  have a row at the same height, their short tails must overlap. Everything the router does
+  choose (corridor lanes, self-loop arms) is counted, and drawing the same line twice is
+  counted. A non-zero means a lane landed on a row it should have avoided — widen `hgap`,
+  or split that area in the spec.
 - **label↔label** — must be 0. Two labels sitting on top of each other.
+
+The counters are also written as JSONL to `$ERD_VERIFY_LOG` when that variable is set, one
+record per diagram (`{"file": …, "counts": {…}, "tolerated": […], "warn": […]}`, with `null`
+for a check that did not run). `selftest.py` reads that, not the printed line: the line is
+formatted for people and changes shape, and when `(tolerated)` and `[warn]` tails were added
+the suite's number-scraping regex silently stopped seeing the last counter — precisely when
+it was non-zero. Nothing else should parse the printed line.
 
 ## Regression test
 

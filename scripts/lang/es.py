@@ -92,6 +92,7 @@ M = {
     'verify.v_overlap': 'solape vertical',
     'verify.h_overlap': 'solape horizontal',
     'verify.tolerated': '{n}(tolerado)',
+    'verify.na': 'n/d',
     'verify.warn': '  [aviso] debe ser 0: {list}',
 
     # ── documento docx ────────────────────────────────────────────────────
@@ -201,9 +202,25 @@ M = {
     'err.spec_layer': 'la capa {key} está mal formada: {value}\n'
                       '  se espera [relleno, cabecera, borde, etiqueta] con colores #rrggbb',
     'err.spec_json': '{path} no es JSON válido: {err}',
+    'err.stale_figs': '{n} diagramas son más antiguos que {path}: {list}\n'
+                      '  Representan un esquema anterior — el documento diría una cosa '
+                      'en las tablas y otra en las figuras.\n'
+                      '  Ejecute build_erd.py de nuevo, o ponga ERD_STALE=warn para '
+                      'incrustarlos tal cual.',
+    'err.pg_too_old': 'PostgreSQL {found} es demasiado antiguo — se requiere {need} o '
+                      'posterior.\n'
+                      '  Los servidores anteriores no pasan el alias de una subconsulta a '
+                      'row_to_json, así que todos los valores llegarían vacíos, y la '
+                      'consulta de claves foráneas necesita WITH ORDINALITY.',
+    'err.query_failed': 'no se pudo leer {what} de la base de datos: {err}\n'
+                        '  No se escribió nada. Una ejecución que solo leyó parte del '
+                        'esquema produce un documento que parece completo y no lo está.',
+    'err.query_truncated': 'el resultado se cortó en medio de una fila',
 
     # ── salida de progreso ────────────────────────────────────────────────
     'log.query_fail': '  [aviso] falló la consulta a la base de datos: {err}',
+    'log.query_incomplete': '  [aviso] no se pudo leer: {list} — al documento le faltan '
+                            'exactamente esas partes',
     'log.spec_empty': '  [aviso] áreas sin ninguna tabla utilizable, omitidas: {list}',
     'log.spec_dup': '  [aviso] {n} tablas aparecen en más de un área — se quedan en la primera: {list}',
     'log.spec_missing': '  [aviso] el spec nombra {n} tablas que no están en el esquema: {list}',
@@ -218,6 +235,8 @@ M = {
     'log.doc_inherited': '  descripciones de columna heredadas de {name}: {n}',
     'log.by_source': 'columnas por fuente de la descripción:',
     'log.no_desc': 'columnas aún sin descripción:',
+    'log.desc_ambiguous': '  [aviso] {n} claves nombran una tabla que existe más de una '
+                          'vez y se ignoraron — use la clave cualificada: {list}',
     'log.merge_part': '  {label} tablas: {tables} · columnas: {columns}',
     'log.merge_total': 'total — tablas: {tables} · columnas: {columns} · FK: {fks} → {path}',
     'log.ddl_parsed': 'tablas: {n} → {path}',
@@ -235,5 +254,7 @@ M = {
                      '{mb}MB → {name}',
     'log.html_missing': '  [aviso] áreas sin diagrama ({n}): {list}  '
                         '→ ejecute antes build_erd.py',
+    'log.stale_figs': '  [aviso] se incrustan {n} diagramas más antiguos que el esquema '
+                      '(ERD_STALE): {list}',
     'log.docx_saved': 'guardado: {name} ({kb} KB)',
 }

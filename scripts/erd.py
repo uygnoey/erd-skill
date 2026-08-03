@@ -590,6 +590,28 @@ def draw_legend(d, f, x, y, S, max_w=10 ** 6):
     return (cy - y) + LH
 
 
+VERIFY_LOG = os.environ.get('ERD_VERIFY_LOG', '')
+
+
+def verify_log(path, checks, tolerate):
+    """검증 결과를 기계가 읽을 자리에 한 벌 더 남긴다 (ERD_VERIFY_LOG=경로, JSONL).
+
+    사람이 읽는 줄은 사람 좋으라고 서식이 바뀐다 — 실제로 (허용)·[경고] 꼬리가
+    붙자, 그 줄에서 숫자를 긁던 회귀 시험이 **마지막 항목만** 놓쳤다. 하필 그
+    항목이 0 이 아닐 때만 놓치니 시험은 늘 통과했다. 서식이 아니라 값을 보게 한다.
+
+    기본값은 꺼짐이라 사용자 출력은 한 글자도 달라지지 않는다.
+    """
+    if not VERIFY_LOG:
+        return
+    rec = {'file': Path(path).name,
+           'counts': dict(checks),                    # 재지 않은 항목은 null
+           'tolerated': [k for k, v in checks if v and k in tolerate],
+           'warn': [k for k, v in checks if v and k not in tolerate]}
+    with open(VERIFY_LOG, 'a', encoding='utf-8') as fp:
+        fp.write(json.dumps(rec, ensure_ascii=False) + '\n')
+
+
 def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale=2,
              stubs=(), legend=False, edge_labels=True, groups=(), derives=False,
              tolerate=()):
@@ -735,15 +757,26 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             used.append(cy)
             return cy
 
-        def route(a, b, ca=None, cb=None):
+        def entry_ys(a, b, ca=None, cb=None):
+            """이 관계가 드나들 y(컬럼 행)를 미리 잡고 등록한다.
+
+            예전엔 route() 안에서 잡았다. 그러면 먼저 계산된 경로의 통로 lane 은
+            **아직 태어나지 않은** 진출입 y 를 피할 수 없다 — 나중 경로의 꼬리가
+            앞 경로의 통로선 위에 얹혔고, 그게 평범한 스키마에서 가로선 중첩 1~2 가
+            남던 이유다. 그래서 y 부터 전부 잡아 두고 경로는 그 다음에 만든다.
+            """
+            ya, yb = col_y(a, ca), col_y(b, cb)
+            used_hy.extend((ya, yb))     # 통과선이 진출입선의 y 를 피하도록 등록
+            return ya, yb
+
+        def route(a, b, ys):
             """노드를 관통하지 않는 직교 경로.
 
             세로 이동은 열 사이 통로에서만, 열을 건너뛸 때는 그 열의 노드 사이
-            빈 구간을 따라 수평으로 지난다.
+            빈 구간을 따라 수평으로 지난다. ys 는 entry_ys() 가 미리 잡아 둔 진출입 y.
             """
             ia, ib = col_of[a], col_of[b]
-            ya, yb = col_y(a, ca), col_y(b, cb)
-            used_hy.extend((ya, yb))     # 통과선이 진출입선의 y 를 피하도록 등록
+            ya, yb = ys
             ax1, _t1, ax2, _t2 = rect(a)
             bx1, _t3, bx2, _t4 = rect(b)
             if ia == ib:                                  # 같은 열 — 왼쪽 통로로 우회
@@ -893,14 +926,20 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                        stroke_width=max(2, 2 * S), stroke_fill=BG)
 
         # ── 경로를 먼저 모두 계산한다 (교차 hop 을 그리기 위해) ──
-        edges = []          # (pts, color, label, dashed)
+        # 마지막 칸(pinned)은 '이 경로의 첫·끝 가로 구간의 y 를 라우터가 고른 것이
+        # 아니다' 는 표시다. route() 의 양 끝은 col_y() 가 준 **컬럼 행**에 못박혀
+        # 있다 — 문서가 못박은 불변식이라 라우터가 옮길 수 없다. 검증에서 이 둘을
+        # 구분하지 않으면, 라우터가 어쩔 수 없는 겹침까지 회귀로 몰린다.
+        edges = []          # (pts, color, label, dashed, pinned)
         inside = set(tnames)
         self_loops = []
+        pending = []        # (a, b, color, label, dashed, 진출입 y) — 경로는 나중에
 
         if derives:
             for src, dst, label in DERIVES:
                 if src in inside and dst in inside:
-                    edges.append((route(src, dst), '#B0885A', label, True))
+                    pending.append((src, dst, '#B0885A', label, True,
+                                    entry_ys(src, dst)))
 
         # 자기참조를 먼저 자리잡는다. 루프의 세로선을 통로 예약에 넣어야 뒤이어
         # 계산되는 경로들이 그 자리를 피한다 — 안 그러면 겹쳐 그려진다.
@@ -930,8 +969,12 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     continue                              # 자기참조는 위에서 처리했다
                 if ref not in inside:
                     continue
-                edges.append((route(tname, ref, fk['column'], fk['ref_column']),
-                              color, lbl, False))
+                pending.append((tname, ref, color, lbl, False,
+                                entry_ys(tname, ref, fk['column'], fk['ref_column'])))
+
+        # 진출입 y 가 다 모인 뒤에야 통로 lane 을 고른다 — 위 entry_ys() 참고.
+        for a, b, color, lbl, dash, ys in pending:
+            edges.append((route(a, b, ys), color, lbl, dash, True))
 
         # ── 교차점 수집 : 수평선이 수직선을 넘을 때 반원으로 점프 ──
         v_segs = []
@@ -974,7 +1017,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     d.line([(p[0] * S, p[1] * S), (q[0] * S, q[1] * S)],
                            fill=color, width=max(1, S))
 
-        for ei, (pts, color, label, dash) in enumerate(edges):
+        for ei, (pts, color, label, dash, _pinned) in enumerate(edges):
             draw_edge(pts, color, ei, dash)
             if dash:
                 arrow_head(pts, color)
@@ -1042,7 +1085,9 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
 
         # 자기참조 루프도 검증 대상이다. 그리기만 하고 재지 않아서, 루프가 옆 테이블을
         # 지나가도 선↔테이블 0 이 찍혔다.
-        return edges + [(pts, color, label, False)
+        # 자기참조 루프의 팔 높이(cy±dy)는 라우터가 고른 값이라 pinned 가 아니다 —
+        # 루프끼리 포개지면 그건 진짜 회귀다.
+        return edges + [(pts, color, label, False, False)
                         for pts, color, label, _o in self_loops], placed
 
     # ① 측정 — 1×1 더미 캔버스에 그려 좌표만 수집한다 (캔버스 밖도 정확히 추적)
@@ -1094,18 +1139,24 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                   if not (b[2] < o[0] or b[0] > o[2] or b[3] < o[1] or b[1] > o[3]))
     # 세그먼트마다 그 선의 양 끝(출발·도착 지점)을 달아 둔다 — 같은 지점으로 모여드는
     # 합류와, 아무 상관 없이 같은 자리에 겹쳐 그려진 것을 구분하기 위해서다.
+    # 그리고 그 구간의 y 를 라우터가 골랐는지(pin=False) 컬럼 행에 못박혀 있는지
+    # (pin=True) 도 같이 달아 둔다 — 아래 overlaps() 가 쓴다.
     segs_v, segs_h = [], []
-    for pts, *_r in edges:
+    for pts, _color, _label, _dash, pinned in edges:
         ends = ((round(pts[0][0]), round(pts[0][1])),
                 (round(pts[-1][0]), round(pts[-1][1])))
-        for p, q in zip(pts, pts[1:]):
+        last = len(pts) - 2
+        for j, (p, q) in enumerate(zip(pts, pts[1:])):
+            # 경로의 첫·끝 구간은 노드에 붙는 진출입 꼬리다. route() 가 만든 경로에서
+            # 그 y 는 col_y() 가 준 컬럼 행이라 라우터의 선택이 아니다.
+            pin = pinned and (j == 0 or j == last)
             if abs(p[0] - q[0]) < 0.5:
-                segs_v.append((p[0], min(p[1], q[1]), max(p[1], q[1]), ends))
+                segs_v.append((p[0], min(p[1], q[1]), max(p[1], q[1]), ends, False))
             else:
-                segs_h.append((p[1], min(p[0], q[0]), max(p[0], q[0]), ends))
+                segs_h.append((p[1], min(p[0], q[0]), max(p[0], q[0]), ends, pin))
 
     def overlaps(segs):
-        """같은 자리에 겹쳐 그려진 구간을 센다.
+        """같은 자리에 겹쳐 그려진 구간을, **라우터가 고칠 수 있는 것만** 센다.
 
         같은 지점으로 모여드는 선(한 컬럼 행으로 들어가는 여러 FK)은 겹쳐 보이는 것이
         정상이라 세지 않는다. 판별은 세그먼트에 달아 둔 그 선의 양 끝으로 한다 —
@@ -1113,15 +1164,28 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
 
         다만 이 예외는 길이를 따지지 않는다. 같은 행으로 모여드는 두 선이 아주 길게
         나란히 달려도 '합류' 로 넘어간다. 다발로 보이는 것이 자연스러워서 그렇게 두었다.
+
+        진출입 꼬리끼리 스치는 것도 세지 않는다. 그 y 는 '선은 노드 가운데가 아니라
+        실제 컬럼 행에서 드나든다' 는 불변식이 정한 값이라 라우터에 선택권이 없다 —
+        서로 다른 두 테이블의 어떤 행 높이가 우연히 3px 안에 들면 그 짧은 꼬리는
+        반드시 겹친다. 예전엔 이것까지 세는 바람에 평범한 21테이블 스키마가 첫 판부터
+        [경고] 를 달고 나왔고, 그러면 [경고] 는 회귀 신호가 아니라 소음이 된다.
+        꼬리 하나와 통로를 달리는 긴 구간이 겹치는 것은 통로 배정(slot) 이 진 것이라
+        그대로 센다.
         """
         n = 0
-        for i, (a, s0, s1, ea) in enumerate(segs):
-            for (b, t0, t1, eb) in segs[i + 1:]:
+        for i, (a, s0, s1, ea, pa) in enumerate(segs):
+            for (b, t0, t1, eb, pb) in segs[i + 1:]:
                 lap = min(s1, t1) - max(s0, t0)
                 if abs(a - b) >= 3 or lap <= 6:
                     continue
-                if set(ea) & set(eb):
+                if set(ea) & set(eb) and ea != eb:
                     continue         # 같은 컬럼 행으로 모여드는 합류 — 겹쳐도 정상이다
+                # 양 끝이 **둘 다** 같으면 합류가 아니라 같은 선을 두 번 그린 것이다.
+                # 예전엔 이것까지 합류로 넘어갔다 — 모든 구간을 복제해 보면 원래 있던
+                # 겹침 수만 네 배가 될 뿐, 복제 자체는 한 건도 잡히지 않았다.
+                if pa and pb:
+                    continue         # 컬럼 행에 못박힌 진출입 꼬리끼리 — 옮길 수 없다
                 n += 1
                 if DEBUG_OVERLAP:
                     print(T('log.overlap_at', a=f'{a:.0f}', s0=f'{s0:.0f}',
@@ -1136,11 +1200,11 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
         테이블 뒤로 사라졌다 반대편에서 나온다. 눈으로는 못 잡는다.
         """
         n = 0
-        for x, y0, y1, _e in segs_v:
+        for x, y0, y1, _e, _p in segs_v:
             for (ox0, oy0, ox1, oy1) in node_rects:
                 if ox0 + 2 < x < ox1 - 2 and min(y1, oy1) - max(y0, oy0) > 4:
                     n += 1
-        for y, x0, x1, _e in segs_h:
+        for y, x0, x1, _e, _p in segs_h:
             for (ox0, oy0, ox1, oy1) in node_rects:
                 if oy0 + 2 < y < oy1 - 2 and min(x1, ox1) - max(x0, ox0) > 4:
                     n += 1
@@ -1165,14 +1229,22 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
     # 개요도·전체도는 노드 진출 y 가 고정이라 가로선 중첩이 소수 남는 것이 정상인데,
     # 숫자만 찍으면 그 '아는 겹침' 과 회귀를 구분할 수 없다. 그래서 허용된 항목은
     # 값에 (허용) 을 달고, 0 이어야 하는 항목이 0 이 아니면 같은 줄에 [경고] 를 단다.
-    checks = [('label_table', lab_hit), ('label_x', lab_hits()), ('thru', thru_nodes()),
+    #
+    # 라벨을 아예 그리지 않는 그림(개요도)에서는 라벨 항목이 잴 것이 없다. 그런데도
+    # 0 을 찍으면 '재 보니 깨끗하다' 로 읽힌다 — 안 한 검사를 했다고 말하는 짓이다.
+    # 그런 항목은 값 대신 '해당 없음' 을 찍고, 경고 판정에서도 뺀다.
+    checks = [('label_table', lab_hit if edge_labels else None),
+              ('label_x', lab_hits() if edge_labels else None),
+              ('thru', thru_nodes()),
               ('v_overlap', overlaps(segs_v)), ('h_overlap', overlaps(segs_h))]
     parts = [f"{T('verify.' + k)} "
-             + (T('verify.tolerated', n=v) if v and k in tolerate else str(v))
+             + (T('verify.na') if v is None
+                else T('verify.tolerated', n=v) if v and k in tolerate else str(v))
              for k, v in checks]
     bad = [T('verify.' + k) for k, v in checks if v and k not in tolerate]
     print(T('log.verify', name=Path(path).name, report=' · '.join(parts))
           + (T('verify.warn', list=', '.join(bad)) if bad else ''))
+    verify_log(path, checks, tolerate)
     img.save(path)
 
     # ── 같은 그림을 벡터로 한 벌 더 (문서 삽입용 — 확대해도 안 뭉갠다) ──

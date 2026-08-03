@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 
 from i18n import t as T
-from config import SCHEMA_JSON, SEP, SQL_DIR, psql
+from config import RS, SCHEMA_JSON, SEP, SQL_DIR, psql
 
 OUT = SCHEMA_JSON
 
@@ -127,21 +127,34 @@ def split_top_level(body_mc: str, body_ms: str, body_sc: str):
         # 찾고 내용을 mc(주석을 가린 사본)에서 떼어내던 탓에, 인라인 `-- 설명` 이
         # 전부 빈 문자열이 됐다 — DDL 경로의 간판 기능이 조용히 죽어 있었다.
         #
-        # 설명이 붙는 자리는 두 가지다. `id int,  -- 설명` 처럼 콤마 뒤에 오면 그것은
-        # **앞** 컬럼 것이고, `id int  -- 설명` 처럼 코드 뒤에 오면 제 것이다.
-        # 그래서 항목 안에서 코드가 시작되기 전에 나온 주석만 앞 항목으로 넘긴다.
-        # 경계를 줄 끝까지 늘리는 식으로 맞추려 들면 한 줄에 여러 컬럼을 적은 정의가
-        # 통째로 한 덩어리가 된다.
-        first = re.search(r'\S', code)
-        lead_end = first.start() if first else len(seg_ms)
-        lead, own = [], []
+        # ── 소유 규칙: **주석은 아래로 붙는다** ────────────────────────────────
+        #   · 같은 줄 앞에 코드가 있으면 그 코드 것이다 (`id bigint,  -- 행 식별자`
+        #     의 주석은 콤마 뒤에 있어도 id 것, `id bigint  -- 행 식별자` 도 id 것)
+        #   · 제 줄을 통째로 쓰는 주석은 **바로 아래** 코드 것이다 (컬럼 위에 적는 방식)
+        #   · 아래에 코드가 없으면(마지막 컬럼 뒤·닫는 괄호 앞) 임자가 없다 — 버린다
+        #   · 그래서 `-- 테넌트별 유일` 처럼 UNIQUE(...) 위에 적은 주석은 제약 것이 되고,
+        #     제약은 컬럼이 아니므로 어느 컬럼 설명도 되지 않는다 (예전엔 앞 컬럼에 붙었다)
+        #
+        # 기준은 항목(콤마)이 아니라 **줄** 이다. 콤마로만 재던 두 판은 둘 다 한쪽을
+        # 깨뜨렸다 — 콤마 뒤 주석을 무조건 앞 항목에 주면 컬럼 위 주석이 한 칸씩
+        # 밀려 첫 설명이 사라지고 마지막이 비고, 경계를 줄 끝까지 늘리면 한 줄에
+        # 여러 컬럼을 적은 정의가 통째로 한 덩어리가 된다. 줄로 재면 둘 다 산다.
+        prev, own = [], []
         for mm in re.finditer(r'--[^\n]*', seg_ms):
-            (lead if mm.start() < lead_end else own).append(
-                seg_ms[mm.start() + 2:mm.end()].strip())
-        lead = ' '.join(x for x in lead if x)
-        if lead and items:
+            text = seg_ms[mm.start() + 2:mm.end()].strip()
+            bol = code.rfind('\n', 0, mm.start()) + 1
+            if code[bol:mm.start()].strip():
+                own.append(text)                     # 같은 줄 앞의 코드 = 이 항목 것
+            elif '\n' not in code[:mm.start()] and body_sc[
+                    body_sc.rfind('\n', 0, a + mm.start()) + 1:a + mm.start()].strip():
+                # 항목의 첫 줄이다 — 그 줄 앞에 있는 것은 콤마와 앞 항목의 코드다
+                prev.append(text)
+            elif code[mm.end():].strip():
+                own.append(text)                     # 제 줄을 쓰는 주석 — 아래 코드 것
+        prev = ' '.join(x for x in prev if x)
+        if prev and items:
             items[-1] = (items[-1][0], items[-1][1],
-                         ' '.join(x for x in (items[-1][2], lead) if x))
+                         ' '.join(x for x in (items[-1][2], prev) if x))
         note = ' '.join(x for x in own if x)
         # 값(타입·기본값)은 주석만 가린 사본에서, 구조 판정은 둘 다 가린 사본에서.
         raw_code = ' '.join(raw.split()).rstrip(', ')
@@ -480,6 +493,19 @@ def parse_unique(sql: str, tables: dict):
             t['uniques'].append(cols)      # 함수 인덱스(lower(email))는 컬럼 목록이 아니다
 
 
+def _rows(query, n):
+    """조회 결과를 n개 필드로 맞춰 돌려준다 (introspect.rows() 와 같은 규칙).
+
+    행은 개행이 아니라 RS 로 가른다. 개행으로 가르면 개행이 든 값 하나가 — 컬럼
+    이름에도 들어갈 수 있다 — 행을 둘로 쪼개고, 4-튜플 풀기가 ValueError 로 죽었다.
+    필드도 모자라면 채운다. 파서가 DB 값 하나에 통째로 멈춰서는 안 된다.
+    """
+    for line in psql(query, rs=RS).removesuffix('\n').split(RS):
+        if not line.strip():
+            continue
+        yield (line.split(SEP) + [''] * n)[:n]
+
+
 REF_SCHEMA = os.environ.get('ERD_REF_SCHEMA', '')
 REF_SOURCES = [t.strip() for t in os.environ.get('ERD_REF_TABLES', '').split(',') if t.strip()]
 
@@ -502,10 +528,7 @@ def fetch_ref(tables):
     where c.table_schema='{REF_SCHEMA}' and c.table_name in ({','.join("'"+t+"'" for t in tables)})
     order by c.table_name, c.ordinal_position"""
     out = {}
-    for line in psql(q).strip().split('\n'):
-        if not line.strip():
-            continue
-        tn, cn, ty, nul = line.split(SEP)
+    for tn, cn, ty, nul in _rows(q, 4):
         out.setdefault(tn, {
             'name': tn, 'origin': 'ref', 'schema': REF_SCHEMA, 'src_file': T('erd.readonly_src', schema=REF_SCHEMA),
             'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
@@ -529,10 +552,7 @@ def fetch_existing(names):
     where c.table_schema='public' and c.table_name in ({','.join("'"+n+"'" for n in names)})
     order by c.table_name, c.ordinal_position"""
     out = {}
-    for line in psql(q).strip().split('\n'):
-        if not line.strip():
-            continue
-        tn, cn, ty, nul = line.split(SEP)
+    for tn, cn, ty, nul in _rows(q, 4):
         out.setdefault(tn, []).append(
             {'name': cn, 'type': ty, 'not_null': nul == 'NO', 'default': '',
              'identity': False, 'comment': '', 'added': False})

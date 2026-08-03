@@ -59,12 +59,14 @@ columns are not quietly waved through.**
 
 ```
 verify erd_area_A.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
+verify erd_overview.png: label↔table n/a · label↔label n/a · line↔table 0 · vertical overlap 0 · horizontal overlap 0
 ```
 
-A label covering a table, or lines lying on top of each other, shows up as a number.
-Per-area detail diagrams must be 0 across the board. The overview and full diagrams may
-keep a few horizontal overlaps — those print as `3(tolerated)`; anything that must be 0
-but is not gets a `[warn]` tail on the same line.
+A label covering a table, or lines lying on top of each other, shows up as a number. Every
+counter must be 0; anything that must be 0 but is not gets a `[warn]` tail on the same line.
+`n/a` means the check does not apply to that diagram — the overview draws no relationship
+labels, so the label counters have nothing to measure there, and printing 0 would claim a
+clean result from a check that never ran.
 
 ## Install
 
@@ -89,6 +91,8 @@ Details in [INSTALL.md](INSTALL.md).
 
 - Python 3.9+ / `python-docx` / `pillow`
 - Either `psql` or `docker`
+- PostgreSQL **9.4 or later** on the server side (verified on 9.4, 9.6, 10, 11, 12, 16,
+  17). Anything older is refused with a message instead of a half-read schema
 - A font covering the script you write in — body text uses Pretendard (installed
   automatically); with `ERD_LANG=ja` a Japanese-capable face (Hiragino Sans, Noto Sans JP,
   Yu Gothic) is preferred instead, since Pretendard carries no kanji. Failing both, the

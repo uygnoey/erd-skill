@@ -34,6 +34,14 @@ COMMON = {name: T(f'common.{name}') for name in (
 #       'orders.channel': '유입 경로 · 정산 기준이라 값이 바뀌면 안 된다',
 #   }
 #
+# 이름이 여러 스키마·DB 에 걸친 테이블은 앞을 붙여 정확히 하나를 가리킨다.
+# '아직 설명 없는 컬럼' 목록이 찍어 주는 키가 곧 여기 붙여 넣으면 되는 키다.
+#
+#   MANUAL = {
+#       'analytics.events.kind': '이벤트 종류',   # analytics.events 에만 붙는다
+#       'shop.users.id': '쇼핑몰 회원 번호',      # mart.users 에는 안 붙는다
+#   }
+#
 # 프로젝트마다 다른 내용이므로 스킬에는 비워 둔다.
 MANUAL = {
 }
@@ -107,23 +115,58 @@ def parse_doc_html():
     return out
 
 
+def ambiguous_names(schema):
+    """이름 하나가 두 테이블 이상을 가리키는 경우 {테이블명: [정식 키…]}.
+
+    shop.users 와 mart.users 처럼 이름이 겹치면 `users.id` 는 어느 쪽을 말하는지
+    알 수 없다. 그런 이름을 미리 모아 두고, 홑이름 키는 여기 없는 이름에만 쓴다.
+    """
+    by_name = {}
+    for tkey, t in schema.items():
+        by_name.setdefault(t.get('name', tkey), []).append(tkey)
+    return {n: ks for n, ks in by_name.items() if len(ks) > 1}
+
+
 def main():
     schema = json.loads(SCHEMA.read_text())
     orm = parse_orm()
     doc = parse_doc_html()
     filled = {'ddl': 0, 'doc': 0, 'orm': 0, 'manual': 0, 'common': 0, 'none': 0}
+    dup = ambiguous_names(schema)
+    has_col = {k: {c['name'] for c in t['columns']} for k, t in schema.items()}
+    vague = {}          # 이름이 겹쳐 못 쓴 홑이름 키 {키: [정식 키…]}
+
+    def find(src_dict, tkey, base, cname):
+        """설명 사전에서 이 컬럼의 값을 찾는다. 없으면 None.
+
+        정식 키(`analytics.events.kind`)를 먼저 본다 — '아직 설명 없는 컬럼' 목록이
+        찍는 것이 이 키이므로, 그대로 MANUAL 에 붙여 넣었을 때 들어야 한다.
+        예전에는 이전 판 문서에 그 키가 있는지로 키를 한 번 고르고 그 선택을 MANUAL·ORM
+        에까지 돌려썼다. 그래서 문서가 없으면 정식 키는 영영 안 걸렸다.
+
+        홑이름 키(`events.kind`)는 그 이름의 테이블이 하나뿐일 때만 쓴다. 겹치는데도
+        쓰면 shop.users 에 적은 설명이 mart.users 에도 붙는다 — 실제로 그랬다.
+        """
+        full = f'{tkey}.{cname}'
+        if full in src_dict:
+            return src_dict[full]
+        bare = f'{base}.{cname}'
+        if bare in src_dict:
+            if base not in dup:
+                return src_dict[bare]
+            # 대신 쓸 키를 일러 줄 때 그 컬럼이 실제로 있는 테이블만 든다 —
+            # 이름만 같고 컬럼은 없는 테이블까지 적으면 안 되는 키를 권하게 된다.
+            owners = [q for q in dup[base] if cname in has_col[q]]
+            vague.setdefault(bare, owners or dup[base])
+        return None
 
     for tname, t in schema.items():
         base = t.get('name', tname)          # 라벨 접두어를 뗀 실제 테이블명
         for c in t['columns']:
-            # 여러 DB 를 합치면 shop.orders 와 mart.orders 가 둘 다 <h4>orders</h4> 로
-            # 나온다. 이름만으로 찾으면 먼저 나온 쪽 설명이 양쪽에 덮어씌워진다 —
-            # 키가 붙은 쪽을 먼저 보고, 없을 때만 이름으로 떨어진다.
-            key = f"{tname}.{c['name']}" if f"{tname}.{c['name']}" in doc \
-                else f"{base}.{c['name']}"
             # 수기 사전이 최우선 — DDL 주석이 '필수' 처럼 너무 짧은 경우를 덮어쓴다
-            if key in MANUAL:
-                c['comment'], src = clean(MANUAL[key]), 'manual'
+            man = find(MANUAL, tname, base, c['name'])
+            if man is not None:
+                c['comment'], src = clean(man), 'manual'
                 filled['manual'] += 1
             elif c['comment']:
                 c['comment'] = clean(c['comment'])
@@ -132,11 +175,11 @@ def main():
                 # 출처가 있으면 그대로 물려받는다.
                 src = c.get('desc_src') or 'ddl'
                 filled[src if src in filled else 'ddl'] += 1
-            elif key in doc:                 # 이전 판 문서에서 물려받은 설명
-                c['comment'], src = clean(doc[key]), 'doc'
+            elif (prev := find(doc, tname, base, c['name'])) is not None:
+                c['comment'], src = clean(prev), 'doc'   # 이전 판 문서에서 물려받음
                 filled['doc'] += 1
-            elif key in orm:
-                c['comment'], src = clean(orm[key]), 'orm'
+            elif (mdl := find(orm, tname, base, c['name'])) is not None:
+                c['comment'], src = clean(mdl), 'orm'
                 filled['orm'] += 1
             elif c['name'] in COMMON:
                 c['comment'], src = clean(COMMON[c['name']]), 'common'
@@ -146,8 +189,18 @@ def main():
                 filled['none'] += 1
             c['desc_src'] = src
 
-    SCHEMA.write_text(json.dumps(schema, ensure_ascii=False, indent=2))
+    # 내용이 그대로면 파일을 다시 쓰지 않는다. 시각만 새로 찍히면 멀쩡한 ERD 가
+    # 낡은 것으로 보여(문서 빌더가 시각으로 판별한다) 헛되이 다시 그리게 된다.
+    text = json.dumps(schema, ensure_ascii=False, indent=2)
+    if not SCHEMA.exists() or SCHEMA.read_text() != text:
+        SCHEMA.write_text(text)
     print(T('log.by_source'), filled)
+    # 조용히 버리면 '왜 안 들어가지' 로 끝난다 — 대신 쓸 정식 키를 그대로 보여 준다.
+    if vague:
+        items = sorted(vague.items())
+        print(T('log.desc_ambiguous', n=len(items), list='; '.join(
+            '{} → {}'.format(k, ', '.join(f'{q}.{k.rsplit(".", 1)[1]}' for q in qs))
+            for k, qs in items[:4]) + (' …' if len(items) > 4 else '')))
     if filled['none']:
         print('\n' + T('log.no_desc'))
         for tname, t in schema.items():
