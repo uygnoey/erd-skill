@@ -23,6 +23,7 @@ from pathlib import Path
 
 from config import DOCNAME, OUT, PROJ
 from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, SCHEMA, SPEC, layer
+from i18n import LANG, t as T
 
 DOC = SPEC.get('doc', {})
 TITLE = DOC.get('title', DOCNAME)
@@ -32,9 +33,17 @@ USE_SVG = os.environ.get('ERD_HTML_SVG', '1') not in ('0', 'false', 'no')
 WANT_FULL = os.environ.get('ERD_HTML_FULL', '1') not in ('0', 'false', 'no')
 SHOW_STATS = os.environ.get('ERD_HTML_STATS', '0') not in ('0', 'false', 'no')
 
+# 한자를 쓰는 말이면 그 글리프를 가진 폰트를 앞에 세운다. 반대로 한국어 문서에서
+# 일본어 폰트가 앞서면 한자가 일본식 자형으로 나온다 — 언어에 따라 순서를 바꾼다.
+FONT_STACK = ("'Hiragino Sans','Yu Gothic','Noto Sans JP','Meiryo',"
+              "'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif"
+              if LANG == 'ja' else
+              "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',"
+              "'Helvetica Neue',sans-serif")
+
 CSS = """
 *{box-sizing:border-box}
-body{font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;margin:0;
+body{font-family:__FONTS__;margin:0;
      color:#1a2330;background:#fff;line-height:1.5}
 .wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
 h1{color:#1F4E78;font-size:24px;margin:0 0 4px}
@@ -87,6 +96,8 @@ details .body{padding:6px 10px;background:#fbfcfe;border:1px solid #e3e9f1;borde
 @media print{.fig{break-inside:avoid}h4{break-after:avoid}}
 """
 
+CSS = CSS.replace('__FONTS__', FONT_STACK)
+
 JS = """
 (function(){
  var z=document.getElementById('zoom'),i=z.querySelector('.inner');
@@ -128,8 +139,8 @@ def figure(stem, caption):
         return ''
     _FIG_N[0] += 1
     return (f'<div class="fig">{body}</div>'
-            f'<p class="figcap"><b>[그림 {_FIG_N[0]}]</b> {escape(caption)}'
-            f' <span class="small">— 클릭하면 원본 크기로 확대</span></p>')
+            f'<p class="figcap"><b>{escape(T("word.fig_no", n=_FIG_N[0]))}</b> {escape(caption)}'
+            f' <span class="small">{escape(T("html.fig_zoom"))}</span></p>')
 
 
 # ── 조각 ────────────────────────────────────────────────────────────────────
@@ -142,7 +153,7 @@ def db_of(tkey):
 
 
 def db_label(db):
-    return DB_NAMES.get(db, db or '(단일 DB)')
+    return DB_NAMES.get(db, db or T('html.single_db'))
 
 
 def col_flags(t, c):
@@ -176,17 +187,21 @@ def table_block(tkey):
 
     lay = LAYERS.get(layer(tkey))
     if lay:
-        h.append(f'<div class="meta">영역 {escape(AREA_NAME.get(area_of(tkey), ""))}'
-                 f' · 레이어 {escape(lay[3])}</div>')
+        h.append('<div class="meta">' + escape(T(
+            'html.meta_area_layer',
+            area=AREA_NAME.get(area_of(tkey), ''), layer=lay[3])) + '</div>')
     role = SPEC['roles'].get(tkey) or t.get('note', '')
     if role:
-        h.append(f'<div class="cmt"><b>역할</b> · {escape(role)}</div>')
+        h.append(f'<div class="cmt"><b>{escape(T("html.role"))}</b> · {escape(role)}</div>')
 
     h.append('<table><thead><tr>'
-             "<th style='width:32px'>#</th><th style='width:190px'>컬럼</th>"
-             "<th style='width:150px'>타입</th><th style='width:64px'>Null</th>"
-             "<th style='width:120px'>기본값</th><th style='width:200px'>키/참조</th>"
-             '<th>설명</th></tr></thead><tbody>')
+             "<th style='width:32px'>#</th>"
+             f"<th style='width:190px'>{escape(T('col.name'))}</th>"
+             f"<th style='width:150px'>{escape(T('col.type'))}</th>"
+             "<th style='width:64px'>Null</th>"
+             f"<th style='width:120px'>{escape(T('col.default'))}</th>"
+             f"<th style='width:200px'>{escape(T('col.key'))}</th>"
+             f"<th>{escape(T('col.desc'))}</th></tr></thead><tbody>")
     for i, c in enumerate(t['columns'], 1):
         name = (f'<span class="pk">{escape(c["name"])}</span>'
                 if c['name'] in t['pk'] else escape(c['name']))
@@ -203,7 +218,7 @@ def table_block(tkey):
     lines += [f'CHECK {c["name"]}: {c["def"]}' for c in t.get('checks', [])]
     lines += [ix['def'] for ix in t.get('indexes', [])]
     if lines:
-        h.append(f'<details><summary>제약 · 인덱스 ({len(lines)}건)</summary>'
+        h.append(f'<details><summary>{escape(T("html.constraints", n=len(lines)))}</summary>'
                  f'<div class="body">{escape(chr(10).join(lines))}</div></details>')
     return '\n'.join(h)
 
@@ -231,8 +246,9 @@ def build():
         h.append(f'<div class="cmt">{DOC["intro"]}</div>')
 
     # DB 요약
-    h.append('<table><thead><tr><th>DB</th><th>영역</th><th>테이블</th><th>컬럼</th>'
-             '<th>FK</th></tr></thead><tbody>')
+    h.append('<table><thead><tr><th>DB</th>'
+             f'<th>{escape(T("word.areas"))}</th><th>{escape(T("word.tables"))}</th>'
+             f'<th>{escape(T("word.columns"))}</th><th>FK</th></tr></thead><tbody>')
     for db in dbs:
         ts = [t for t in SCHEMA if db_of(t) == db]
         h.append(f'<tr><td><b>{escape(db_label(db))}</b></td>'
@@ -240,18 +256,20 @@ def build():
                  f'<td>{len(ts)}</td><td>{sum(len(SCHEMA[t]["columns"]) for t in ts)}</td>'
                  f'<td>{sum(len(SCHEMA[t]["fks"]) for t in ts)}</td></tr>')
     h.append('</tbody></table>')
-    h.append('<div class="legend"><span><span class="pk">● PK</span> 기본키</span>'
-             '<span><span class="fk">→ 참조</span> 외래키</span>'
-             '<span><span class="uq">UQ</span> 유니크</span>'
-             + ('<span>rows ≈ 는 통계 기반 추정치</span>' if SHOW_STATS else '')
+    h.append('<div class="legend">'
+             f'<span><span class="pk">● PK</span> {escape(T("word.pk"))}</span>'
+             f'<span><span class="fk">→</span> {escape(T("word.fk"))}</span>'
+             f'<span><span class="uq">UQ</span> {escape(T("word.unique"))}</span>'
+             + (f'<span>{escape(T("html.rows_note"))}</span>' if SHOW_STATS else '')
              + '</div>')
 
     # 목차
-    h.append('<div class="toc"><b>목차</b>')
+    h.append(f'<div class="toc"><b>{escape(T("html.toc"))}</b>')
     for db in dbs:
         areas = [a for a in AREAS if a[3] and db_of(a[3][0]) == db]
         n = sum(len(a[3]) for a in areas)
-        h.append(f'<div class="g">DB: {escape(db_label(db))} · 테이블 {n}개</div>')
+        h.append('<div class="g">' + escape(T('html.db_tables', db=db_label(db), n=n))
+                 + '</div>')
         for a in areas:
             h.append(f'<div class="g">&nbsp;&nbsp;<a href="#area_{a[0]}">'
                      f'{escape(AREA_NAME[a[0]])}</a></div><ul>')
@@ -261,9 +279,9 @@ def build():
     h.append('</div>')
 
     # 첫 장 — 전체 구조 한눈에
-    h.append('<h2>전체 구조</h2>')
+    h.append(f'<h2>{escape(T("html.overall"))}</h2>')
     h.append(figure('erd_overview',
-                    f'{TITLE} — 전체 구조 개요도 (테이블 {len(SCHEMA)}개 · 관계만 표시)'))
+                    T('html.overview_cap', title=TITLE, n=len(SCHEMA))))
     if LAYERS:
         h.append('<div class="legend">' + ''.join(
             f'<span><span class="badge" style="background:{v[0]};border-color:{v[2]};'
@@ -273,34 +291,33 @@ def build():
     # 본문
     for db in dbs:
         areas = [a for a in AREAS if a[3] and db_of(a[3][0]) == db]
-        h.append(f'<h2>DB: {escape(db_label(db))} · 테이블 '
-                 f'{sum(len(a[3]) for a in areas)}개</h2>')
+        h.append('<h2>' + escape(T('html.db_tables', db=db_label(db),
+                                     n=sum(len(a[3]) for a in areas))) + '</h2>')
         for a in areas:
             code, name, _sch, tables = a
             h.append(f'<h3 id="area_{code}">{escape(name)}'
                      f'<span class="badge">{len(tables)} tables</span></h3>')
             if AREA_DESC.get(code):
                 h.append(f'<div class="gdesc">{escape(AREA_DESC[code])}</div>')
-            h.append(figure(f'erd_area_{code}', f'{name} — 영역 상세 ERD'))
+            h.append(figure(f'erd_area_{code}', T('html.area_cap', name=name)))
             for t in tables:
                 h.append(table_block(t))
 
     # 부록 — 전체 상세도
     if WANT_FULL:
-        fig = figure('erd_full', f'{TITLE} — 전체 상세 ERD (모든 테이블 · 모든 컬럼)')
+        fig = figure('erd_full', T('html.full_cap', title=TITLE))
         if fig:
-            h.append('<h2>부록. 전체 상세 ERD</h2>')
-            h.append('<div class="gdesc">모든 테이블과 컬럼을 한 장에 담은 그림이다. '
-                     '화면에서는 클릭해 확대해서 본다.</div>')
+            h.append(f'<h2>{escape(T("html.appendix"))}</h2>')
+            h.append(f'<div class="gdesc">{escape(T("html.appendix_desc"))}</div>')
             h.append(fig)
 
     body = '\n'.join(x for x in h if x)
-    return (f'<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">'
+    return (f'<!DOCTYPE html><html lang="{LANG}"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{escape(TITLE)}</title><style>{CSS}</style></head><body>'
             f'<div class="wrap">{body}</div>'
             f'<div id="zoom"><div class="inner"></div></div>'
-            f'<div id="zoomhint">클릭 또는 Esc 로 닫기</div>'
+            f'<div id="zoomhint">{escape(T("html.zoomhint"))}</div>'
             f'<script>{JS}</script></body></html>')
 
 
@@ -310,14 +327,14 @@ def main():
     html = build()
     out.write_text(html, encoding='utf-8')
     n_fig = _FIG_N[0]
-    print(f'HTML  테이블 {len(SCHEMA)} · 영역 {len(AREAS)} · 도판 {n_fig}장'
-          f'  {len(html) / 1e6:.1f}MB → {out.name}')
+    print(T('log.html_done', tables=len(SCHEMA), areas=len(AREAS), figs=n_fig,
+            mb=f'{len(html) / 1e6:.1f}', name=out.name))
     missing = [f'erd_area_{a[0]}' for a in AREAS
                if not (OUT / f'erd_area_{a[0]}.svg').exists()
                and not (OUT / f'erd_area_{a[0]}.png').exists()]
     if missing:
-        print(f'  [경고] 그림이 없는 영역 {len(missing)}개: {", ".join(missing[:6])}'
-              f'{" …" if len(missing) > 6 else ""}  → build_erd.py 를 먼저 돌릴 것')
+        print(T('log.html_missing', n=len(missing),
+                list=', '.join(missing[:6]) + (' …' if len(missing) > 6 else '')))
 
 
 if __name__ == '__main__':

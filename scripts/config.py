@@ -27,6 +27,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from i18n import t as T
+
 
 def _p(env, default):
     return Path(os.environ.get(env, default)).expanduser()
@@ -55,9 +57,9 @@ def psql_cmd():
     db = os.environ.get('ERD_DB', '')
     if not db:
         raise SystemExit(
-            'DB 접속 정보가 없다. 둘 중 하나를 지정할 것.\n'
+            T('err.no_conn') + '\n'
             "  export ERD_PSQL='psql postgresql://user:pass@host:5432/dbname'\n"
-            "  export ERD_DB='컨테이너:계정:DB'        # docker 경유")
+            "  export ERD_DB=" + T('err.no_conn_db'))
     container, user, name = (db.split(':') + ['', '', ''])[:3]
     return ['docker', 'exec', container, 'psql', '-U', user, '-d', name]
 
@@ -70,7 +72,7 @@ def psql(query):
     r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-c', query],
                        capture_output=True, text=True)
     if r.returncode != 0 and not r.stdout:
-        print(f'  [경고] DB 조회 실패: {r.stderr.strip()[:200]}')
+        print(T('log.query_fail', err=r.stderr.strip()[:200]))
     return r.stdout
 
 
@@ -124,7 +126,7 @@ def _split(tables, schema_name, max_areas, min_size=3):
             break
 
     if rest:
-        keep.append((f'{schema_name} 기타', sorted(rest)))
+        keep.append((T('word.area_other', schema=schema_name), sorted(rest)))
     return keep or [(schema_name, sorted(tables))]
 
 

@@ -20,6 +20,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from i18n import t as T
 from config import SCHEMA_JSON, SEP, SQL_DIR, psql
 
 OUT = SCHEMA_JSON
@@ -30,7 +31,7 @@ def sql_files():
     if named:
         return named
     if not SQL_DIR.is_dir():
-        raise SystemExit(f'DDL 디렉토리가 없다: {SQL_DIR}  (ERD_SQL_DIR 로 지정)')
+        raise SystemExit(T('err.no_sql_dir', path=SQL_DIR))
     return sorted(p.name for p in SQL_DIR.glob('*.sql'))
 
 
@@ -192,7 +193,7 @@ def fetch_ref(tables):
             continue
         tn, cn, ty, nul = line.split(SEP)
         out.setdefault(tn, {
-            'name': tn, 'origin': 'ref', 'schema': REF_SCHEMA, 'src_file': f'{REF_SCHEMA} (읽기 전용)',
+            'name': tn, 'origin': 'ref', 'schema': REF_SCHEMA, 'src_file': T('erd.readonly_src', schema=REF_SCHEMA),
             'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
         })['columns'].append({'name': cn, 'type': ty, 'not_null': nul == 'NO',
                               'default': '', 'identity': False, 'comment': '', 'added': False})
@@ -259,11 +260,13 @@ def main():
     tables.update(fetch_ref(REF_SOURCES))
 
     Path(OUT).write_text(json.dumps(tables, ensure_ascii=False, indent=2))
-    print(f'테이블 {len(tables)}개 → {OUT}')
+    print(T('log.ddl_parsed', n=len(tables), path=OUT))
     for n, t in sorted(tables.items(), key=lambda x: (x[1]['origin'], x[0])):
         added = sum(1 for c in t['columns'] if c['added'])
-        print(f"  [{t['origin']:8}] {n:32} 컬럼 {len(t['columns']):3}"
-              f"{f' (+{added} 추가)' if added else '':12} FK {len(t['fks'])}  · {t['note'][:40]}")
+        print(f"  [{t['origin']:8}] {n:32} "
+              + T('log.ddl_row', columns=f"{len(t['columns']):3}",
+                       added=(T('log.ddl_added', n=added) if added else '').ljust(12),
+                       fks=len(t['fks']), note=t['note'][:40]))
 
 
 if __name__ == '__main__':

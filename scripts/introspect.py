@@ -13,6 +13,7 @@ PK·FK(삭제 규칙 포함)·유니크 인덱스, 그리고 테이블/컬럼 �
 import json
 import os
 
+from i18n import t as T
 from config import EXCLUDE, SCHEMA_JSON, SCHEMAS, SEP, excluded, psql
 
 LABEL = os.environ.get('ERD_LABEL', '')
@@ -176,23 +177,24 @@ def main():
         t['fks'] = keep
 
     if not tables:
-        raise SystemExit('테이블을 하나도 읽지 못했다. ERD_DB / ERD_PSQL / ERD_SCHEMAS 를 확인할 것.')
+        raise SystemExit(T('err.no_tables'))
 
     out_path = SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL else SCHEMA_JSON
     out_path.write_text(json.dumps(tables, ensure_ascii=False, indent=2))
     n_col = sum(len(t['columns']) for t in tables.values())
     n_fk = sum(len(t['fks']) for t in tables.values())  # noqa: E501  (dropped 반영 후)
     n_desc = sum(1 for t in tables.values() for c in t['columns'] if c['comment'])
-    print(f'테이블 {len(tables)} · 컬럼 {n_col} · FK {n_fk} → {out_path}')
-    print(f'  DB 코멘트로 채워진 컬럼 설명 {n_desc}/{n_col}'
-          f'{"  → merge_desc.py 로 나머지를 채울 것" if n_desc < n_col else ""}')
+    print(T('log.introspected', tables=len(tables), columns=n_col, fks=n_fk,
+            path=out_path))
+    print(T('log.desc_from_db', n=n_desc, total=n_col)
+          + (T('log.desc_rest') if n_desc < n_col else ''))
     if EXCLUDE:
-        print(f'  제외 규칙: {EXCLUDE}')
+        print(T('log.exclude_rule', rule=EXCLUDE))
     if dropped:
-        print(f'  대상 밖 테이블을 가리키는 FK {dropped}건 제외')
-    for sch in sorted({t['schema'] for t in tables.values()}):
-        ts = [n for n, t in tables.items() if t['schema'] == sch]
-        print(f'  [{sch}] {len(ts)}개')
+        print(T('log.fk_dropped', n=dropped))
+    for sch in sorted({tb['schema'] for tb in tables.values()}):
+        ts = [n for n, tb in tables.items() if tb['schema'] == sch]
+        print(T('log.per_schema', schema=sch, n=len(ts)))
 
 
 if __name__ == '__main__':

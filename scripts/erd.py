@@ -19,6 +19,7 @@ Image.MAX_IMAGE_PIXELS = None      # 우리가 만드는 그림이라 폭탄 검
 MAX_PIXELS = 160_000_000           # 이보다 커지면 배율을 낮춘다
 
 from config import OUT, SCHEMA_JSON, load_spec
+from i18n import LANG, t as T
 from svg_canvas import SvgCanvas
 
 SCHEMA = json.loads(SCHEMA_JSON.read_text())
@@ -44,9 +45,13 @@ _SANS_CANDIDATES = [
      '/usr/share/fonts/opentype/pretendard/Pretendard-Bold.otf'),
     ('/usr/share/fonts/truetype/pretendard/Pretendard-Regular.ttf',
      '/usr/share/fonts/truetype/pretendard/Pretendard-Bold.ttf'),
-    # ── 폴백: OS 기본 한글 폰트 ──
+    # ── 폴백: OS 기본 폰트 (한글 · 일본어 · 라틴 순으로 훑는다) ──
     ('/System/Library/Fonts/AppleSDGothicNeo.ttc',                     # macOS
      ('/System/Library/Fonts/AppleSDGothicNeo.ttc', 1)),
+    ('/System/Library/Fonts/Hiragino Sans GB.ttc',                     # macOS · 일본어
+     ('/System/Library/Fonts/Hiragino Sans GB.ttc', 1)),
+    ('/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf',
+     '/usr/share/fonts/opentype/noto/NotoSansJP-Bold.otf'),
     ('/usr/share/fonts/truetype/nanum/NanumGothic.ttf',                # Debian/Ubuntu
      '/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf'),
     ('/usr/share/fonts/nanum/NanumGothic.ttf',                         # Fedora/RHEL
@@ -54,7 +59,47 @@ _SANS_CANDIDATES = [
     ('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
      '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'),
     ('C:/Windows/Fonts/malgun.ttf', 'C:/Windows/Fonts/malgunbd.ttf'),  # Windows
+    ('C:/Windows/Fonts/YuGothM.ttc', 'C:/Windows/Fonts/YuGothB.ttc'),  # Windows · 일본어
 ]
+
+# 라틴만 덮는 폰트. 한글·한자를 쓰는 말에는 붙이지 않는다 — 이걸로 그리면 글자가 전부
+# □ 로 나오는데, 그림은 '성공' 으로 끝나 버려 두부 문서를 그대로 배포하게 된다.
+# 못 찾고 죽는 편이 낫다.
+_LATIN_CANDIDATES = [
+    ('/System/Library/Fonts/Helvetica.ttc',                            # macOS
+     ('/System/Library/Fonts/Helvetica.ttc', 1)),
+    ('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+     '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'),
+    ('/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+     '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'),
+    ('C:/Windows/Fonts/arial.ttf', 'C:/Windows/Fonts/arialbd.ttf'),
+]
+if LANG not in ('ko', 'ja'):
+    _SANS_CANDIDATES = _SANS_CANDIDATES + _LATIN_CANDIDATES
+
+# Pretendard 는 한글·라틴은 덮지만 한자는 덮지 못한다 — 일본어로 뽑을 땐 한자가
+# □ 로 나오므로, 그 언어의 폰트를 앞에 세운다.
+_JA_CANDIDATES = [
+    ('/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc',                  # macOS (일본어)
+     '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc'),
+    ('/Library/Fonts/ヒラギノ角ゴ ProN W3.otf',
+     '/Library/Fonts/ヒラギノ角ゴ ProN W6.otf'),
+    ('/System/Library/Fonts/NotoSansJP-Regular.otf',
+     '/System/Library/Fonts/NotoSansJP-Bold.otf'),
+    ('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+     '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'),
+    ('/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf',
+     '/usr/share/fonts/opentype/noto/NotoSansJP-Bold.otf'),
+    ('C:/Windows/Fonts/YuGothM.ttc', 'C:/Windows/Fonts/YuGothB.ttc'),  # Windows
+    ('C:/Windows/Fonts/meiryo.ttc', 'C:/Windows/Fonts/meiryob.ttc'),
+    ('/System/Library/Fonts/Osaka.ttf', '/System/Library/Fonts/Osaka.ttf'),
+    # 마지막 수단. GB 는 간체 중국어용이라 한자 자형이 중국식이다(骨·直 등이 다르게
+    # 보인다). 그래도 일본어 폰트가 하나도 없을 때 □ 보다는 읽을 수 있다.
+    (('/System/Library/Fonts/Hiragino Sans GB.ttc', 0),
+     ('/System/Library/Fonts/Hiragino Sans GB.ttc', 2)),
+]
+if LANG == 'ja':
+    _SANS_CANDIDATES = _JA_CANDIDATES + _SANS_CANDIDATES
 _MONO_CANDIDATES = [
     ('/System/Library/Fonts/Menlo.ttc', ('/System/Library/Fonts/Menlo.ttc', 1)),
     ('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
@@ -77,7 +122,7 @@ def _pick_font(env, candidates, kind):
     reg, bold = os.environ.get(env), os.environ.get(env + '_BOLD')
     if reg:
         if not Path(reg).exists():
-            raise SystemExit(f'{env} 로 지정한 폰트가 없다: {reg}')
+            raise SystemExit(T('err.font_env', env=env, path=reg))
         return (reg, 0), ((bold, 0) if bold and Path(bold).exists() else (reg, 0))
     for r, b in candidates:
         rp, ri = _face(r)
@@ -85,13 +130,12 @@ def _pick_font(env, candidates, kind):
             continue
         bp, bi = _face(b)
         return (rp, ri), ((bp, bi) if Path(bp).exists() else (rp, ri))
-    raise SystemExit(
-        f'{kind} 폰트를 찾지 못했다. install.sh 를 돌리거나 {env} 로 직접 지정한다.\n'
-        f'  찾아본 곳: {", ".join(_face(r)[0] for r, _ in candidates)}')
+    raise SystemExit(T('err.font_none', kind=kind, env=env,
+                       looked=', '.join(_face(r)[0] for r, _ in candidates)))
 
 
-FONT, FONT_B = _pick_font('ERD_FONT', _SANS_CANDIDATES, '본문(한글)')
-MONO, MONO_B = _pick_font('ERD_MONO', _MONO_CANDIDATES, '고정폭')
+FONT, FONT_B = _pick_font('ERD_FONT', _SANS_CANDIDATES, T('word.font_body'))
+MONO, MONO_B = _pick_font('ERD_MONO', _MONO_CANDIDATES, T('word.font_mono'))
 FONT_PATH, MONO_PATH = FONT[0], MONO[0]          # 하위 호환 — 경로만 쓰던 곳
 
 # ── 다크 테마 ────────────────────────────────────────────────────────────────
@@ -127,12 +171,12 @@ def layer(t):
 def badge(tname):
     t = SCHEMA[tname]
     if t.get('readonly'):
-        return '원천', '#D9A566'
+        return T('word.source'), '#D9A566'
     if t.get('origin') == 'new':
         return 'NEW', '#7ED07E'
     if any(c['added'] for c in t['columns']):
-        return '확장', '#E2C275'
-    return '기존', '#9AA0A6'
+        return T('word.extended'), '#E2C275'
+    return T('word.existing'), '#9AA0A6'
 
 
 def col_role(t, c):
@@ -143,13 +187,16 @@ def col_role(t, c):
     return ''
 
 
+_ADDED = T('word.added')          # 붙이는 쪽과 알아보는 쪽이 같은 문자열을 봐야 한다
+
+
 def col_line(t, c, with_desc=True, desc_max=62):
     typ = c['type'] + (' NN' if c['not_null'] else '')
     desc = c['comment'] if with_desc else ''
     if len(desc) > desc_max:
         desc = desc[:desc_max - 1] + '…'
     if c['added']:
-        desc = '[추가] ' + desc
+        desc = _ADDED + ' ' + desc
     return (col_role(t, c), c['name'] + ':', typ, desc)
 
 
@@ -269,8 +316,8 @@ def measure(tname, with_desc=True):
 def stub_box(tname):
     f = load_fonts()
     w = max(tw(tname, f['title']),
-            tw(f"[참조] {AREA_OF.get(tname, '외부')} · {ROLE.get(tname, '')}",
-               f['role'])) + PAD * 2
+            tw(T('erd.ref_of', area=AREA_OF.get(tname, T('word.external')),
+                  role=ROLE.get(tname, '')), f['role'])) + PAD * 2
     return {'w': int(w), 'h': HEAD_H + 2, 'rows': [], 'cols': (0, 0), 'gap': 0}
 
 
@@ -401,7 +448,7 @@ def draw_legend(d, f, x, y, S, max_w=10 ** 6):
     def label(text, dx=0, dy=1):
         d.text(((cx + dx) * S, (cy + dy) * S), text, font=f['legend'], fill='#C8C8C8')
 
-    d.text((cx * S, cy * S), '레이어', font=f['legend'], fill='#8E96A0')
+    d.text((cx * S, cy * S), T('word.layer'), font=f['legend'], fill='#8E96A0')
     cx += 74
     for _code, (fill, head, border, txt) in LAYERS.items():
         w = 40 + tw(txt, f['legend']) / S + GAP
@@ -414,17 +461,17 @@ def draw_legend(d, f, x, y, S, max_w=10 ** 6):
         cx += w
 
     cx, cy, rows = x, cy + LH, rows + 1
-    d.text((cx * S, cy * S), '표기', font=f['legend'], fill='#8E96A0')
+    d.text((cx * S, cy * S), T('word.notation'), font=f['legend'], fill='#8E96A0')
     cx += 74
-    for kind, txt in (('PK', '기본키'), ('FK', '외래키')):
+    for kind, txt in (('PK', T('word.pk')), ('FK', T('word.fk'))):
         w = 24 + tw(txt, f['legend']) / S + GAP
         nl(w)
         draw_key_icon(d, cx, cy, kind, S)
         label(txt, 21, 0)
         cx += w
-    for txt, color, desc in (('NEW', '#7ED07E', '신규 테이블'),
-                             ('확장', '#E2C275', '기존 테이블 · 컬럼 추가'),
-                             ('원천', '#D9A566', 'ref 스키마 원천')):
+    for txt, color, desc in (('NEW', '#7ED07E', T('erd.lg_new')),
+                             (T('word.extended'), '#E2C275', T('erd.lg_ext')),
+                             (T('word.source'), '#D9A566', T('erd.lg_src'))):
         bwid = tw(txt, f['badge']) / S
         w = bwid + 10 + tw(desc, f['legend']) / S + GAP
         nl(w)
@@ -433,11 +480,11 @@ def draw_legend(d, f, x, y, S, max_w=10 ** 6):
         cx += w
 
     cx, cy, rows = x, cy + LH, rows + 1
-    d.text((cx * S, cy * S), '선', font=f['legend'], fill='#8E96A0')
+    d.text((cx * S, cy * S), T('word.lines'), font=f['legend'], fill='#8E96A0')
     cx += 74
-    for kind, txt in (('fk', '외래키 (FK) · 라벨 = 자식컬럼 : 부모컬럼'),
-                      ('etl', 'ETL 적재 흐름 (FK 아님)'),
-                      ('hop', '교차 (선이 넘어감)')):
+    for kind, txt in (('fk', T('erd.lg_fk')),
+                      ('etl', T('erd.lg_etl')),
+                      ('hop', T('erd.lg_hop'))):
         w = 40 + tw(txt, f['legend']) / S + GAP
         nl(w)
         my = cy + 8
@@ -491,7 +538,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             gcol = '#B0885A' if schema == 'ref' else '#5A6472'
             d.rounded_rectangle([gx1 * S, gy1 * S, gx2 * S, gy2 * S], radius=10 * S,
                                 outline=gcol, width=max(1, S))
-            label = f'{schema} 스키마 · {code} {AREA_NAME[code]}'
+            label = T('erd.group_label', schema=schema, code=code,
+                       name=AREA_NAME[code])
             lw = tw(label, f['legend']) / S
             d.rectangle([(gx1 + 14) * S, (gy1 - 10) * S, (gx1 + 26 + lw) * S, (gy1 + 10) * S],
                         fill=BG)
@@ -829,7 +877,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 d.text(((x2 - PAD) * S, (y1 + 9) * S), bd, font=f['badge'], fill=bc, anchor='ra')
             sub = ROLE.get(n, '')
             if is_stub:
-                sub = f"[참조] {AREA_OF.get(n, '외부')} · {sub}"
+                sub = T('erd.ref_of', area=AREA_OF.get(n, T('word.external')), role=sub)
             d.text(((x1 + PAD) * S, (y1 + 27) * S), sub, font=f['role'], fill='#B9C2CC')
             if not box['rows']:
                 continue
@@ -845,7 +893,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 cx += w_type + gap
                 if cdesc:
                     d.text((cx * S, cy * S), cdesc, font=f['desc'],
-                           fill='#D3A6E8' if cdesc.startswith('[추가]') else DESC_TXT)
+                           fill=('#D3A6E8' if cdesc.startswith(_ADDED) else DESC_TXT))
                 cy += ROW_H
 
         if edge_labels:
@@ -873,7 +921,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
     while S > 1 and W * H * S * S > MAX_PIXELS:      # 너무 크면 배율을 낮춘다
         S -= 1
         f = load_fonts(S)
-        print(f'    [알림] {Path(path).name}: 그림이 커서 배율을 {S}배로 낮춤')
+        print(T('log.scale_down', name=Path(path).name, s=S))
     img = Image.new('RGB', (W * S, H * S), BG)
     d = ImageDraw.Draw(img)
 
@@ -910,13 +958,15 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     continue         # 같은 컬럼으로 모이는 합류 구간
                 n += 1
                 if DEBUG_OVERLAP:
-                    print(f'      겹침: 좌표{a:.0f}  [{s0:.0f}~{s1:.0f}] vs [{t0:.0f}~{t1:.0f}]')
+                    print(T('log.overlap_at', a=f'{a:.0f}', s0=f'{s0:.0f}',
+                             s1=f'{s1:.0f}', t0=f'{t0:.0f}', t1=f'{t1:.0f}'))
         return n
 
-    report = {'라벨↔테이블': lab_hit, '세로선 중첩': overlaps(segs_v),
-              '가로선 중첩': overlaps(segs_h)}
-    print(f'    검증 {Path(path).name}: '
-          + ' · '.join(f'{k} {v}' for k, v in report.items()))
+    report = {T('verify.label_table'): lab_hit,
+              T('verify.v_overlap'): overlaps(segs_v),
+              T('verify.h_overlap'): overlaps(segs_h)}
+    print(T('log.verify', name=Path(path).name,
+             report=' · '.join(f'{k} {v}' for k, v in report.items())))
     img.save(path)
 
     # ── 같은 그림을 벡터로 한 벌 더 (문서 삽입용 — 확대해도 안 뭉갠다) ──
@@ -972,8 +1022,8 @@ def graphml_node(nid, tname, pos, box):
     bd, _ = badge(tname)
     title = escape(f'{tname}  ·  {ROLE.get(tname, "")}  [{bd}]')
     height = 34 + len(box['rows']) * 16 + 8
-    desc = escape(f"[{layer_label}] [영역 {AREA_OF[tname]} {AREA_NAME[AREA_OF[tname]]}] "
-                  f"{t.get('note', '')}")
+    desc = escape(T('erd.node_desc', layer=layer_label, code=AREA_OF[tname],
+                     area=AREA_NAME[AREA_OF[tname]], note=t.get('note', '')))
     return f'''    <node id="{nid}">
       <data key="d1">{desc}</data>
       <data key="d0">

@@ -27,14 +27,23 @@ from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, ROLE, SCHEMA, layer
 
 from config import DOCNAME, OUT, PROJ
 from erd import SPEC
+from i18n import LANG, t as T
 
 DOC = SPEC.get('doc', {})
 TITLE = DOC.get('title', DOCNAME)
 
 # 문서 폰트는 이름으로 지정한다 — 그림과 달리 여는 PC에 그 폰트가 있어야 한다.
-# Pretendard 가 없는 PC에서는 Word 가 알아서 대체하므로 레이아웃만 조금 달라진다.
-FONT = os.environ.get('ERD_DOC_FONT', 'Pretendard')
-MONO = os.environ.get('ERD_DOC_MONO', 'D2Coding')   # 없으면 Word 가 대체 — 코드 식별자용
+# 그 폰트가 없는 PC에서는 Word 가 알아서 대체하므로 레이아웃만 조금 달라진다.
+# 그래서 기본값은 그 말을 쓰는 곳에서 가장 흔한 폰트로 잡는다.
+_DOC_FONTS = {
+    'ko': ('Pretendard', 'D2Coding'),
+    'ja': ('Yu Gothic', 'Consolas'),
+    'en': ('Calibri', 'Consolas'),
+    'es': ('Calibri', 'Consolas'),
+}
+_def_font, _def_mono = _DOC_FONTS.get(LANG, _DOC_FONTS['en'])
+FONT = os.environ.get('ERD_DOC_FONT', _def_font)
+MONO = os.environ.get('ERD_DOC_MONO', _def_mono)    # 없으면 Word 가 대체 — 코드 식별자용
 
 
 # ── 서식 헬퍼 ────────────────────────────────────────────────────────────────
@@ -194,11 +203,12 @@ def build():
     para(doc, DOC.get('subtitle', ''),
          size=11, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=26, color='595959')
 
-    t = table(doc, ['구분', '내용', '구분', '내용'], [2.6, 5.6, 2.4, 5.4], font_size=9.5)
+    t = table(doc, [T('word.kind'), T('word.content'), T('word.kind'), T('word.content')],
+              [2.6, 5.6, 2.4, 5.4], font_size=9.5)
     meta = [list(r) + [''] * (4 - len(r)) for r in DOC.get('meta', [
-        ['문서명', DOC.get('title', DOCNAME), '테이블', str(len(SCHEMA))],
-        ['컬럼', str(sum(len(t['columns']) for t in SCHEMA.values())),
-         '외래키', str(sum(len(t['fks']) for t in SCHEMA.values()))],
+        [T('docx.doc_name'), DOC.get('title', DOCNAME), T('word.tables'), str(len(SCHEMA))],
+        [T('word.columns'), str(sum(len(t['columns']) for t in SCHEMA.values())),
+         T('word.fkeys'), str(sum(len(t['fks']) for t in SCHEMA.values()))],
     ])]
     for r in meta:
         cells = row(t, r, [2.6, 5.6, 2.4, 5.4], font_size=9.5, bold_cols=(0, 2))
@@ -211,81 +221,73 @@ def build():
     doc.add_page_break()
 
     # ── 1. 개요 ──
-    heading(doc, '1. 개요')
-    heading(doc, '1.1 목적', 2)
-    para(doc, DOC.get('purpose',
-                      '대상 DB 의 테이블 구조와 관계를 ERD 로 제시한다. '
-                      '실제 스키마를 읽어 생성하므로 그림과 DB 가 어긋나지 않는다.'))
-    heading(doc, '1.2 범위', 2)
-    for line in DOC.get('scope', [
-            f'포함: 테이블 {len(SCHEMA)}개의 구조·컬럼·관계, 스키마 및 레이어 구분.',
-            '제외: Migration 절차, API 명세, 화면 설계.']):
+    heading(doc, T('docx.ch1'))
+    heading(doc, T('docx.ch1_1'), 2)
+    para(doc, DOC.get('purpose', T('docx.purpose')))
+    heading(doc, T('docx.ch1_2'), 2)
+    for line in DOC.get('scope', [T('docx.scope_in', n=len(SCHEMA)), T('docx.scope_out')]):
         para(doc, line)
-    heading(doc, '1.3 산출 근거', 2)
-    para(doc, DOC.get('sources_note',
-                      '본 ERD 는 실제 DB 와 DDL 을 읽어 생성했다. 따라서 테이블명·컬럼명·'
-                      '타입·제약은 실제 스키마와 일치한다.'))
-    t = table(doc, ['근거', '내용'], [5.6, 11.4], font_size=9)
+    heading(doc, T('docx.ch1_3'), 2)
+    para(doc, DOC.get('sources_note', T('docx.sources_note')))
+    t = table(doc, [T('word.basis'), T('word.content')], [5.6, 11.4], font_size=9)
     for r in DOC.get('sources', [
-            ('information_schema', '테이블·컬럼·타입·PK·FK·삭제 규칙의 실제 값'),
-            ('테이블·컬럼 코멘트', '설명 1순위'),
-            ('ORM 모델 주석', '코멘트가 없는 컬럼의 설명')]):
+            ('information_schema', T('docx.src_infoschema')),
+            (T('docx.src_comment'), T('docx.src_comment_d')),
+            (T('docx.src_orm'), T('docx.src_orm_d'))]):
         row(t, r, [5.6, 11.4], font_size=9, mono_cols=(0,))
     para(doc, '')
 
-    heading(doc, '1.4 표기 규칙', 2)
-    t = table(doc, ['표기', '의미'], [4.2, 12.8], font_size=9)
+    heading(doc, T('docx.ch1_4'), 2)
+    t = table(doc, [T('word.notation'), T('word.meaning')], [4.2, 12.8], font_size=9)
     for code, (_f, _h, _b, label) in LAYERS.items():
-        row(t, (f'{code} (색상 구분)', label), [4.2, 12.8], font_size=9)
-    for r in [('NEW', '신규 생성 테이블'),
-              ('확장', '기존 운영 테이블 · 컬럼 추가'),
-              ('원천', '외부 원천 · 읽기 전용'),
-              ('[추가]', '이번 보완으로 추가되는 컬럼'),
-              ('실선', '외래키(FK) · 라벨은 「자식 컬럼 : 부모 컬럼」'),
-              ('점선 (갈색)', 'ETL 적재 흐름 — FK 가 아니라 데이터 흐름'),
-              ('반원', '선이 교차할 때 넘어가는 표시 (연결 아님)'),
-              ('까치발 / 직교선', '관계의 N 쪽(자식) / 1 쪽(부모)'),
+        row(t, (T('docx.by_color', code=code), label), [4.2, 12.8], font_size=9)
+    for r in [('NEW', T('docx.nt_new')),
+              (T('word.extended'), T('docx.nt_ext')),
+              (T('word.source'), T('docx.nt_src')),
+              (T('word.added'), T('docx.nt_added')),
+              (T('word.solid'), T('docx.nt_solid')),
+              (T('word.dashed'), T('docx.nt_dashed')),
+              (T('word.semicircle'), T('docx.nt_hop')),
+              (T('word.crowfoot'), T('docx.nt_card')),
               ('NN', 'NOT NULL')]:
         row(t, r, [4.2, 12.8], font_size=9)
     para(doc, '')
 
     # ── 2~3. 그림 (가로 섹션) ──
     landscape(doc)
-    heading(doc, '2. 스키마 · 레이어 구조')
-    para(doc, '아래 그림에서 색은 레이어를, 묶음은 스키마와 기능 영역을 나타낸다.')
+    heading(doc, T('docx.ch2'))
+    para(doc, T('docx.ch2_intro'))
     picture(doc, OUT / 'erd_overview.png', 26.0,
-            f'[그림 1] {TITLE} — 전체 관계 개요')
+            T('word.fig_no', n=1) + ' ' + T('docx.fig_overview', title=TITLE))
 
-    heading(doc, '2.1 전체 ERD', 2)
-    para(doc, f'전체 {len(SCHEMA)}개 테이블의 모든 컬럼과 설명을 한 장에 표시한다. '
-              '인쇄본에서는 축소되어 읽기 어려우므로, 세부 확인은 3장의 영역별 ERD 또는 '
-              f'원본 이미지(assets/erd/06-erd-proposed-full.png)를 사용한다.')
+    heading(doc, T('docx.ch2_1'), 2)
+    para(doc, T('docx.ch2_1_intro', n=len(SCHEMA)))
     picture(doc, OUT / 'erd_full.png', 26.0,
-            f'[그림 2] {TITLE} — 전체 (컬럼 · 설명 포함)')
+            T('word.fig_no', n=2) + ' ' + T('docx.fig_full', title=TITLE))
 
-    heading(doc, '3. 영역별 ERD')
-    para(doc, '영역별로 전체 컬럼과 설명을 표시한다. 해당 영역 밖의 참조 대상은 회색 테두리의 '
-              '축약 박스로 표기했다.')
+    heading(doc, T('docx.ch3'))
+    para(doc, T('docx.ch3_intro'))
     for i, (code, name, schema, tables) in enumerate(AREAS, start=3):
-        heading(doc, f'3.{i - 2} 영역 {code} · {name} ({schema} 스키마 · {len(tables)}개)', 2)
+        heading(doc, T('docx.ch3_area', no=i - 2, code=code, name=name,
+                        schema=schema, n=len(tables)), 2)
         picture(doc, OUT / f'erd_area_{code}.png', 26.0,
-                f'[그림 {i}] 영역 {code} · {name}')
+                T('word.fig_no', n=i) + ' ' + T('docx.fig_area', code=code, name=name))
 
     # ── 4. 테이블별 역할 및 컬럼 설명 ──
     portrait(doc)
-    heading(doc, '4. 테이블별 역할 및 컬럼 설명')
-    para(doc, f'전체 {len(SCHEMA)}개 테이블 · '
-              f'{sum(len(t["columns"]) for t in SCHEMA.values())}개 컬럼. '
-              '구분 열의 PK 는 기본키, FK 는 외래키, [추가] 는 이번 보완으로 추가되는 컬럼이다.')
+    heading(doc, T('docx.ch4'))
+    para(doc, T('docx.ch4_intro', tables=len(SCHEMA),
+                 columns=sum(len(t['columns']) for t in SCHEMA.values())))
     n = 0
     for ai, (code, name, schema, tables) in enumerate(AREAS, start=1):
-        heading(doc, f'4.{ai} 영역 {code} · {name}', 2)
+        heading(doc, T('docx.ch4_area', no=ai, code=code, name=name), 2)
         for ti, tname in enumerate(tables, start=1):
             n += 1
             t_ = SCHEMA[tname]
             bd, _c = erd.badge(tname)
             heading(doc, f'4.{ai}.{ti} {tname} · {ROLE.get(tname, "")}', 3)
-            meta = table(doc, ['스키마', '구분', '레이어', '컬럼', '외래키'],
+            meta = table(doc, [T('word.schema'), T('word.kind'), T('word.layer'),
+                               T('word.columns'), T('word.fkeys')],
                          [2.4, 2.2, 4.6, 1.8, 1.8], font_size=8.5)
             row(meta, (t_.get('schema', 'public'), bd, LAYERS[layer(tname)][3],
                        len(t_['columns']), len(t_['fks'])),
@@ -294,10 +296,11 @@ def build():
                         WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.CENTER])
             if t_.get('note'):
                 para(doc, t_['note'], size=9, color='595959', space_after=3)
-            ct = table(doc, ['구분', '컬럼', '타입', '설명'], [1.3, 4.2, 3.0, 8.5], font_size=8)
+            ct = table(doc, [T('word.kind'), T('col.name'), T('col.type'), T('col.desc')],
+                       [1.3, 4.2, 3.0, 8.5], font_size=8)
             for c in t_['columns']:
                 mark = erd.col_role(t_, c)
-                desc = ('[추가] ' if c['added'] else '') + c['comment']
+                desc = (T('word.added') + ' ' if c['added'] else '') + c['comment']
                 ct.rows  # noqa
                 row(ct, (mark, c['name'], c['type'] + (' NN' if c['not_null'] else ''), desc),
                     [1.3, 4.2, 3.0, 8.5], font_size=8, mono_cols=(1, 2), bold_cols=(1,),
@@ -306,12 +309,12 @@ def build():
             para(doc, '', space_after=8)
 
     # ── 5. 관계 정의 ──
-    heading(doc, '5. 관계 정의')
-    heading(doc, '5.1 외래키 (FK)', 2)
-    fks = [(n_, fk) for n_, t_ in SCHEMA.items() for fk in t_['fks']]
-    para(doc, f'전체 {len(fks)}건. 삭제 규칙이 CASCADE 인 관계는 부모 삭제 시 자식 행이 함께 '
-              '지워지고, SET NULL 인 관계는 참조만 끊고 행은 남긴다.')
-    t = table(doc, ['자식 테이블', '컬럼', '부모 테이블', '컬럼', '삭제 규칙'],
+    heading(doc, T('docx.ch5'))
+    heading(doc, T('docx.ch5_1'), 2)
+    fks = [(n_, fk) for n_, tb in SCHEMA.items() for fk in tb['fks']]
+    para(doc, T('docx.ch5_1_intro', n=len(fks)))
+    t = table(doc, [T('word.child_table'), T('col.name'), T('word.parent_table'),
+                    T('col.name'), T('word.delete_rule')],
               [4.4, 3.5, 4.2, 2.3, 2.6], font_size=8)
     for n_, fk in sorted(fks, key=lambda x: (x[0], x[1]['column'])):
         row(t, (n_, fk['column'], fk['ref_table'], fk['ref_column'],
@@ -320,9 +323,9 @@ def build():
             colors={4: 'B03A2E' if fk['on_delete'] == 'CASCADE' else '595959'})
     para(doc, '')
 
-    heading(doc, '5.2 ETL 적재 흐름', 2)
-    para(doc, 'FK 가 아니라 데이터 흐름이다. ref 스키마는 읽기 전용이므로 물리적 제약을 걸 수 없다.')
-    t = table(doc, ['원천 (ref 스키마)', '대상 (public 스키마)', '내용'],
+    heading(doc, T('docx.ch5_2'), 2)
+    para(doc, T('docx.ch5_2_intro'))
+    t = table(doc, [T('word.src_side'), T('word.dst_side'), T('word.content')],
               [5.0, 5.4, 6.6], font_size=8.5)
     for src, dst, label in erd.DERIVES:
         row(t, (src, dst, label), [5.0, 5.4, 6.6], font_size=8.5, mono_cols=(0, 1))
@@ -340,11 +343,10 @@ def build():
 
 
 def _chapter_mapping(doc):
-    heading(doc, '6. 설계안 대비 반영 결과')
-    para(doc, DOC.get('mapping_intro',
-                      '설계안의 테이블명과 실제 DDL 의 명칭이 다르다. 각 항목이 실제로 '
-                      '어떻게 반영되었는지 아래와 같이 대조한다.'))
-    t = table(doc, ['No', '설계안 (가안)', '실제 테이블', '반영', '사유'],
+    heading(doc, T('docx.ch6'))
+    para(doc, DOC.get('mapping_intro', T('docx.ch6_intro')))
+    t = table(doc, ['No', T('word.proposed'), T('word.actual_table'),
+                    T('word.applied'), T('word.reason')],
               [1.0, 3.6, 4.6, 1.8, 6.0], font_size=8)
     for r in MAPPING_TABLE:
         row(t, r, [1.0, 3.6, 4.6, 1.8, 6.0], font_size=8, mono_cols=(1, 2),
@@ -355,10 +357,10 @@ def _chapter_mapping(doc):
 
 
 def _chapter_open(doc):
-    heading(doc, '7. 미반영 항목 및 판단 필요 사항')
-    para(doc, '본 ERD 는 구조를 정의한 것이며, 구조가 있다고 해서 동작하는 것은 아니다. '
-              '아래 항목은 구조 밖의 결정이 선행되어야 값이 채워진다.')
-    t = table(doc, ['우선', '항목', '대상', '현재 상태', '필요 조치'],
+    heading(doc, T('docx.ch7'))
+    para(doc, T('docx.ch7_intro'))
+    t = table(doc, [T('word.priority'), T('word.item'), T('word.target'),
+                    T('word.current'), T('word.action')],
               [1.0, 3.0, 3.4, 5.4, 4.2], font_size=8)
     for r in OPEN_ITEMS:
         row(t, r, [1.0, 3.0, 3.4, 5.4, 4.2], font_size=8, mono_cols=(2,),
@@ -370,4 +372,4 @@ def _chapter_open(doc):
 
 if __name__ == '__main__':
     p = build()
-    print('저장:', p.name, f'({p.stat().st_size / 1024:.0f} KB)')
+    print(T('log.docx_saved', name=p.name, kb=f'{p.stat().st_size / 1024:.0f}'))

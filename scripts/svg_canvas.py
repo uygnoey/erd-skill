@@ -12,6 +12,7 @@ text·line·rectangle·rounded_rectangle·arc·ellipse 여섯 뿐이다. 그래�
 `textLength` 로 못 박는다. 폰트가 없어도 칸을 벗어나지 않는다.
 """
 from xml.sax.saxutils import escape
+from i18n import LANG
 
 _ANCHOR = {'l': 'start', 'm': 'middle', 'r': 'end'}
 
@@ -42,9 +43,14 @@ class SvgCanvas:
         self.w, self.h = int(width), int(height)
         self.bg = bg
         self.parts = []
-        # 보는 PC 에 Pretendard 가 없을 때를 대비한 폴백 체인
+        # 보는 PC 에 그 폰트가 없을 때를 대비한 폴백 체인.
+        # 한자를 쓰는 말이면 그 글리프를 가진 폰트를 앞에 세운다.
         self.fallback = font_fallback or (
-            "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif")
+            "'Hiragino Sans','Yu Gothic','Noto Sans JP','Meiryo',"
+            "'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif"
+            if LANG == 'ja' else
+            "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',"
+            "'Helvetica Neue',sans-serif")
         self.mono_fallback = "'Menlo','D2Coding','DejaVu Sans Mono','Consolas',monospace"
 
     # ── 도형 ────────────────────────────────────────────────────────────────
