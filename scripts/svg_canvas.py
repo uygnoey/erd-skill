@@ -110,7 +110,8 @@ class SvgCanvas:
             f'fill="none" stroke="{fill or "#000"}" stroke-width="{_n(width or 1)}"/>')
 
     # ── 글자 ────────────────────────────────────────────────────────────────
-    def text(self, xy, text, font=None, anchor=None, fill=None, **_kw):
+    def text(self, xy, text, font=None, anchor=None, fill=None,
+             stroke_width=0, stroke_fill=None, **_kw):
         if text is None or text == '':
             return
         x, y = float(xy[0]), float(xy[1])
@@ -141,6 +142,10 @@ class SvgCanvas:
         w = self._width(text, font)
         attrs = [f'x="{_n(x)}"', f'y="{_n(y)}"',
                  f'font-family="{family}"', f'font-size="{_n(size)}"']
+        if stroke_width and stroke_fill:
+            # paint-order=stroke 라야 테두리가 글자 **뒤** 로 간다 (PIL 과 같은 순서)
+            attrs += [f'stroke="{stroke_fill}"', f'stroke-width="{_n(stroke_width)}"',
+                      'paint-order="stroke"', 'stroke-linejoin="round"']
         if bold:
             attrs.append('font-weight="700"')
         if _ANCHOR.get(ah, 'start') != 'start':

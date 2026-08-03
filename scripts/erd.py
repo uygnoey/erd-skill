@@ -859,9 +859,11 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     box = ((p[0] + q[0]) / 2 - bw / 2 - 3, top - 22,
                            (p[0] + q[0]) / 2 + bw / 2 + 3, top - 8)
                 placed.append(box)
-                d.rectangle([box[0] * S, box[1] * S, box[2] * S, box[3] * S], fill=BG)
+                # 배경 사각형으로 덮으면 그 아래를 지나던 다른 선이 끊겨 보인다.
+                # 글자 둘레만 배경색으로 두르면 선은 이어진 채로 글자도 읽힌다.
                 d.text(((box[0] + box[2]) / 2 * S, (box[1] + box[3]) / 2 * S), text,
-                       font=f['edge'], fill=LABEL_TXT, anchor='mm')
+                       font=f['edge'], fill=LABEL_TXT, anchor='mm',
+                       stroke_width=max(2, 2 * S), stroke_fill=BG)
 
         # ── 경로를 먼저 모두 계산한다 (교차 hop 을 그리기 위해) ──
         edges = []          # (pts, color, label, dashed)
