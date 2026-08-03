@@ -65,26 +65,30 @@ join information_schema.key_column_usage kcu
 where tc.constraint_type='PRIMARY KEY' and tc.table_schema in ({schemas})
 order by kcu.ordinal_position"""
 
-# 복합 FK 는 자식 컬럼과 부모 컬럼을 **자리끼리** 짝지어야 한다. constraint_name 만으로
-# 이으면 2컬럼짜리가 2×2 로 불어나 있지도 않은 관계가 문서에 실린다.
-# position_in_unique_constraint 가 '이 자식 컬럼이 부모 유니크 제약의 몇 번째인지' 다.
+# FK 는 pg_catalog 에서 읽는다.
+#
+# information_schema 로 읽으면 부모 쪽이 **유니크 제약** 일 때만 잡힌다.
+# CREATE UNIQUE INDEX 로만 유니크를 걸어 둔 컬럼을 가리키는 FK 는
+# referential_constraints.unique_constraint_name 이 NULL 이라 조인에서 통째로 빠진다 —
+# 관계가 그림에서 소리 없이 사라졌다. 유니크 인덱스는 흔한 방식이다.
+#
+# conkey·confkey 를 자리끼리 풀어 복합 FK 도 자리로 짝짓는다.
 Q_FK = """
-select tc.table_schema, tc.table_name, kcu.column_name,
-       ccu.table_schema, ccu.table_name, ccu.column_name,
-       coalesce(rc.delete_rule,'NO ACTION')
-from information_schema.table_constraints tc
-join information_schema.referential_constraints rc
-  on rc.constraint_name=tc.constraint_name
- and rc.constraint_schema=tc.constraint_schema
-join information_schema.key_column_usage kcu
-  on kcu.constraint_name=tc.constraint_name
- and kcu.constraint_schema=tc.constraint_schema
-join information_schema.key_column_usage ccu
-  on ccu.constraint_name=rc.unique_constraint_name
- and ccu.constraint_schema=rc.unique_constraint_schema
- and ccu.ordinal_position=kcu.position_in_unique_constraint
-where tc.constraint_type='FOREIGN KEY' and tc.table_schema in ({schemas})
-order by tc.table_schema, tc.table_name, kcu.ordinal_position"""
+select cs.nspname, cl.relname, ca.attname,
+       ps.nspname, pl.relname, pa.attname,
+       case con.confdeltype when 'c' then 'CASCADE' when 'n' then 'SET NULL'
+            when 'r' then 'RESTRICT' when 'd' then 'SET DEFAULT' else 'NO ACTION' end
+from pg_constraint con
+join pg_class cl on cl.oid=con.conrelid
+join pg_namespace cs on cs.oid=cl.relnamespace
+join pg_class pl on pl.oid=con.confrelid
+join pg_namespace ps on ps.oid=pl.relnamespace
+join lateral unnest(con.conkey) with ordinality as k(attnum, ord) on true
+join lateral unnest(con.confkey) with ordinality as f(attnum, ord) on f.ord=k.ord
+join pg_attribute ca on ca.attrelid=con.conrelid and ca.attnum=k.attnum
+join pg_attribute pa on pa.attrelid=con.confrelid and pa.attnum=f.attnum
+where con.contype='f' and cs.nspname in ({schemas})
+order by cs.nspname, cl.relname, con.conname, k.ord"""
 
 Q_TABLE_NOTE = """
 select t.table_schema, t.table_name,

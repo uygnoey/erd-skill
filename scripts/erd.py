@@ -329,6 +329,11 @@ def measure(tname, with_desc=True):
     t = SCHEMA[tname]
     f = load_fonts()
     rows = [col_line(t, c, with_desc) for c in t['columns']]
+    if not rows:
+        # 컬럼을 모르는 테이블 — DDL 이 참조만 하고 정의는 없을 때 이렇게 된다.
+        # 제목만 있는 상자로 그린다. 예전엔 여기서 max() 가 죽어 그림이 하나도
+        # 안 나왔다. 정작 parse_ddl 은 '이름만 있는 상자로 그린다' 고 안내한다.
+        return stub_box(tname)
     w_name = max(tw(r[1], f['monob']) for r in rows)
     w_type = max(tw(r[2], f['mono']) for r in rows)
     w_desc = max([tw(r[3], f['desc']) for r in rows] + [0]) if with_desc else 0
@@ -1206,9 +1211,10 @@ def graphml_node(nid, tname, pos, box):
     t = SCHEMA[tname]
     fill, head, border, layer_label = LAYERS[layer(tname)]
     x, y = pos
-    w_role = max(len(r[0]) for r in box['rows'])
-    w_name = max(len(r[1]) for r in box['rows'])
-    w_type = max(len(r[2]) for r in box['rows'])
+    # 컬럼을 모르는 테이블(참조만 되고 정의가 없는 것)은 rows 가 비어 있다
+    w_role = max([len(r[0]) for r in box['rows']] + [0])
+    w_name = max([len(r[1]) for r in box['rows']] + [0])
+    w_type = max([len(r[2]) for r in box['rows']] + [0])
     lines = [f'{r[0]:<{w_role}}  {r[1]:<{w_name}}  {r[2]:<{w_type}}' + (f'  {r[3]}' if r[3] else '')
              for r in box['rows']]
     attrs = escape('\n'.join(lines))

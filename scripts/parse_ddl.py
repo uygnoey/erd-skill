@@ -117,20 +117,24 @@ def split_top_level(body_mc: str, body_ms: str, body_sc: str):
         elif c == ')':
             depth -= 1
         elif c == ',' and depth == 0:
-            cuts.append(i + 1)
+            # 경계는 콤마가 아니라 그 줄 끝이다. 설명은 `id bigint,  -- 행 식별자` 처럼
+            # 콤마 **뒤** 에 붙으므로, 콤마에서 자르면 주석이 다음 컬럼 것이 된다.
+            j = body_sc.find('\n', i)
+            cuts.append(len(body_sc) if j < 0 else j + 1)
     cuts.append(len(body_sc) + 1)
 
     items = []
     for a, b in zip(cuts, cuts[1:]):
-        raw, code = body_mc[a:b - 1], body_sc[a:b - 1]
-        # 주석의 '위치' 는 문자열을 가린 사본에서 찾는다. 원본을 그대로 뒤지면
-        # DEFAULT '--none--' 같은 값이 주석으로 둔갑한다.
-        notes = [raw[mm.start() + 2:mm.end()]
-                 for mm in re.finditer(r'--[^\n]*', body_ms[a:b - 1])]
+        raw, code, seg_ms = body_mc[a:b - 1], body_sc[a:b - 1], body_ms[a:b - 1]
+        # 주석은 위치도 내용도 ms(문자열만 가린 사본)에서 가져온다. 위치만 ms 에서
+        # 찾고 내용을 mc(주석을 가린 사본)에서 떼어내던 탓에, 인라인 `-- 설명` 이
+        # 전부 빈 문자열이 됐다 — DDL 경로의 간판 기능이 조용히 죽어 있었다.
+        notes = [seg_ms[mm.start() + 2:mm.end()]
+                 for mm in re.finditer(r'--[^\n]*', seg_ms)]
         note = ' '.join(x.strip() for x in notes if x.strip())
         # 값(타입·기본값)은 주석만 가린 사본에서, 구조 판정은 둘 다 가린 사본에서.
-        raw_code = ' '.join(raw.split())
-        code = ' '.join(code.split())
+        raw_code = ' '.join(raw.split()).rstrip(', ')
+        code = ' '.join(code.split()).rstrip(', ')
         if code:
             items.append((raw_code, code, note))
     return items
@@ -169,6 +173,11 @@ _TYPE_HEAD = re.compile(
     r'time\s+with\s+time\s+zone|time\s+without\s+time\s+zone|'
     r'[A-Za-z_][\w]*(?:\s*\.\s*[A-Za-z_][\w]*)?)'
     r'(\s*\([^)]*\))?((?:\s*\[\s*\d*\s*\])*)', re.I)
+
+
+def _decl(rest):
+    """REFERENCES 절을 떼어 낸 선언부. 부모 테이블 이름이 판정에 끼어들지 않게 한다."""
+    return re.split(r'\bREFERENCES\b', rest, 1, re.I)[0]
 
 
 def _type(rest):
@@ -264,20 +273,32 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
             cname, rest = col.group(1), col.group(2).strip()
             # 구조 판정(NOT NULL·PRIMARY KEY·REFERENCES)은 반드시 가린 사본에서 한다.
             # 원본에서 보면 DEFAULT 'PRIMARY KEY 설명' 같은 값이 진짜 제약이 된다.
-            col_sc = re.match(r'^"?\w+"?\s+(.+)$', code)
-            rest_sc = col_sc.group(1).strip() if col_sc else ''
+            # 앞서 만든 사본은 공백을 접으면서 원본과 길이가 어긋났으므로, 이 선언부
+            # 하나만 다시 가린다 — 같은 길이라야 값을 위치로 꺼낼 수 있다.
+            rest_sc = mask(rest)[2]
 
             up_rest = rest_sc.upper()
-            dflt = re.search(r'DEFAULT\s+(.+?)(?=\s+(?:NOT\s+NULL|NULL|PRIMARY|UNIQUE|'
-                             r'REFERENCES|CHECK|GENERATED|COLLATE)\b|$)', rest, re.I)
+            # 값의 **경계** 는 가린 사본에서 찾고 **값** 은 원본에서 꺼낸다.
+            # 가린 사본에서 값까지 읽으면 문자열이 공백이라 빈 값이 되고,
+            # 원본에서 경계를 찾으면 DEFAULT 'see REFERENCES users' 가 `'see` 로 잘린다.
+            dflt = None
+            dm = re.search(r'\bDEFAULT\b', rest_sc, re.I)
+            if dm:
+                tail = rest_sc[dm.end():]
+                stop = re.search(r'\s+(?:NOT\s+NULL|NULL|PRIMARY|UNIQUE|REFERENCES|'
+                                 r'CHECK|GENERATED|COLLATE)\b', tail, re.I)
+                dflt = rest[dm.end():dm.end() + (stop.start() if stop else len(tail))]
             t['columns'].append({
                 'name': cname,
                 'type': _type(rest),
                 # IDENTITY·serial 은 NOT NULL 을 적지 않아도 NOT NULL 이다
-                'not_null': ('NOT NULL' in up_rest or 'IDENTITY' in up_rest
-                             or 'SERIAL' in up_rest),
-                'default': dflt.group(1).strip().rstrip(',') if dflt else '',
-                'identity': 'IDENTITY' in up_rest or 'SERIAL' in up_rest,
+                # 낱말로 본다. 부분 문자열로 재면 REFERENCES serial_numbers(id) 가
+                # 그 컬럼을 identity·NOT NULL 로 만든다.
+                'not_null': bool(re.search(r'\bNOT\s+NULL\b|\bIDENTITY\b|\w*SERIAL\b(?!\s*_)',
+                                           _decl(rest_sc), re.I)),
+                'default': dflt.strip().rstrip(',') if dflt else '',
+                'identity': bool(re.search(r'\bIDENTITY\b|\b(?:BIG|SMALL)?SERIAL\b',
+                                           _decl(rest_sc), re.I)),
                 'comment': comment,
                 'added': False,
             })
@@ -302,26 +323,15 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
     head = r'ALTER\s+TABLE\s+(?:ONLY\s+)?(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?\s+'
 
     def find(sch, name):
-        """스키마까지 보고 찾는다.
-
-        스키마를 버리고 이름만으로 찾던 때는 `ALTER TABLE ONLY public.orders` 가
-        mart.orders 에 붙었다 — pg_dump 가 mart 를 먼저 내놓기 때문이다. 그 결과
-        public 의 FK 와 PK 가 통째로 남의 테이블에 실렸다.
-        """
-        if sch and f'{sch}.{name}' in tables:
-            return tables[f'{sch}.{name}']
-        if name in tables and (not sch or tables[name].get('schema') == sch):
-            return tables[name]
-        if not sch:
-            return tables.get(name) or next(
-                (tables[k] for k in tables if k.endswith('.' + name)), None)
-        return None
+        return _find(tables, sch, name)
 
     for m in re.finditer(head + r'(ADD\s+COLUMN\b.*?);', msc, re.S | re.I):
         sch, name = m.group(1), m.group(2)
         t = find(sch, name)
         if t is None:
-            key = f'{sch}.{name}' if sch and name in dup else name
+            # 스키마를 적어 준 ALTER 는 그 스키마의 테이블로 새로 만든다. 이름만으로
+            # 가져다 쓰면 audit.users 의 컬럼이 public.users 에 붙는다.
+            key = f'{sch}.{name}' if sch and (name in dup or name in tables) else name
             t = tables.setdefault(key, {
                 'name': name, 'origin': 'existing', 'src_file': src,
                 'schema': sch or 'public',
@@ -391,14 +401,7 @@ def parse_comments(sql: str, tables: dict):
     _ms, _mc, msc = mask(sql)
 
     def find(sch, name):
-        if sch and f'{sch}.{name}' in tables:
-            return tables[f'{sch}.{name}']
-        if name in tables and (not sch or tables[name].get('schema') == sch):
-            return tables[name]
-        if not sch:
-            return tables.get(name) or next(
-                (tables[k] for k in tables if k.endswith('.' + name)), None)
-        return None
+        return _find(tables, sch, name)
 
     for m in re.finditer(r'COMMENT\s+ON\s+(TABLE|COLUMN)\s+'
                          r'((?:"?\w+"?\s*\.\s*){0,2}"?\w+"?)\s+IS\b', msc, re.I):
@@ -424,6 +427,19 @@ def parse_comments(sql: str, tables: dict):
             t['note'] = text
 
 
+def _find(tables, sch, name):
+    """스키마까지 보고 테이블을 찾는다. 스키마를 무시하면 이름이 겹칠 때
+    pg_dump 가 먼저 내놓은 쪽에 남의 제약이 붙는다."""
+    if sch and f'{sch}.{name}' in tables:
+        return tables[f'{sch}.{name}']
+    if name in tables and (not sch or tables[name].get('schema') == sch):
+        return tables[name]
+    if not sch:
+        return tables.get(name) or next(
+            (tables[k] for k in tables if k.endswith('.' + name)), None)
+    return None
+
+
 def parse_unique(sql: str, tables: dict):
     """CREATE UNIQUE INDEX → uniques.
 
@@ -433,11 +449,10 @@ def parse_unique(sql: str, tables: dict):
     _ms, _mc, msc = mask(sql)
     for m in re.finditer(r'CREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?'
                          r'(?:IF\s+NOT\s+EXISTS\s+)?"?\w+"?\s+ON\s+(?:ONLY\s+)?'
-                         r'(?:"?\w+"?\s*\.\s*)?"?(\w+)"?'
+                         r'(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?'
                          r'(?:\s+USING\s+\w+)?\s*\(([^)]+)\)', msc, re.I):
-        t = next((tables[k] for k in tables
-                  if k == m.group(1) or k.endswith('.' + m.group(1))), None)
-        cols = [c.strip().strip('"') for c in m.group(2).split(',')]
+        t = _find(tables, m.group(1), m.group(2))
+        cols = [c.strip().strip('"') for c in m.group(3).split(',')]
         if t is not None and not any('(' in c for c in cols):
             t['uniques'].append(cols)      # 함수 인덱스(lower(email))는 컬럼 목록이 아니다
 
