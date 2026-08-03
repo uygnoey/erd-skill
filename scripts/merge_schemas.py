@@ -25,7 +25,10 @@ def main():
         path = WORK / f'schema.{label}.json'
         if not path.exists():
             raise SystemExit(T('err.merge_missing', path=path, label=label))
-        part = json.loads(path.read_text())
+        try:
+            part = json.loads(path.read_text())
+        except json.JSONDecodeError as e:
+            raise SystemExit(T('err.spec_json', path=path, err=e))
         merged.update(part)
         n_col = sum(len(t['columns']) for t in part.values())
         print(T('log.merge_part', label=f'{label:8}', tables=f'{len(part):3}',

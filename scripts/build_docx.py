@@ -126,6 +126,9 @@ def _mark_header_repeat(row):
 def row(t, values, widths=None, font_size=8.5, mono_cols=(), bold_cols=(),
         colors=None, aligns=None):
     cells = t.add_row().cells
+    # spec 은 사람이 손으로 쓴다. 칸이 남거나 모자란다고 문서 생성이 통째로 죽으면
+    # 어디가 잘못됐는지도 알 수 없다 — 표 폭에 맞춰 자르고 채운다.
+    values = (list(values) + [''] * len(cells))[:len(cells)]
     for i, v in enumerate(values):
         cell = cells[i]
         cell.text = ''
@@ -327,7 +330,10 @@ def build():
     para(doc, T('docx.ch5_2_intro'))
     t = table(doc, [T('word.src_side'), T('word.dst_side'), T('word.content')],
               [5.0, 5.4, 6.6], font_size=8.5)
+    # 그림에 없는 흐름을 표에만 싣지 않는다 — 문서만 보면 있는 관계로 읽힌다
     for src, dst, label in erd.DERIVES:
+        if src not in erd.SCHEMA or dst not in erd.SCHEMA:
+            continue
         row(t, (src, dst, label), [5.0, 5.4, 6.6], font_size=8.5, mono_cols=(0, 1))
     para(doc, '')
 

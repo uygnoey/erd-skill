@@ -188,7 +188,9 @@ def layer(t):
 
 def badge(tname):
     t = SCHEMA[tname]
-    if t.get('readonly'):
+    # ref 스키마에서 끌어온 읽기 전용 원천. readonly 만 보던 탓에 이 배지는 실제로는
+    # 한 번도 나오지 않았다 — parse_ddl 은 origin='ref' 로 표시한다.
+    if t.get('readonly') or t.get('origin') == 'ref':
         return T('word.source'), '#D9A566'
     if t.get('origin') == 'new':
         return 'NEW', '#7ED07E'
@@ -888,11 +890,16 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 color = EDGE          # 선은 FK(실선)·ETL(점선) 두 종류만 쓴다
                 lbl = f"{fk['column']}: {fk['ref_column']}"
                 if ref == tname:                          # 자기참조 — 좌측 ㄷ자 루프
+                    # 루프 크기가 노드 위치만으로 정해져 있어서, 자기참조가 둘이면
+                    # 완전히 같은 자리에 겹쳐 그려졌다 — 하나로 보이고 라벨도 포개졌다.
+                    # 이미 그린 루프 수만큼 밖으로 물린다.
+                    k = sum(1 for lp in self_loops if lp[3] == tname)
                     x1, y1, _x2, y2 = rect(tname)
                     cy = (y1 + y2) / 2
-                    self_loops.append(([(x1, cy - 16), (x1 - 30, cy - 16),
-                                        (x1 - 30, cy + 16), (x1, cy + 16)],
-                                       color, fk['column']))
+                    dx, dy = 30 + k * 16, 16 + k * 10
+                    self_loops.append(([(x1, cy - dy), (x1 - dx, cy - dy),
+                                        (x1 - dx, cy + dy), (x1, cy + dy)],
+                                       color, fk['column'], tname))
                     continue
                 if ref not in inside:
                     continue
@@ -950,13 +957,23 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             if edge_labels:
                 path_label(pts, label, color)
 
-        for pts, color, label in self_loops:
+        for pts, color, label, _owner in self_loops:
             draw_edge(pts, color, -1)
             crow_foot(pts, color)
             one_bar(pts, color)
             if edge_labels:
-                d.text(((pts[0][0] - 34) * S, ((pts[0][1] + pts[-1][1]) / 2) * S), label,
-                       font=f['edge'], fill=color, anchor='rm')
+                # 다른 라벨과 같은 대우 — 글자 둘레를 배경색으로 둘러 통로의 선이
+                # 글자를 관통해 보이지 않게 하고, 겹침 판정 대상에도 넣는다.
+                # 루프마다 높이가 다르므로 위쪽 가로선에 얹으면 서로 겹치지 않는다.
+                # 세로 구간 한가운데에 두면 자기참조가 둘일 때 라벨이 포개졌다.
+                # 오른쪽 끝을 노드 앞에서 끊는다. 가운데 정렬로 두면 라벨이 길 때
+                # 오른쪽 절반이 테이블을 파고든다 (새 검증 항목이 바로 잡아냈다).
+                # y 는 루프마다 다른 가로선에 맞춰 서로 겹치지 않는다.
+                lx, ly = pts[0][0] - 5, pts[1][1] - 9
+                bw = tw(label, f['edge']) / S
+                placed.append((lx - bw - 3, ly - 8, lx + 3, ly + 8))
+                d.text((lx * S, ly * S), label, font=f['edge'], fill=color, anchor='rm',
+                       stroke_width=max(2, 2 * S), stroke_fill=BG)
 
         # ── 노드 ──
         for n in tnames:
@@ -997,7 +1014,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
 
         # 자기참조 루프도 검증 대상이다. 그리기만 하고 재지 않아서, 루프가 옆 테이블을
         # 지나가도 선↔테이블 0 이 찍혔다.
-        return edges + [(pts, color, label, False) for pts, color, label in self_loops], placed
+        return edges + [(pts, color, label, False)
+                        for pts, color, label, _o in self_loops], placed
 
     # ① 측정 — 1×1 더미 캔버스에 그려 좌표만 수집한다 (캔버스 밖도 정확히 추적)
     probe = Tracker(ImageDraw.Draw(Image.new('RGB', (1, 1))))

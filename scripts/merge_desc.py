@@ -92,7 +92,7 @@ def parse_doc_html():
             head, block = m.group(1), m.group(2)
             tname = re.sub(r'<[^>]+>.*', '', head)          # 배지 앞의 순수 텍스트
             tname = re.sub(r'<[^>]+>', '', tname).strip()
-            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', tname):
+            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]*', tname):
                 continue
             for row in re.findall(r'<tr>(.*?)</tr>', block, re.S):
                 cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)
@@ -116,15 +116,22 @@ def main():
     for tname, t in schema.items():
         base = t.get('name', tname)          # 라벨 접두어를 뗀 실제 테이블명
         for c in t['columns']:
-            key = f"{base}.{c['name']}"
+            # 여러 DB 를 합치면 shop.orders 와 mart.orders 가 둘 다 <h4>orders</h4> 로
+            # 나온다. 이름만으로 찾으면 먼저 나온 쪽 설명이 양쪽에 덮어씌워진다 —
+            # 키가 붙은 쪽을 먼저 보고, 없을 때만 이름으로 떨어진다.
+            key = f"{tname}.{c['name']}" if f"{tname}.{c['name']}" in doc \
+                else f"{base}.{c['name']}"
             # 수기 사전이 최우선 — DDL 주석이 '필수' 처럼 너무 짧은 경우를 덮어쓴다
             if key in MANUAL:
                 c['comment'], src = clean(MANUAL[key]), 'manual'
                 filled['manual'] += 1
             elif c['comment']:
                 c['comment'] = clean(c['comment'])
-                filled['ddl'] += 1
-                src = 'ddl'
+                # 두 번째 실행부터는 앞선 실행이 채워 넣은 설명이 이미 자리에 있다.
+                # 그걸 전부 'DB 코멘트' 로 세면 통계가 거짓말이 된다 — 앞서 적어 둔
+                # 출처가 있으면 그대로 물려받는다.
+                src = c.get('desc_src') or 'ddl'
+                filled[src if src in filled else 'ddl'] += 1
             elif key in doc:                 # 이전 판 문서에서 물려받은 설명
                 c['comment'], src = clean(doc[key]), 'doc'
                 filled['doc'] += 1

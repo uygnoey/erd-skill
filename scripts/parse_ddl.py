@@ -65,10 +65,40 @@ def split_top_level(body: str):
 
 
 def parse_create(sql: str, src: str, tables: dict):
-    for m in re.finditer(r'CREATE TABLE (\w+)\s*\((.*?)\n\);', sql, re.S):
-        name, body = m.group(1), m.group(2)
+    # pg_dump 는 CREATE TABLE public.users 처럼 스키마를 붙여 내놓고, 마이그레이션
+    # 스크립트는 IF NOT EXISTS 를 즐겨 쓴다. 예전 정규식은 둘 다 놓쳐서 — 가장 흔한
+    # 두 형태를 통째로 — 테이블 0개로 조용히 끝났다. 따옴표 친 이름도 받는다.
+    head_pat = re.compile(r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+                          r'(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?\s*\(', re.I)
+    for m in head_pat.finditer(sql):
+        sch, name = m.group(1), m.group(2)
+        # 본문은 정규식으로 끊지 않고 괄호 짝을 세어 잘라낸다. '\n);' 로 끊던 예전
+        # 방식은 한 줄짜리 정의를 통째로 놓쳤고, 문자열·주석 안의 괄호에 약했다.
+        i, depth = m.end(), 1
+        while i < len(sql) and depth:
+            if sql[i] == "'":                       # 문자열 리터럴은 통째로 건너뛴다
+                j = sql.find("'", i + 1)
+                if j < 0:
+                    break
+                i = j
+            elif sql.startswith('--', i):           # 줄 주석 — 안의 괄호는 세지 않는다
+                j = sql.find('\n', i)
+                if j < 0:
+                    break
+                i = j
+            elif sql[i] == '(':
+                depth += 1
+            elif sql[i] == ')':
+                depth -= 1
+                if not depth:
+                    break
+            i += 1
+        if depth:
+            continue                                # 괄호가 안 닫혔다 — 잘린 파일
+        body = sql[m.end():i]
         t = tables.setdefault(name, {
             'name': name, 'origin': 'new', 'src_file': src,
+            'schema': sch or 'public',
             'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
         })
         # CREATE TABLE 직전의 ── 주석 헤더를 테이블 설명으로 쓴다
@@ -111,13 +141,33 @@ def parse_create(sql: str, src: str, tables: dict):
             t['columns'].append({
                 'name': cname,
                 'type': (typ.group(1).strip() if typ else rest.split()[0]),
-                'not_null': 'NOT NULL' in rest.upper(),
+                # IDENTITY 와 serial 은 NOT NULL 을 적지 않아도 NOT NULL 이다.
+                # 실제 DB 를 읽는 introspect 쪽과 결과가 달라지던 자리.
+                'not_null': ('NOT NULL' in rest.upper()
+                             or 'IDENTITY' in rest.upper()
+                             or 'SERIAL' in rest.upper()),
                 'default': (re.search(r'DEFAULT\s+([^\s,]+)', rest, re.I).group(1)
                             if re.search(r'DEFAULT\s+', rest, re.I) else ''),
-                'identity': 'IDENTITY' in rest.upper(),
+                'identity': 'IDENTITY' in rest.upper() or 'SERIAL' in rest.upper(),
                 'comment': comment,
                 'added': False,
             })
+            # 컬럼 줄에 바로 붙는 제약도 읽는다. 표 아래쪽에 따로 적는 형태만 보고
+            # 있어서 `user_id bigint REFERENCES users(id)` 는 관계가 없는 것으로
+            # 나왔다 — 손으로 쓰는 DDL 에서는 이쪽이 오히려 흔하다.
+            if re.search(r'\bPRIMARY\s+KEY\b', rest, re.I):
+                t['pk'].append(cname)
+            ref = re.search(r'\bREFERENCES\s+(?:"?\w+"?\s*\.\s*)?"?(\w+)"?'
+                            r'(?:\s*\(\s*"?(\w+)"?\s*\))?'
+                            r'(?:[^,]*?\bON\s+DELETE\s+([A-Z]+(?:\s+[A-Z]+)?))?',
+                            rest, re.I)
+            if ref:
+                t['fks'].append({
+                    'column': cname,
+                    'ref_table': ref.group(1),
+                    'ref_column': ref.group(2) or 'id',
+                    'on_delete': (ref.group(3) or 'NO ACTION').strip().upper(),
+                })
 
 
 def parse_alter(sql: str, src: str, tables: dict):
@@ -243,7 +293,11 @@ def main():
                 tables[rt] = {'name': rt, 'origin': 'existing', 'src_file': '',
                               'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': ''}
                 existing_names.append(rt)
-    db = fetch_existing(sorted(set(existing_names)))
+    # DDL 만으로 그리는 프로젝트도 있다. 채울 것이 없으면 DB 를 찾지 않는다 —
+    # 예전엔 무조건 접속을 시도해, 접속 정보가 없으면 거기서 죽고
+    # 있으면 `table_name in ()` 라는 빈 SQL 을 던져 경고를 찍었다.
+    names = sorted(set(existing_names))
+    db = fetch_existing(names) if names else {}
     for n in existing_names:
         if n not in db:
             continue
@@ -257,7 +311,8 @@ def main():
 
     for t in tables.values():
         t.setdefault('schema', 'public')
-    tables.update(fetch_ref(REF_SOURCES))
+    if REF_SOURCES and REF_SCHEMA:
+        tables.update(fetch_ref(REF_SOURCES))
 
     Path(OUT).write_text(json.dumps(tables, ensure_ascii=False, indent=2))
     print(T('log.ddl_parsed', n=len(tables), path=OUT))
