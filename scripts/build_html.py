@@ -182,7 +182,10 @@ def table_block(tkey):
             badges.insert(0, f'rows ≈ {t["rows"]:,}')
         if t.get('size'):
             badges.append(t['size'])
-    h = [f'<h4 id="{anchor(tkey)}">{escape(t["name"])}'
+    # 제목에 테이블 키를 쓴다. 이름만 쓰면 mart.orders 와 public.orders 가 둘 다
+    # <h4>orders</h4> 가 되어, 이전 판에서 설명을 물려받을 때 한쪽 설명이 다른
+    # 테이블로 옮겨 붙는다 (docx 는 이미 키를 쓴다). 단일 DB 면 키가 곧 이름이다.
+    h = [f'<h4 id="{anchor(tkey)}">{escape(tkey)}'
          + ''.join(f'<span class="badge">{escape(b)}</span>' for b in badges) + '</h4>']
 
     lay = LAYERS.get(layer(tkey))

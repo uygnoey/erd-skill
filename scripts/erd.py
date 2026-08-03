@@ -1246,16 +1246,18 @@ def graphml_node(nid, tname, pos, box):
 '''
 
 
-def graphml_edge(eid, src, tgt, fk):
-    color = EDGE
-    label = escape(f"{fk['column']} : {fk['ref_column']}")
+def graphml_edge(eid, src, tgt, fk, derive=False):
+    # ETL 흐름은 그림과 같은 갈색 점선으로 — FK 와 구분되어야 한다
+    color = '#B0885A' if derive else EDGE
+    label = escape(fk['column'] if derive
+                   else f"{fk['column']} : {fk['ref_column']}")
     return f'''    <edge id="{eid}" source="{src}" target="{tgt}">
       <data key="d3">{label}</data>
       <data key="d2">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
-          <y:LineStyle color="{color}" type="line" width="1.0"/>
-          <y:Arrows source="crows_foot_many" target="crows_foot_one"/>
+          <y:LineStyle color="{color}" type="{'dashed' if derive else 'line'}" width="1.0"/>
+          <y:Arrows source="{'none' if derive else 'crows_foot_many'}" target="{'standard' if derive else 'crows_foot_one'}"/>
           <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0"\
  fontFamily="Dialog" fontSize="10" fontStyle="plain" hasLineColor="false"\
  horizontalTextPosition="center" modelName="centered" preferredPlacement="anywhere"\
@@ -1279,6 +1281,14 @@ def build_graphml(path, pos, boxes):
             if fk['ref_table'] not in ids:
                 continue
             parts.append(graphml_edge(f'e{e}', ids[n], ids[fk['ref_table']], fk))
+            e += 1
+    # ETL 흐름도 넣는다. FK 만 내보내고 있어서, yEd 로 열어 재배치하고 다시 뽑으면
+    # 그림에 있던 흐름이 소리 없이 사라졌다 — 문서는 yEd 재출력을 권한다.
+    for src, dst, label in DERIVES:
+        if src in ids and dst in ids:
+            parts.append(graphml_edge(f'e{e}', ids[src], ids[dst],
+                                      {'column': label, 'ref_column': '',
+                                       'on_delete': 'ETL'}, derive=True))
             e += 1
     parts.append('  </graph>\n</graphml>\n')
     Path(path).write_text(''.join(parts))

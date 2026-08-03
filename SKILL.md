@@ -6,8 +6,11 @@ description: Generates an ERD and schema documentation from any PostgreSQL datab
 # ERD generation
 
 Connects to the database, reads the live schema, and builds the ERD. Nothing is drawn by
-hand, so **the diagram cannot drift from the database.** If DDL files are present they are
-parsed too, so changes not yet applied are included.
+hand, so **the diagram cannot drift from the database.**
+
+To include changes that are not in the database yet, run `parse_ddl.py` **instead of**
+`introspect.py` — it reads `*.sql` and writes the same `schema.json`. It is a separate path,
+not something the normal run picks up automatically.
 
 (Korean original of this document: `SKILL.ko.md`.)
 
@@ -224,7 +227,7 @@ run off the page. On landscape A4 the usable area is 26.7 × 18.0 cm.
 Printed on every render. Do not judge it by eye.
 
 ```
-verify erd_area_A.png: label↔table 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
+verify erd_area_A.png: label↔table 0 · label↔label 0 · line↔table 0 · vertical overlap 0 · horizontal overlap 0
 ```
 
 - **label↔table** — must be 0. Otherwise widen the candidate range in `flush_labels()`.
@@ -233,8 +236,10 @@ verify erd_area_A.png: label↔table 0 · line↔table 0 · vertical overlap 0 �
   corridor overflowed; widen `hgap` in the layout call, or split the area.
 - **vertical overlap** — must be 0. Happens when `slot()` gives up finding a lane.
 - **horizontal overlap** — merges into the same column are not counted. Per-area detail
-  diagrams must come out 0. The full and overview diagrams may keep a few, since the exit
-  y of a node is fixed there.
+  diagrams should come out 0; the full and overview diagrams may keep a few, since the exit
+  y of a node is fixed there. A stubborn non-zero on one area usually means too many edges
+  arrive at one column row — widen `hgap`, or split that area in the spec.
+- **label↔label** — must be 0. Two labels sitting on top of each other.
 
 Check the inserted size too:
 
@@ -269,10 +274,11 @@ examples/
   *.ko.spec.json                       the same two with Korean text
 ```
 
-`parse_ddl.py` parses **line by line**, separating code from comments before counting
-bracket depth — brackets and commas inside a comment
-(`-- status (ACTIVE/DEPRECATED)`) would otherwise break the split. The psql output
-separator is `\x1f`; `|` shows up inside defaults and comments.
+`parse_ddl.py` first makes copies of the SQL with string literals, `$tag$` blocks and
+comments blanked out, then counts brackets and splits on commas using those. Anything else
+leaks: `DEFAULT '('` used to swallow the next column, and a `--` inside a string literal
+swallowed the one after it. The psql output separator is `\x1f`; `|` shows up inside
+defaults and comments.
 
 ## Other databases and platforms
 

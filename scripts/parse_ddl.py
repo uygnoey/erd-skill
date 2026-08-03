@@ -36,7 +36,11 @@ def sql_files():
 
 
 def mask(sql):
-    """구조를 읽기 위한 사본 두 개를 만든다 — (문자열만 가린 것, 문자열·주석 다 가린 것).
+    """가린 사본 셋을 만든다 — (문자열만, 주석만, 둘 다).
+
+      ms   문자열·달러인용을 가린 것   → 주석이 어디서 시작하는지 찾을 때
+      mc   주석을 가린 것              → 값(타입·기본값)을 꺼낼 때
+      msc  둘 다 가린 것               → 괄호·콤마·키워드를 볼 때
 
     괄호 세기·콤마 나누기·키워드 찾기는 전부 가린 사본 위에서 하고, 값이 필요하면
     같은 위치를 원본에서 꺼낸다. 정규식마다 따로 문자열을 피하려 들면 반드시 샌다 —
@@ -45,13 +49,20 @@ def mask(sql):
 
     가린 자리는 같은 길이의 공백이라 위치가 원본과 그대로 맞는다.
     """
-    ms, msc = list(sql), list(sql)
+    ms, mc, msc = list(sql), list(sql), list(sql)
     i, n = 0, len(sql)
+    dollar = re.compile(r'\$([A-Za-z_]\w*)?\$')
     while i < n:
         c = sql[i]
-        if c == "'":                                  # 문자열 리터럴 ('' 는 이스케이프)
+        if c == "'":                                  # 문자열 리터럴
+            # 바로 앞이 E 면 백슬래시 이스케이프가 산다 — E'it\'s' 를 여기서 끊으면
+            # 그 뒤가 전부 어긋나 테이블 하나가 통째로 사라졌다.
+            esc = i and sql[i - 1] in 'eE' and (i < 2 or not sql[i - 2].isalnum())
             j = i + 1
             while j < n:
+                if esc and sql[j] == '\\':
+                    j += 2
+                    continue
                 if sql[j] == "'":
                     if j + 1 < n and sql[j + 1] == "'":
                         j += 2
@@ -62,30 +73,39 @@ def mask(sql):
             for k in range(i, j + 1):
                 ms[k] = msc[k] = ' '
             i = j + 1
-        elif sql.startswith('$$', i):                 # 함수 본문 — 통째로 없는 셈 친다
-            j = sql.find('$$', i + 2)
-            j = n if j < 0 else j + 2
+        elif c == '$' and dollar.match(sql, i):       # $$ … $$ 와 $tag$ … $tag$
+            tag = dollar.match(sql, i).group(0)
+            j = sql.find(tag, i + len(tag))
+            j = n if j < 0 else j + len(tag)
             for k in range(i, j):
                 ms[k] = msc[k] = ' '
             i = j
-        elif sql.startswith('--', i):                 # 줄 주석 — 값으로는 살려 둔다
+        elif sql.startswith('--', i):                 # 줄 주석 — 설명으로 쓰므로 ms 엔 남긴다
             j = sql.find('\n', i)
             j = n if j < 0 else j
             for k in range(i, j):
-                msc[k] = ' '
+                mc[k] = msc[k] = ' '
             i = j
-        elif sql.startswith('/*', i):
-            j = sql.find('*/', i + 2)
-            j = n if j < 0 else j + 2
+        elif sql.startswith('/*', i):                 # 블록 주석 — 중첩된다
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if sql.startswith('/*', j):
+                    depth += 1
+                    j += 2
+                elif sql.startswith('*/', j):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
             for k in range(i, j):
-                ms[k] = msc[k] = ' '
+                mc[k] = msc[k] = ' '
             i = j
         else:
             i += 1
-    return ''.join(ms), ''.join(msc)
+    return ''.join(ms), ''.join(mc), ''.join(msc)
 
 
-def split_top_level(body: str, body_ms: str, body_sc: str):
+def split_top_level(body_mc: str, body_ms: str, body_sc: str):
     """최상위 콤마로 항목을 나눈다 → [(코드, 주석), …]
 
     줄 단위가 아니라 콤마 단위다. 한 줄에 다 적은 정의도 제대로 나뉜다.
@@ -102,20 +122,14 @@ def split_top_level(body: str, body_ms: str, body_sc: str):
 
     items = []
     for a, b in zip(cuts, cuts[1:]):
-        raw, code = body[a:b - 1], body_sc[a:b - 1]
+        raw, code = body_mc[a:b - 1], body_sc[a:b - 1]
         # 주석의 '위치' 는 문자열을 가린 사본에서 찾는다. 원본을 그대로 뒤지면
         # DEFAULT '--none--' 같은 값이 주석으로 둔갑한다.
         notes = [raw[mm.start() + 2:mm.end()]
                  for mm in re.finditer(r'--[^\n]*', body_ms[a:b - 1])]
         note = ' '.join(x.strip() for x in notes if x.strip())
-        # 값(타입·기본값)은 원본에서, 구조 판정(키워드·괄호)은 가린 사본에서 본다.
-        # 주석만 걷어낸 원본을 따로 만든다.
-        keep, at = [], 0
-        for mm in re.finditer(r'--[^\n]*', body_ms[a:b - 1]):
-            keep.append(raw[at:mm.start()])
-            at = mm.end()
-        keep.append(raw[at:])
-        raw_code = ' '.join(''.join(keep).split())
+        # 값(타입·기본값)은 주석만 가린 사본에서, 구조 판정은 둘 다 가린 사본에서.
+        raw_code = ' '.join(raw.split())
         code = ' '.join(code.split())
         if code:
             items.append((raw_code, code, note))
@@ -124,24 +138,64 @@ def split_top_level(body: str, body_ms: str, body_sc: str):
 
 # 컬럼이 아니라 테이블 전체에 걸리는 것들. 예전엔 CHECK·UNIQUE·LIKE 가 이름이
 # 'CHECK' 인 가짜 컬럼으로 문서에 실렸다.
-_TABLE_LEVEL = ('CONSTRAINT', 'PRIMARY KEY', 'FOREIGN KEY', 'UNIQUE', 'CHECK',
-                'EXCLUDE', 'LIKE', 'INHERITS', 'PARTITION')
+_TABLE_LEVEL = re.compile(
+    r'(?:CONSTRAINT|PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|EXCLUDE|LIKE|INHERITS|'
+    r'PARTITION)\b', re.I)
 _ON_DELETE = r'ON\s+DELETE\s+(CASCADE|RESTRICT|SET\s+NULL|SET\s+DEFAULT|NO\s+ACTION)'
 
 
 def _refs(code):
-    """REFERENCES … 한 건 → (부모스키마, 부모, 부모컬럼, 삭제규칙). 없으면 None.
+    """REFERENCES … 한 건 → (부모스키마, 부모, [부모컬럼…], 삭제규칙). 없으면 None.
+
+    부모 컬럼을 하나만 받던 때는 복합 FK 의 두 컬럼이 모두 'id' 를 가리키는 것으로
+    적혀, 있지도 않은 관계가 문서에 실렸다. introspect 는 자리끼리 짝짓는다.
 
     삭제 규칙은 낱말을 못박아 읽는다. `[A-Z ]+` 로 긁던 예전 방식은
     `ON DELETE CASCADE ON UPDATE CASCADE` 를 'CASCADE ON' 으로 만들어 문서에 실었다.
     """
-    m = re.search(r'\bREFERENCES\s+(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?\s*(?:\(\s*"?(\w+)"?\s*\))?',
+    m = re.search(r'\bREFERENCES\s+(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?\s*(?:\(([^)]*)\))?',
                   code, re.I)
     if not m:
         return None
+    cols = [c.strip().strip('"') for c in (m.group(3) or '').split(',') if c.strip()]
     rule = re.search(_ON_DELETE, code[m.end():], re.I)
-    return (m.group(1), m.group(2), m.group(3) or 'id',
+    return (m.group(1), m.group(2), cols or ['id'],
             ' '.join((rule.group(1) if rule else 'NO ACTION').split()).upper())
+
+
+_TYPE_HEAD = re.compile(
+    r'^(character\s+varying|character|bit\s+varying|double\s+precision|'
+    r'timestamp\s+with\s+time\s+zone|timestamp\s+without\s+time\s+zone|'
+    r'time\s+with\s+time\s+zone|time\s+without\s+time\s+zone|'
+    r'[A-Za-z_][\w]*(?:\s*\.\s*[A-Za-z_][\w]*)?)'
+    r'(\s*\([^)]*\))?((?:\s*\[\s*\d*\s*\])*)', re.I)
+
+
+def _type(rest):
+    """컬럼 타입을 introspect 와 같은 이름으로 정규화한다.
+
+    pg_dump 는 varchar 를 언제나 `character varying(255)` 로 쓴다. 낱말 하나만 떼던
+    예전 코드는 이걸 'character' 로 만들어, 길이도 잃고 DB 를 직접 읽은 결과와도
+    달라졌다 — 문서의 타입 칸이 통째로 틀렸다.
+    """
+    m = _TYPE_HEAD.match(rest.strip())
+    if not m:
+        return rest.split()[0] if rest.split() else ''
+    base = ' '.join(m.group(1).split()).lower()
+    args, arr = (m.group(2) or '').strip(), (m.group(3) or '').replace(' ', '')
+    named = {'character varying': 'varchar',
+             'timestamp with time zone': 'timestamptz',
+             'timestamp without time zone': 'timestamp',
+             'time with time zone': 'timetz',
+             'time without time zone': 'time',
+             'double precision': 'double precision'}
+    if base in named:
+        base = named[base]
+        if base in ('timestamptz', 'timestamp', 'timetz', 'time'):
+            args = ''                       # timestamp(6) 의 정밀도는 introspect 도 안 쓴다
+    elif base == 'character' and args:
+        base = 'char'
+    return base + args + arr
 
 
 def _ref_key(ref, own_schema, dup):
@@ -151,7 +205,7 @@ def _ref_key(ref, own_schema, dup):
 
 
 def parse_create(sql: str, src: str, tables: dict, dup: set):
-    ms, msc = mask(sql)
+    ms, mc, msc = mask(sql)
     head_pat = re.compile(r'CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+'
                           r'(?:IF\s+NOT\s+EXISTS\s+)?'
                           r'(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?\s*\(', re.I)
@@ -168,7 +222,7 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
             i += 1
         if depth:
             continue                              # 안 닫혔다 — 잘린 파일
-        body, body_ms, body_sc = sql[m.end():i], ms[m.end():i], msc[m.end():i]
+        body_mc, body_ms, body_sc = mc[m.end():i], ms[m.end():i], msc[m.end():i]
         key = f'{sch}.{name}' if name in dup else name
         t = tables.setdefault(key, {
             'name': name, 'origin': 'new', 'src_file': src, 'schema': sch,
@@ -183,9 +237,9 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
                 t['note'] = hm.group(1).strip('- ').strip()
                 break
 
-        for raw_code, code, comment in split_top_level(body, body_ms, body_sc):
+        for raw_code, code, comment in split_top_level(body_mc, body_ms, body_sc):
             up = code.upper()
-            if up.startswith(_TABLE_LEVEL):
+            if _TABLE_LEVEL.match(code):
                 pk = re.search(r'PRIMARY\s+KEY\s*\(([^)]+)\)', code, re.I)
                 if pk:
                     t['pk'] = [c.strip().strip('"') for c in pk.group(1).split(',')]
@@ -193,9 +247,12 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
                 ref = _refs(code)
                 if fk and ref:
                     rt = _ref_key(ref, sch, dup)
-                    for c in fk.group(1).split(','):
-                        t['fks'].append({'column': c.strip().strip('"'), 'ref_table': rt,
-                                         'ref_column': ref[2], 'on_delete': ref[3]})
+                    kids = [c.strip().strip('"') for c in fk.group(1).split(',')]
+                    for idx, c in enumerate(kids):
+                        t['fks'].append({
+                            'column': c, 'ref_table': rt,
+                            'ref_column': ref[2][idx] if idx < len(ref[2]) else ref[2][-1],
+                            'on_delete': ref[3]})
                 uq = re.match(r'(?:CONSTRAINT\s+"?\w+"?\s+)?UNIQUE\s*\(([^)]+)\)', code, re.I)
                 if uq:
                     t['uniques'].append([c.strip().strip('"') for c in uq.group(1).split(',')])
@@ -205,15 +262,17 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
             if not col:
                 continue
             cname, rest = col.group(1), col.group(2).strip()
-            rest_sc = code[len(code) - len(code.split(None, 1)[-1]):] if ' ' in code else ''
-            typ = re.match(r'^([A-Za-z][\w ]*?(?:\s*\([^)]*\))?(?:\s*\[\])*)'
-                           r'(?=\s|$)', rest)
-            up_rest = (rest_sc or rest).upper()
+            # 구조 판정(NOT NULL·PRIMARY KEY·REFERENCES)은 반드시 가린 사본에서 한다.
+            # 원본에서 보면 DEFAULT 'PRIMARY KEY 설명' 같은 값이 진짜 제약이 된다.
+            col_sc = re.match(r'^"?\w+"?\s+(.+)$', code)
+            rest_sc = col_sc.group(1).strip() if col_sc else ''
+
+            up_rest = rest_sc.upper()
             dflt = re.search(r'DEFAULT\s+(.+?)(?=\s+(?:NOT\s+NULL|NULL|PRIMARY|UNIQUE|'
                              r'REFERENCES|CHECK|GENERATED|COLLATE)\b|$)', rest, re.I)
             t['columns'].append({
                 'name': cname,
-                'type': (typ.group(1).strip() if typ else rest.split()[0]),
+                'type': _type(rest),
                 # IDENTITY·serial 은 NOT NULL 을 적지 않아도 NOT NULL 이다
                 'not_null': ('NOT NULL' in up_rest or 'IDENTITY' in up_rest
                              or 'SERIAL' in up_rest),
@@ -222,14 +281,14 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
                 'comment': comment,
                 'added': False,
             })
-            if re.search(r'\bPRIMARY\s+KEY\b', rest, re.I):
+            if re.search(r'\bPRIMARY\s+KEY\b', rest_sc, re.I):
                 t['pk'].append(cname)
-            if re.search(r'\bUNIQUE\b', rest, re.I):
+            if re.search(r'\bUNIQUE\b', rest_sc, re.I):
                 t['uniques'].append([cname])
-            ref = _refs(rest)
+            ref = _refs(rest_sc)
             if ref:
                 t['fks'].append({'column': cname, 'ref_table': _ref_key(ref, sch, dup),
-                                 'ref_column': ref[2], 'on_delete': ref[3]})
+                                 'ref_column': ref[2][0], 'on_delete': ref[3]})
 
 
 def parse_alter(sql: str, src: str, tables: dict, dup: set):
@@ -239,34 +298,46 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
     `ALTER TABLE (\w+)` 만 보던 예전 코드는 ONLY 도 스키마도 못 넘어, pg_dump 로 뽑은
     DDL 에서는 PK 와 FK 가 하나도 잡히지 않았다.
     """
-    ms, msc = mask(sql)
-    head = r'ALTER\s+TABLE\s+(?:ONLY\s+)?(?:"?\w+"?\s*\.\s*)?"?(\w+)"?\s+'
+    ms, mc, msc = mask(sql)
+    head = r'ALTER\s+TABLE\s+(?:ONLY\s+)?(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?\s+'
 
-    def find(name):
-        for k in (name, *(k for k in tables if k.endswith('.' + name))):
-            if k in tables:
-                return tables[k]
+    def find(sch, name):
+        """스키마까지 보고 찾는다.
+
+        스키마를 버리고 이름만으로 찾던 때는 `ALTER TABLE ONLY public.orders` 가
+        mart.orders 에 붙었다 — pg_dump 가 mart 를 먼저 내놓기 때문이다. 그 결과
+        public 의 FK 와 PK 가 통째로 남의 테이블에 실렸다.
+        """
+        if sch and f'{sch}.{name}' in tables:
+            return tables[f'{sch}.{name}']
+        if name in tables and (not sch or tables[name].get('schema') == sch):
+            return tables[name]
+        if not sch:
+            return tables.get(name) or next(
+                (tables[k] for k in tables if k.endswith('.' + name)), None)
         return None
 
     for m in re.finditer(head + r'(ADD\s+COLUMN\b.*?);', msc, re.S | re.I):
-        name = m.group(1)
-        key = next((k for k in tables if k == name or k.endswith('.' + name)), name)
-        t = tables.setdefault(key, {
-            'name': name, 'origin': 'existing', 'src_file': src, 'schema': 'public',
-            'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
-        })
+        sch, name = m.group(1), m.group(2)
+        t = find(sch, name)
+        if t is None:
+            key = f'{sch}.{name}' if sch and name in dup else name
+            t = tables.setdefault(key, {
+                'name': name, 'origin': 'existing', 'src_file': src,
+                'schema': sch or 'public',
+                'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
+            })
         t['altered_by'] = src
-        body = sql[m.start(2):m.end(2)]
-        for raw_code, code, comment in split_top_level(body, ms[m.start(2):m.end(2)],
-                                                       msc[m.start(2):m.end(2)]):
+        for raw_code, code, comment in split_top_level(mc[m.start(3):m.end(3)],
+                                                       ms[m.start(3):m.end(3)],
+                                                       msc[m.start(3):m.end(3)]):
             am = re.match(r'ADD\s+COLUMN\s+"?(\w+)"?\s+(.+)$', raw_code, re.I)
             if not am:
                 continue
             rest = am.group(2).strip()
-            typ = re.match(r'^([A-Za-z][\w ]*?(?:\s*\([^)]*\))?(?:\s*\[\])*)(?=\s|$)', rest)
             t['columns'].append({
                 'name': am.group(1),
-                'type': (typ.group(1).strip() if typ else rest.split()[0]).rstrip(','),
+                'type': _type(rest),
                 'not_null': 'NOT NULL' in rest.upper(),
                 'default': (re.search(r'DEFAULT\s+(.+?)(?=\s+(?:NOT\s+NULL|NULL)\b|$)',
                                       rest, re.I).group(1).strip().rstrip(',')
@@ -277,10 +348,10 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
             })
 
     for m in re.finditer(head + r'ADD\s+CONSTRAINT\s+"?\w+"?\s+(.*?);', msc, re.S | re.I):
-        t = find(m.group(1))
+        t = find(m.group(1), m.group(2))
         if t is None:
             continue
-        code = ' '.join(sql[m.start(2):m.end(2)].split())
+        code = ' '.join(sql[m.start(3):m.end(3)].split())
         pk = re.search(r'PRIMARY\s+KEY\s*\(([^)]+)\)', code, re.I)
         if pk:
             t['pk'] = [c.strip().strip('"') for c in pk.group(1).split(',')]
@@ -288,9 +359,12 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
         ref = _refs(code)
         if fk and ref:
             rt = _ref_key(ref, t.get('schema', 'public'), dup)
-            for c in fk.group(1).split(','):
-                t['fks'].append({'column': c.strip().strip('"'), 'ref_table': rt,
-                                 'ref_column': ref[2], 'on_delete': ref[3]})
+            kids = [c.strip().strip('"') for c in fk.group(1).split(',')]
+            for idx, c in enumerate(kids):
+                t['fks'].append({
+                    'column': c, 'ref_table': rt,
+                    'ref_column': ref[2][idx] if idx < len(ref[2]) else ref[2][-1],
+                    'on_delete': ref[3]})
         uq = re.match(r'UNIQUE\s*\(([^)]+)\)', code, re.I)
         if uq:
             t['uniques'].append([c.strip().strip('"') for c in uq.group(1).split(',')])
@@ -300,37 +374,54 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
     for m in re.finditer(head + r'ALTER\s+COLUMN\s+"?(\w+)"?\s+'
                          r'(?:ADD\s+GENERATED\b|SET\s+DEFAULT\s+nextval)',
                          msc, re.S | re.I):
-        t = find(m.group(1))
+        t = find(m.group(1), m.group(2))
         if t:
             for c in t['columns']:
-                if c['name'] == m.group(2):
+                if c['name'] == m.group(3):
                     c['identity'] = c['not_null'] = True
 
 
 def parse_comments(sql: str, tables: dict):
-    """COMMENT ON TABLE/COLUMN — pg_dump 가 설명을 싣는 유일한 자리다."""
-    _ms, msc = mask(sql)
+    """COMMENT ON TABLE/COLUMN — pg_dump 가 설명을 싣는 유일한 자리다.
 
-    def find(name):
-        return next((tables[k] for k in tables
-                     if k == name or k.endswith('.' + name)), None)
+    이름 조각을 먼저 다 받아 두고 개수로 갈라 읽는다. 스키마 자리를 선택 그룹으로
+    두었더니 `COMMENT ON COLUMN users.email` 에서 users 를 스키마로 먹어 버려 손으로
+    쓴 DDL 의 컬럼 설명이 전부 사라졌다.
+    """
+    _ms, _mc, msc = mask(sql)
+
+    def find(sch, name):
+        if sch and f'{sch}.{name}' in tables:
+            return tables[f'{sch}.{name}']
+        if name in tables and (not sch or tables[name].get('schema') == sch):
+            return tables[name]
+        if not sch:
+            return tables.get(name) or next(
+                (tables[k] for k in tables if k.endswith('.' + name)), None)
+        return None
 
     for m in re.finditer(r'COMMENT\s+ON\s+(TABLE|COLUMN)\s+'
-                         r'(?:"?\w+"?\s*\.\s*)?"?(\w+)"?(?:\s*\.\s*"?(\w+)"?)?\s+IS\b',
-                         msc, re.I):
+                         r'((?:"?\w+"?\s*\.\s*){0,2}"?\w+"?)\s+IS\b', msc, re.I):
         lit = re.match(r"\s*'((?:[^']|'')*)'", sql[m.end():])
         if not lit:
             continue
         text = lit.group(1).replace("''", "'")
-        t = find(m.group(2))
+        parts = [x.strip().strip('"') for x in m.group(2).split('.')]
+        is_col = m.group(1).upper() == 'COLUMN'
+        col = parts.pop() if is_col else None
+        name = parts.pop() if parts else None
+        sch = parts.pop() if parts else None
+        if name is None:
+            continue
+        t = find(sch, name)
         if t is None:
             continue
-        if m.group(1).upper() == 'TABLE':
-            t['note'] = text
-        else:
+        if is_col:
             for c in t['columns']:
-                if c['name'] == m.group(3):
+                if c['name'] == col:
                     c['comment'] = text
+        else:
+            t['note'] = text
 
 
 def parse_unique(sql: str, tables: dict):
@@ -339,15 +430,16 @@ def parse_unique(sql: str, tables: dict):
     introspect 와 같은 '컬럼 이름 목록' 형식이어야 한다. dict 로 넣던 때는 HTML 이
     그 키를 이어 붙여 `UNIQUE (columns, where)` 라고 찍었다.
     """
-    _ms, msc = mask(sql)
+    _ms, _mc, msc = mask(sql)
     for m in re.finditer(r'CREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?'
                          r'(?:IF\s+NOT\s+EXISTS\s+)?"?\w+"?\s+ON\s+(?:ONLY\s+)?'
                          r'(?:"?\w+"?\s*\.\s*)?"?(\w+)"?'
                          r'(?:\s+USING\s+\w+)?\s*\(([^)]+)\)', msc, re.I):
         t = next((tables[k] for k in tables
                   if k == m.group(1) or k.endswith('.' + m.group(1))), None)
-        if t is not None:
-            t['uniques'].append([c.strip().strip('"') for c in m.group(2).split(',')])
+        cols = [c.strip().strip('"') for c in m.group(2).split(',')]
+        if t is not None and not any('(' in c for c in cols):
+            t['uniques'].append(cols)      # 함수 인덱스(lower(email))는 컬럼 목록이 아니다
 
 
 REF_SCHEMA = os.environ.get('ERD_REF_SCHEMA', '')
@@ -419,7 +511,7 @@ def main():
                       r'(?:IF\s+NOT\s+EXISTS\s+)?'
                       r'(?:"?(\w+)"?\s*\.\s*)?"?(\w+)"?\s*\(', re.I)
     for _f, sql in files:
-        for m in head.finditer(mask(sql)[1]):
+        for m in head.finditer(mask(sql)[2]):
             seen.setdefault(m.group(2), set()).add(m.group(1) or 'public')
     dup = {n for n, schs in seen.items() if len(schs) > 1}
 
