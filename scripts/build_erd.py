@@ -44,8 +44,7 @@ def main():
 
     # 4) PNG 영역별 상세도
     for i, (code, name, schema, tables) in enumerate(AREAS, start=3):
-        apos, aboxes, ext = erd.layout_area(tables, with_desc=True,
-                                            max_cols=2 if len(tables) > 2 else 1)
+        apos, aboxes, ext = erd.layout_area(tables, with_desc=True)
         p = erd.draw_erd(OUT / f'erd_area_{code}.png', tables + ext, apos, aboxes,
                          T('word.fig_no', n=i) + ' '
                          + T('docx.fig_area', code=code, name=name),

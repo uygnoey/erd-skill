@@ -340,10 +340,17 @@ def stub_box(tname):
 
 
 # ── 레이아웃 ─────────────────────────────────────────────────────────────────
-def layout_area(tnames, with_desc=True, max_cols=2, hgap=210, vgap=95):
+def layout_area(tnames, with_desc=True, max_cols=None, hgap=210, vgap=95):
+    """영역 하나를 배치한다. max_cols 를 주지 않으면 테이블 수에 맞춰 정한다.
+
+    2열로 고정하면 테이블이 많은 영역이 세로로 한없이 길어져(60개면 30행) 문서에
+    넣을 수 없는 그림이 된다.
+    """
     boxes = {n: measure(n, with_desc) for n in tnames}
+    if max_cols is None:
+        max_cols = 1 if len(tnames) <= 2 else min(4, max(2, round(len(tnames) ** 0.5)))
     order = sorted(tnames, key=lambda n: -boxes[n]['h'])
-    cols = [[] for _ in range(min(max_cols, len(tnames)))]
+    cols = [[] for _ in range(max(1, min(max_cols, len(tnames))))]
     heights = [0] * len(cols)
     for n in order:
         i = heights.index(min(heights))
@@ -381,14 +388,22 @@ def layout_overview(hgap=230, vgap=76):
     pos, boxes, groups = {}, {}, []
     f = load_fonts()
     x, h = 0, HEAD_H + 2
+    # 한 영역을 한 열에 다 쌓으면 테이블이 많을 때 그림이 세로로만 길어진다.
+    # 가장 큰 영역을 기준으로 한 열에 담을 행 수를 정하고, 넘치면 옆으로 접는다.
+    biggest = max((len(a[3]) for a in AREAS), default=1)
+    per_col = max(12, int(biggest ** 0.5 * 1.6)) if biggest > 16 else biggest
     for code, _name, _schema, tables in AREAS:
         w = int(max(max(tw(n, f['title']) for n in tables),
                     max(tw(ROLE.get(n, ''), f['role']) for n in tables)) + PAD * 2 + 50)
-        y = 0
+        y, col_n, x0 = 0, 0, x
         for n in tables:
+            if col_n and col_n % per_col == 0:       # 다음 서브열로 접는다
+                x += w + hgap
+                y = 0
             boxes[n] = {'w': w, 'h': h, 'rows': [], 'cols': (0, 0), 'gap': 0}
             pos[n] = (x, y)
             y += h + vgap
+            col_n += 1
         groups.append((code, tables))
         x += w + hgap
     return pos, boxes, groups
@@ -403,7 +418,10 @@ def layout_global(hgap=230, vgap=100, area_gap=150, want_cols=4):
     boxes = {n: measure(n, with_desc=True) for a in AREAS for n in a[3]}
     area_h = {a[0]: sum(boxes[n]['h'] + vgap for n in a[3]) for a in AREAS}
     total = sum(area_h.values())
-    target = max(max(area_h.values()), total / want_cols)
+    # 목표 높이를 가장 큰 영역에 맞추면, 영역이 하나뿐일 때 그 영역이 통째로 한 열이
+    # 되어 그림이 세로로 한없이 길어진다(이름 규칙 없는 DB 에서 실제로 그렇게 된다).
+    # 큰 영역은 아래에서 서브열로 나누므로 목표는 전체를 열 수로 나눈 값으로 잡는다.
+    target = max(total / max(want_cols, 1), 900)
 
     # 영역을 순서대로 열에 배정 (누적이 목표를 넘으면 새 열)
     cols, cur, cur_h = [], [], 0
@@ -420,15 +438,37 @@ def layout_global(hgap=230, vgap=100, area_gap=150, want_cols=4):
     tables_of = {a[0]: a[3] for a in AREAS}
     pos, groups, x = {}, [], 0
     for col in cols:
-        w = max(boxes[n]['w'] for code in col for n in tables_of[code])
-        y = 0
+        y, col_w = 0, 0
         for code in col:
-            for n in tables_of[code]:
-                pos[n] = (x, y)
-                y += boxes[n]['h'] + vgap
-            y += area_gap
-            groups.append((code, tables_of[code]))
-        x += w + hgap
+            ts = tables_of[code]
+            # 영역 하나가 목표 높이를 크게 넘으면 그 안에서 서브열로 나눈다.
+            # 그룹 박스는 노드 범위를 감싸므로 나뉜 서브열까지 함께 묶인다.
+            n_sub = max(1, min(4, round(area_h[code] / target))) if area_h[code] > target * 1.4 else 1
+            if n_sub > 1:
+                per, subs, cur, cur_h = area_h[code] / n_sub, [], [], 0
+                for n in ts:
+                    if cur and cur_h + boxes[n]['h'] + vgap > per:
+                        subs.append(cur)
+                        cur, cur_h = [], 0
+                    cur.append(n)
+                    cur_h += boxes[n]['h'] + vgap
+                if cur:
+                    subs.append(cur)
+            else:
+                subs = [list(ts)]
+
+            sub_x, top_y, tallest = x, y, 0
+            for sc in subs:
+                yy = top_y
+                for n in sc:
+                    pos[n] = (sub_x, yy)
+                    yy += boxes[n]['h'] + vgap
+                tallest = max(tallest, yy - top_y)
+                sub_x += max(boxes[n]['w'] for n in sc) + hgap
+            col_w = max(col_w, sub_x - x - hgap)
+            y = top_y + tallest + area_gap
+            groups.append((code, ts))
+        x += col_w + hgap
     return pos, boxes, groups
 
 
