@@ -9,10 +9,11 @@ import re
 from html import unescape
 from pathlib import Path
 
-from config import MODEL_DIR, SCHEMA_JSON, clean
+# 경로 상수는 **부를 때** 묻는다 — `from config import SCHEMA_JSON` 한 줄이 곧
+# 'erd-build/out 을 만들라' 는 뜻이었다 (config.py 의 '늦춰 두는 값' 참고).
+import config
+from config import as_file, clean
 from i18n import t as T
-
-SCHEMA = SCHEMA_JSON
 
 # ── 공통 컬럼 (테이블 무관 · 최후 폴백) ────────────────────────────────────────
 # 어느 DB에나 있는 것만 둔다. 프로젝트 공통 컬럼은 여기에 덧붙여 쓰면
@@ -51,9 +52,9 @@ MANUAL = {
 def parse_orm():
     """ORM 모델의 컬럼 주석을 {table.column: comment} 로 뽑는다."""
     out = {}
-    if not MODEL_DIR.is_dir():
+    if not config.MODEL_DIR.is_dir():
         return out
-    for path in MODEL_DIR.glob('*.py'):
+    for path in config.MODEL_DIR.glob('*.py'):
         table, pending = None, []
         for raw in path.read_text().split('\n'):
             line = raw.strip()
@@ -93,6 +94,10 @@ def parse_doc_html():
         if not path.exists():
             print(T('log.doc_missing', path=path))
             continue
+        # 없는 파일은 넘어가도 되지만 **디렉토리**는 아니다 — read_text 가
+        # `IsADirectoryError: [Errno 21]` 을 던지는데, 그 줄은 어느 변수 탓인지
+        # 말하지 않는다. 여기서 이름을 댄다.
+        as_file(path, 'ERD_DOC_HTML')
         html = path.read_text(encoding='utf-8', errors='replace')
         n0 = len(out)
         # <h4 …>테이블명<span …> … <table>…</table>
@@ -128,7 +133,7 @@ def ambiguous_names(schema):
 
 
 def main():
-    schema = json.loads(SCHEMA.read_text())
+    schema = json.loads(config.SCHEMA_JSON.read_text())
     orm = parse_orm()
     doc = parse_doc_html()
     filled = {'ddl': 0, 'doc': 0, 'orm': 0, 'manual': 0, 'common': 0, 'none': 0}
@@ -192,8 +197,8 @@ def main():
     # 내용이 그대로면 파일을 다시 쓰지 않는다. 시각만 새로 찍히면 멀쩡한 ERD 가
     # 낡은 것으로 보여(문서 빌더가 시각으로 판별한다) 헛되이 다시 그리게 된다.
     text = json.dumps(schema, ensure_ascii=False, indent=2)
-    if not SCHEMA.exists() or SCHEMA.read_text() != text:
-        SCHEMA.write_text(text)
+    if not config.SCHEMA_JSON.exists() or config.SCHEMA_JSON.read_text() != text:
+        config.SCHEMA_JSON.write_text(text)
     print(T('log.by_source'), filled)
     # 조용히 버리면 '왜 안 들어가지' 로 끝난다 — 대신 쓸 정식 키를 그대로 보여 준다.
     if vague:

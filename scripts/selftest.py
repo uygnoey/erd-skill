@@ -912,6 +912,633 @@ print(json.dumps({
     eq(got['apart_0'], True, 'and two labels on the same spot are the bug this check exists for')
 
 
+# ── 세는 함수가 살아 있는가 ─────────────────────────────────────────────────
+# 12라운드의 가장 큰 발견은 '회귀 시험이 반증 불가능했다' 였다. 13라운드는 '깨끗하다'
+# 의 **규칙**을 시험이 갖게 해서 고쳤다고 적었는데, 14라운드에 뮤테이션 91개를 돌려
+# 보니 시험이 갖게 된 것은 규칙뿐이고 **숫자**는 여전히 검사 대상인 erd.py 가 주고
+# 있었다. 기록 188장의 census 가 그 이유를 그대로 보여 준다:
+#
+#   label_table {0:131, None:57}   label_x {0:131, None:57}
+#   thru {0:188}   v_overlap {0:188}   h_overlap {0:185, 5:3}
+#
+# 다섯 중 넷은 **한 번도 0 이 아닌 적이 없다.** 규칙이 '실패' 방향으로 발동한 적이
+# 없으니, 카운터를 상수 0 으로 바꾸거나(`('thru', thru_nodes())` → `('thru', 0)`)
+# 관통 판정을 `> 4` 에서 `> 4000` 으로 벌려도 101개가 전부 통과했다. 12라운드가 잡은
+# `warn` 이 이름만 `counts` 로 바뀐 셈이다. **그물은 있는데 걸리는 물고기가 없었다.**
+#
+# 그래서 아래 넷은 erd.py 의 산출물을 통하지 않는다. 세는 함수를 떼어내 **손으로 만든
+# 겹치는 기하**를 직접 먹이고, 겹치면 반드시 0 이 아닌 값이 나오는 것을 못박는다.
+# 재는 것은 레이아웃 품질이 아니라 **자가 살아 있는지**다 — 라우터가 좋아져 실제
+# 겹침이 0 이 되어도 이 넷은 흔들리지 않는다. 마지막 하나는 반대쪽을 막는다: 자는
+# 멀쩡한데 기록에 적히는 숫자가 그 자에서 나오지 않는 자리.
+def _counting_ns(src=None):
+    """`erd.py` 의 세는 함수들을 떼어내 단독으로 부를 수 있는 네임스페이스로.
+
+    `overlaps`·`thru_nodes`·`lab_hits` 는 `draw_erd()` 안의 지역 함수라 밖에서 부를
+    수 없다. 그래서 소스를 파싱해 그 def 만 꺼내 모듈 수준으로 컴파일한다 — 바깥에서
+    빌려 쓰던 이름(`segs_v`·`node_rects`·`lab_boxes`)은 전역 조회가 되므로, 부르기
+    직전에 이 네임스페이스에 넣어 주면 된다.
+
+    erd 를 import 하지 않는 이유가 있다. import 하면 schema.json·글꼴·PIL 이 전부
+    딸려 오고, 그중 아무것이나 어긋나면 **세는 함수와 상관없는 이유로** 이 케이스가
+    빨강이 된다. 여기서 묻는 것은 오로지 '이 자가 아직 눈금을 가지고 있는가' 다.
+
+    `src` 는 시험이 손댄 소스를 먹여 보는 자리다 (기본은 `erd.py` 를 읽는다).
+    15라운드에 이 함수 자체를 '정확히 동작하는 손수 구현' 으로 갈아치우는 뮤턴트가
+    통과했다 — 그러면 아래 단위 케이스 셋이 `erd.py` 가 아니라 **시험이 만든 스텁**을
+    채점한다. 재는 손이 만든 것을 재는 손이 채점하는, 이 기록이 세 번 이름 붙인
+    그 자리다. 그래서 인자를 하나 열어 두고, 소스를 한 줄 바꿔 먹였을 때 동작이
+    정말 따라 바뀌는지를 케이스 하나가 못박는다.
+    """
+    import ast
+    want = ('boxes_touch', 'overlaps', 'thru_nodes', 'lab_hits')
+    tree = ast.parse(src if src is not None
+                     else (HERE / 'erd.py').read_text(encoding='utf-8'))
+    found = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in want:
+            found.setdefault(node.name, node)
+    missing = [n for n in want if n not in found]
+    if missing:
+        raise Fail(f'erd.py no longer defines {", ".join(missing)} — the counting '
+                   f'functions were renamed, and a renamed counter is an unchecked one')
+    mod = ast.Module(body=[found[n] for n in want], type_ignores=[])
+    ast.fix_missing_locations(mod)
+    ns = {'DEBUG_OVERLAP': False, 'T': lambda *a, **kw: ''}
+    exec(compile(mod, str(HERE / 'erd.py'), 'exec'), ns)      # noqa: S102
+    return ns
+
+
+# ── 자에 눈금이 판 크기까지 있는가 ───────────────────────────────────────────
+# 15라운드가 만든 자 넷은 전부 **손으로 만든 작은 기하**만 먹였다: node_rects 1개,
+# lab_boxes 2~3개, segs 2개. 16라운드 검증자가 그 좁음을 뚫었다 — 세는 함수 첫 줄에
+# 크기 조건 하나를 넣으면 **실제 사용자 스키마가 전부 무측정**인데 161개가 초록이었다.
+#
+#   lab_hits()   첫 줄에  if len(lab_boxes) > 3:   return 0     → all 161 passed
+#   thru_nodes() 첫 줄에  if len(node_rects) > 12: return 0     → all 161 passed
+#
+# 작은 판에서만 이빨이 있는 자는 자가 없는 것과 같다. 이 저장소의 시험 안에만 해도
+# 200테이블 판이 있고, 사용자 스키마는 그보다 크다.
+#
+# 그래서 같은 불변식을 **크기 사다리**에서 되풀이한다. 판 하나를 크게 만드는 것으로는
+# 모자란다 — 문턱을 그 위로 올리면 그만이니까. 사다리는 2 에서 257 까지 배로 올라가고
+# (실제 도판 규모를 넘는다), 칸마다 답을 **구성으로** 안다: 답을 계산해 주는 두 번째
+# 구현을 여기 두면 재는 손이 제 답안을 제가 채점하는 그 자리로 되돌아간다.
+SCALES = (2, 3, 5, 9, 17, 33, 65, 129, 257)
+_ENDS_A, _ENDS_B = ((0.0, 0.0), (9.0, 9.0)), ((5.0, 5.0), (7.0, 7.0))
+_E = ((0.0, 0.0), (1.0, 1.0))
+
+
+def _labs_apart(n):
+    """서로 100px 떨어진 라벨 상자 n 개 — 겹침 쌍은 구성상 0."""
+    return [(i * 100.0, 0.0, i * 100.0 + 10.0, 10.0) for i in range(n)]
+
+
+def _labs_paired(n):
+    """둘씩 5px 포개진 라벨 상자 n 개 — 겹침 쌍은 구성상 n//2."""
+    return [((i // 2) * 100.0 + (5.0 if i % 2 else 0.0), 0.0,
+             (i // 2) * 100.0 + (5.0 if i % 2 else 0.0) + 10.0, 10.0) for i in range(n)]
+
+
+def _labs_piled(n):
+    """n 개가 서로 전부 포개진 더미 — 겹침 쌍은 구성상 n(n-1)/2."""
+    return [(float(i), 0.0, float(i + n + 1), 10.0) for i in range(n)]
+
+
+def _thru_board(n):
+    """테이블 n 개짜리 판. 관통 4n 개 중 정확히 2n 건이 관통이다.
+
+    표 i 는 x 로 200 씩 떨어져 있으므로 어느 선도 이웃 표까지 닿지 않는다 —
+    답(2n)이 세는 함수의 규칙이 아니라 **판의 생김새**에서 나온다.
+    """
+    rects = [(i * 200.0, 0.0, i * 200.0 + 100.0, 60.0) for i in range(n)]
+    segs_v = ([(i * 200.0 + 50.0, -20.0, 80.0, _E, False) for i in range(n)]      # 관통
+              + [(i * 200.0 + 150.0, -20.0, 80.0, _E, False) for i in range(n)])  # 옆
+    segs_h = ([(30.0, i * 200.0 - 20.0, i * 200.0 + 80.0, _E, False) for i in range(n)]
+              + [(80.0, i * 200.0 - 20.0, i * 200.0 + 80.0, _E, False) for i in range(n)])
+    return rects, segs_v, segs_h
+
+
+def _ov_board(n):
+    """구간 4n 개. 같은 자리를 40px 나란히 달리는 쌍이 n, 6px 만 스치는 쌍이 n."""
+    segs = []
+    for i in range(n):
+        c = i * 1000.0
+        segs.append((c, 0.0, 50.0, _ENDS_A, False))
+        segs.append((c, 10.0, 60.0, _ENDS_B, False))       # 40px 나란히 → 1건
+        segs.append((c + 500.0, 0.0, 50.0, _ENDS_A, False))
+        segs.append((c + 500.0, 44.0, 90.0, _ENDS_B, False))   # 6px 스침 → 0건
+    return segs
+
+
+@case('verify: the counting namespace grades erd.py itself, not a stand-in')
+def _(work):
+    """세 단위 케이스가 채점하는 것이 정말 `erd.py` 인가.
+
+    15라운드. `_counting_ns()` 를 **정확히 동작하는 손수 구현**으로 갈아치우니 아래
+    셋이 전부 초록이었다 — erd.py 의 세는 함수를 통째로 지워도 마찬가지다. 12라운드가
+    이름 붙인 '재는 손이 만든 것' 이 정확히 여기 다시 있었다: 도구를 재는 케이스가
+    도구가 만든 것을 잰다. **`_counting_ns()` 자체를 재는 것이 하나도 없었다.**
+
+    두 방향으로 막는다.
+
+    1. 나온 함수가 `erd.py` 의 **그 줄**에서 나왔는가 — 파일 이름과 첫 줄 번호를,
+       이 케이스가 따로 파싱한 AST 와 맞춘다. 손으로 쓴 스텁은 제 줄 번호를 단다.
+    2. 정말 **읽은 것을 컴파일**하는가 — 소스를 한 줄 손봐 먹였을 때 동작이 따라
+       바뀌어야 한다. 안 바뀌면 그 함수는 소스를 안 읽고 있다는 뜻이고, 그러면
+       1번은 흉내 낼 수 있어도 이쪽은 못 흉내 낸다.
+    """
+    import ast
+    want = ('boxes_touch', 'overlaps', 'thru_nodes', 'lab_hits')
+    src = (HERE / 'erd.py').read_text(encoding='utf-8')
+    defs = {}
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.FunctionDef) and n.name in want:
+            defs.setdefault(n.name, n)
+    eq(sorted(defs), sorted(want), 'erd.py defines all four counting functions')
+
+    ns = _counting_ns()
+    for name in want:
+        fn = ns[name]
+        if not callable(fn):
+            raise Fail(f'{name} is not callable')
+        eq(fn.__code__.co_filename, str(HERE / 'erd.py'),
+           f'{name} must be compiled out of erd.py, not written here')
+        eq(fn.__code__.co_firstlineno, defs[name].lineno,
+           f'{name} must come from the line erd.py defines it on — a hand-written '
+           f'stand-in passes every unit case below while erd.py counts nothing')
+
+    # 소스를 손봐 먹인다: 함수의 첫 문장 앞에 표식 하나를 끼워 넣는다.
+    # 들여쓰기는 그 첫 문장에서 가져오므로 중첩 깊이가 바뀌어도 따라간다.
+    #
+    # 15라운드 판은 **`boxes_touch` 하나만** 이렇게 확인했다. 16라운드 검증자가 그
+    # 4분의 3 을 뚫었다: `boxes_touch` 만 소스에서 컴파일하고 `overlaps`·`thru_nodes`·
+    # `lab_hits` 셋은 손으로 박은 뒤 `co_filename`·`co_firstlineno` 를 `code.replace()`
+    # 로 위조하면 위의 두 대조가 전부 통과하고 `all 161 passed` 가 찍혔다. 줄 번호는
+    # 위조할 수 있어도 **먹인 소스를 따라 바뀌는 것**은 위조할 수 없다 — 손으로 박은
+    # 함수는 소스를 안 읽으므로 표식을 내놓지 못한다. 그래서 넷 다 그렇게 묻는다.
+    for name in want:
+        node = defs[name]
+        first = node.body[0]
+        lines = src.splitlines(keepends=True)
+        mark = f'16R tampered {name}'
+        lines.insert(first.lineno - 1,
+                     ' ' * first.col_offset + f'return {mark!r}\n')
+        tampered = _counting_ns(''.join(lines))
+        blanks = [None] * len(node.args.args)
+        eq(tampered[name](*blanks), mark,
+           f'the namespace must compile the source it was handed — {name} ignored a '
+           f'line planted at the top of its own body, so nothing here is reading '
+           f'erd.py for it at all (a hand-written stand-in with a forged '
+           f'co_filename passes every other check on this page)')
+        try:                    # 손 안 댄 쪽은 표식을 모른다 (먹이가 없어 죽어도 좋다)
+            got = ns[name](*blanks)
+        except Exception:                                         # noqa: BLE001
+            got = None
+        if got == mark:
+            raise Fail(f'the untouched namespace returned the doctored answer for '
+                       f'{name} — the two namespaces are the same object')
+    eq(ns['boxes_touch']((0, 0, 10, 10), (99, 99, 100, 100)), False,
+       'and the untouched namespace is still the real ruler')
+
+
+@case('verify: the overlap counter still counts two lines drawn on the same spot')
+def _(work):
+    ov = _counting_ns()['overlaps']
+    A, B, C, D = (0.0, 0.0), (9.0, 9.0), (5.0, 5.0), (7.0, 7.0)
+
+    def seg(coord, s0, s1, ends, pin=False):
+        # (좌표, 구간 시작, 구간 끝, 그 선의 양 끝점, 컬럼 행에 못박힌 꼬리인가)
+        return (coord, s0, s1, ends, pin)
+
+    eq(ov([seg(100, 0, 50, (A, B)), seg(100, 10, 60, (C, D))]), 1,
+       'two unrelated lines lying on the same coordinate for 40px is one overlap')
+    # 11라운드의 버그: 끝점을 **둘 다** 공유하면 합류가 아니라 같은 선을 두 번 그린 것
+    eq(ov([seg(100, 0, 50, (A, B)), seg(100, 10, 60, (A, B))]), 1,
+       'the same line drawn twice is not a join — r11 waved it through')
+    eq(ov([seg(100, 0, 50, (A, B)), seg(100, 10, 60, (C, B))]), 0,
+       'lines that really do meet at one point may run together')
+    eq(ov([seg(100, 0, 50, (A, B)), seg(103, 10, 60, (C, D))]), 0,
+       '3px apart is not the same spot')
+    eq(ov([seg(100, 0, 50, (A, B)), seg(102, 10, 60, (C, D))]), 1, 'but 2px apart is')
+    eq(ov([seg(100, 0, 50, (A, B)), seg(100, 44, 90, (C, D))]), 0,
+       'a 6px graze is not an overlap')
+    eq(ov([seg(100, 0, 50, (A, B)), seg(100, 42, 90, (C, D))]), 1,
+       'an 8px run together is')
+    eq(ov([seg(100, 0, 50, (A, B), True), seg(100, 10, 60, (C, D), True)]), 0,
+       'two pinned exit tails cannot be moved, so they are not counted')
+    eq(ov([seg(100, 0, 50, (A, B), True), seg(100, 10, 60, (C, D), False)]), 1,
+       'but a pinned tail under a lane the router chose is the router losing')
+
+    # 그리고 도판 규모에서도. `if len(segs) > K: return 0` 한 줄이면 큰 판이 전부
+    # 무측정인데 위 아홉 줄은 하나도 안 붉는다 — 자에 눈금이 어디까지 있는지는
+    # 그 크기에서 재 봐야만 알 수 있다.
+    for n in SCALES:
+        eq(ov(_ov_board(n)), n,
+           f'{4 * n} segments on a diagram-sized board must still yield {n} overlaps — '
+           f'a counter that only bites on a two-segment fixture leaves every real '
+           f'schema unmeasured')
+
+
+@case('verify: the through-table counter still counts a line crossing a table')
+def _(work):
+    ns = _counting_ns()
+    E = ((0.0, 0.0), (1.0, 1.0))
+    box = [(0.0, 0.0, 100.0, 60.0)]
+
+    def thru(v, h, rects=box):
+        ns['segs_v'], ns['segs_h'], ns['node_rects'] = v, h, rects
+        return ns['thru_nodes']()
+
+    eq(thru([(50.0, -20.0, 80.0, E, False)], []), 1,
+       'a vertical line straight through a table is a through-table hit')
+    eq(thru([], [(30.0, -20.0, 200.0, E, False)]), 1,
+       'and so is a horizontal one — half a check is not a check')
+    eq(thru([(50.0, -20.0, 80.0, E, False)], [(30.0, -20.0, 200.0, E, False)]), 2,
+       'both halves count into the same number')
+    eq(thru([(50.0, 55.0, 100.0, E, False)], []), 1,
+       '5px of penetration is still a line inside a table')
+    eq(thru([(50.0, 57.0, 100.0, E, False)], []), 0,
+       'but 3px is the border, not a crossing')
+    eq(thru([(150.0, -20.0, 80.0, E, False)], []), 0,
+       'a line beside the table is not through it')
+
+    # 그리고 도판 규모에서도. 검증자가 `thru_nodes()` 첫 줄에 `if len(node_rects) > 12:
+    # return 0` 을 넣었더니 161개가 전부 초록이었다 — 위 여섯 줄이 표 **한 개**짜리
+    # 판만 먹이기 때문이다. 사다리는 실제 도판(이 시험 안에 200테이블 판이 있다)을
+    # 넘는 곳까지 올라간다.
+    for n in SCALES:
+        rects, sv, sh = _thru_board(n)
+        eq(thru(sv, sh, rects), 2 * n,
+           f'a board of {n} tables and {len(sv) + len(sh)} segments must still report '
+           f'{2 * n} crossings — a size-conditional counter reads exactly like a clean '
+           f'diagram on every schema a user actually has')
+
+
+@case('verify: the two label counters still count boxes that really overlap')
+def _(work):
+    ns = _counting_ns()
+    bt = ns['boxes_touch']
+    # 라벨↔테이블(lab_hit)과 라벨↔라벨(lab_hits)이 **같은 자**를 쓴다. 예전엔 한쪽이
+    # `<` 라 스치기만 해도 세고 다른 쪽은 `<=` 라 안 셌다 — 같은 것을 재면서 반대
+    # 규칙이었다. 그래서 여기서 자 하나를 세 방향으로 지킨다.
+    eq(bt((0, 0, 10, 10), (5, 5, 15, 15)), True, 'boxes that share ink do overlap')
+    eq(bt((0, 0, 10, 10), (10, 0, 20, 10)), False, 'boxes that only touch do not')
+    eq(bt((0, 0, 10, 10), (11, 0, 20, 10)), False, 'and boxes apart do not')
+    # 원점 근처에서만 정직한 자도 자가 아니다 — 200테이블 판의 좌표는 만 단위다.
+    for d in (5000, 50000):
+        eq(bt((d, d, d + 10, d + 10), (d + 5, d + 5, d + 15, d + 15)), True,
+           f'and the same ruler still reads True {d}px from the origin')
+        eq(bt((d, d, d + 10, d + 10), (d + 10, d, d + 20, d + 10)), False,
+           f'and still reads False {d}px from the origin')
+
+    def hits(boxes):
+        ns['lab_boxes'] = boxes
+        return ns['lab_hits']()
+
+    eq(hits([(0, 0, 10, 10), (5, 5, 15, 15), (100, 100, 110, 110)]), 1,
+       'one overlapping pair out of three labels')
+    eq(hits([(0, 0, 10, 10), (5, 5, 15, 15), (6, 6, 16, 16)]), 3,
+       'three labels piled on each other are three pairs')
+    eq(hits([(0, 0, 10, 10), (10, 0, 20, 10)]), 0, 'labels that only touch are readable')
+
+    # 그리고 도판 규모에서도. 검증자가 `lab_hits()` 첫 줄에 `if len(lab_boxes) > 3:
+    # return 0` 을 넣었더니 161개가 전부 초록이었다 — 위 세 줄이 라벨 두세 개짜리
+    # 판만 먹이기 때문이다. 같은 한 줄로 라벨이 실제로 서로 포개진 판까지 전부
+    # '깨끗함' 으로 보고된다.
+    for n in SCALES:
+        eq(hits(_labs_apart(n)), 0,
+           f'{n} labels laid out 100px apart are {n} readable labels')
+        eq(hits(_labs_paired(n)), n // 2,
+           f'{n} labels in overlapping couples are {n // 2} clashes — a counter that '
+           f'only bites below four labels leaves every real diagram unmeasured')
+        eq(hits(_labs_piled(n)), n * (n - 1) // 2,
+           f'{n} labels piled on one another are {n * (n - 1) // 2} pairs')
+
+
+@case('verify: the counters the drawing path really uses are fed, and still bite')
+def _(work):
+    """단위 케이스 셋의 **반대편** — 세는 함수가 실제 도판에서 무엇을 먹는가.
+
+    15라운드. 위 셋은 세는 함수에 먹이를 **자기가** 넣는다. 그래서 원리상 못 잡는
+    뮤턴트가 두 부류 있었고, 둘 다 `all 141 passed` 로 빠져나갔다.
+
+      · 굶기기 — `lab_boxes = [… for b in placed[:0]]` 한 줄이면 라벨 두 항목이
+        영구히 0 이다. 자는 멀쩡하고, 먹일 것이 없을 뿐이다
+      · 실제 경로에서만 거짓 — `lab_hits()` 안에서 단독 네임스페이스에는 없는
+        이름(`pos`)으로 갈래를 파면 단위 시험은 통과하고 도판만 0 이 된다
+
+    그래서 이 케이스는 **진짜 판을 돌리면서** draw_erd 프레임을 붙잡는다. 돌아올 때
+    그 프레임의 지역값에서 먹이의 크기를 읽고(굶기기), 그 판이 실제로 쓴 함수 객체를
+    그대로 꺼내 손으로 만든 겹치는 기하를 자유변수 셀에 꽂아 불러 본다(이빨).
+    단위 케이스가 `erd.py` 소스를 떼어 낸 사본을 재는 것과 달리, 여기서 재는 것은
+    그 판이 실제로 부른 바로 그 함수다.
+    """
+    write_schema(work, {
+        'a': table('a', [col('id'), col('b_id')], pk=['id'],
+                   fks=[{'column': 'b_id', 'ref_table': 'b', 'ref_column': 'id',
+                         'on_delete': 'CASCADE'}]),
+        'b': table('b', [col('id')], pk=['id'])})
+    probe = work / 'probe.py'
+    probe.write_text('''\
+import json, os, sys
+import build_erd
+
+GRAB = []
+
+
+def tracer(frame, event, arg):
+    if event == 'call' and frame.f_code.co_name == 'draw_erd':
+        frame.f_trace_lines = False        # 줄 이벤트까지 받으면 판이 기어간다
+
+        def at_return(f, ev, a):
+            if ev == 'return' and 'lab_hits' in f.f_locals:
+                GRAB.append(f.f_locals)
+            return at_return
+        return at_return
+    return tracer
+
+
+sys.settrace(tracer)
+try:
+    build_erd.main()
+finally:
+    sys.settrace(None)
+
+
+def cell(fn, name, value):
+    fn.__closure__[fn.__code__.co_freevars.index(name)].cell_contents = value
+
+
+feeds = [{'file': os.path.basename(str(g['path'])),
+          'edge_labels': bool(g['edge_labels']),
+          'tnames': len(g['tnames']), 'placed': len(g['placed']),
+          'lab_boxes': len(g['lab_boxes']), 'node_rects': len(g['node_rects']),
+          'segs': len(g['segs_v']) + len(g['segs_h'])} for g in GRAB]
+
+teeth = {}
+labelled = [x for x in GRAB if x['edge_labels']]
+if labelled:            # 없으면 먹이 쪽 판정이 먼저 그 사실을 말한다
+    g = labelled[-1]
+    A, B, C, D = (0.0, 0.0), (9.0, 9.0), (5.0, 5.0), (7.0, 7.0)
+    E = ((0.0, 0.0), (1.0, 1.0))
+    ov, th, lh = g['overlaps'], g['thru_nodes'], g['lab_hits']
+    teeth['same_spot'] = ov([(100, 0, 50, (A, B), False),
+                             (100, 10, 60, (C, D), False)])
+    teeth['twice'] = ov([(100, 0, 50, (A, B), False), (100, 10, 60, (A, B), False)])
+    teeth['join'] = ov([(100, 0, 50, (A, B), False), (100, 10, 60, (C, B), False)])
+    cell(th, 'node_rects', [(0.0, 0.0, 100.0, 60.0)])
+    cell(th, 'segs_h', [])
+    cell(th, 'segs_v', [(50.0, -20.0, 80.0, E, False)])
+    teeth['thru'] = th()
+    cell(th, 'segs_v', [(150.0, -20.0, 80.0, E, False)])
+    teeth['beside'] = th()
+    cell(lh, 'lab_boxes', [(0, 0, 10, 10), (5, 5, 15, 15)])
+    teeth['lab_pair'] = lh()
+    cell(lh, 'lab_boxes', [(0, 0, 10, 10), (10, 0, 20, 10)])
+    teeth['lab_touch'] = lh()
+    # 그리고 도판 규모에서도 (16라운드). 위 일곱은 상자 두 개·표 한 개짜리 판이라,
+    # 세는 함수 첫 줄의 크기 조건 하나로 전부 지나간다.
+    N = 64
+    cell(lh, 'lab_boxes', [(i, 0, i + N + 1, 10) for i in range(N)])
+    teeth['lab_many'] = lh()                       # 서로 전부 포갠 더미 → N(N-1)/2
+    cell(th, 'node_rects', [(i * 200.0, 0.0, i * 200.0 + 100.0, 60.0)
+                            for i in range(N)])
+    cell(th, 'segs_v', [(i * 200.0 + 50.0, -20.0, 80.0, E, False) for i in range(N)]
+         + [(i * 200.0 + 150.0, -20.0, 80.0, E, False) for i in range(N)])
+    cell(th, 'segs_h', [(30.0, i * 200.0 - 20.0, i * 200.0 + 80.0, E, False)
+                        for i in range(N)])
+    teeth['thru_many'] = th()                      # 관통 N(세로) + N(가로) = 2N
+    big = []
+    for i in range(N):
+        c = i * 1000.0
+        big += [(c, 0.0, 50.0, (A, B), False), (c, 10.0, 60.0, (C, D), False),
+                (c + 500.0, 0.0, 50.0, (A, B), False),
+                (c + 500.0, 44.0, 90.0, (C, D), False)]
+    teeth['ov_many'] = ov(big)                     # 나란히 달리는 쌍만 → N
+print('15R-PROBE ' + json.dumps({'feeds': feeds, 'teeth': teeth}))
+''', encoding='utf-8')
+    out = run(str(probe), work, env={'PYTHONPATH': str(HERE)}).stdout
+    said = [ln for ln in out.splitlines() if ln.startswith('15R-PROBE ')]
+    if not said:
+        raise Fail(f'the probe never reached draw_erd:\n{out}')
+    got = json.loads(said[-1][len('15R-PROBE '):])
+
+    # ① 먹이 — 세는 함수가 실제로 무엇을 받는가
+    feeds = got['feeds']
+    if not feeds:
+        raise Fail('the build drew no diagram this probe could watch')
+    labelled = [f for f in feeds if f['edge_labels']]
+    if not labelled:
+        raise Fail('no diagram drew relationship labels — then the two label counters '
+                   'measured nothing and this case would prove nothing')
+    for f in feeds:
+        if f['node_rects'] != f['tnames'] or not f['tnames']:
+            raise Fail(f'{f["file"]}: the table-rectangle feed is {f["node_rects"]} for '
+                       f'{f["tnames"]} tables — a starved counter reads exactly like a '
+                       f'clean diagram')
+        if not f['segs']:
+            raise Fail(f'{f["file"]}: not one line segment reached the overlap counters')
+    for f in labelled:
+        if not f['placed']:
+            raise Fail(f'{f["file"]}: the diagram says it draws labels but placed none')
+        if f['lab_boxes'] != f['placed']:
+            raise Fail(f'{f["file"]}: {f["placed"]} labels drawn but {f["lab_boxes"]} '
+                       f'handed to the label counters — starving the ruler is how '
+                       f'label_table and label_x stay 0 for ever')
+
+    # ② 이빨 — 그 판이 실제로 부른 그 함수 객체가 겹침에 반응하는가
+    eq(got['teeth'], {'same_spot': 1, 'twice': 1, 'join': 0, 'thru': 1, 'beside': 0,
+                      'lab_pair': 1, 'lab_touch': 0,
+                      'lab_many': 64 * 63 // 2, 'thru_many': 128, 'ov_many': 64},
+       'the counting functions the real drawing path used must still count — a counter '
+       'that only tells the truth to the unit cases (or only on a two-box fixture) is '
+       'worse than none')
+
+
+@case('verify: the five numbers in the record come from the counting functions')
+def _(work):
+    # 위 셋은 '자가 살아 있는가' 를 묻는다. 이 케이스는 반대쪽이다 — 자는 멀쩡한데
+    # 기록에 적히는 숫자가 그 자에서 안 나오는 자리. 실제로 `('thru', thru_nodes())`
+    # 를 `('thru', 0)` 으로 바꾸면 넷 다 초록이었다 (188장 어디서도 thru 가 0 이 아닌
+    # 적이 없어 사람도 눈치채지 못한다). 그래서 여기서는 값이 아니라 **배선**을 본다.
+    #
+    # 15라운드. 그런데 그 배선을 **이름 집합**으로 봤다: 식 안에 `lab_hits` 라는
+    # 이름이 나오기만 하면 통과였다. 그래서 `lab_hit = 0 * sum(…)` 이 그대로
+    # 빠져나갔다 — 이름은 전부 제자리에 있고 값만 상수 0 이다. `x and False`,
+    # `x if False else 0`, `lab_boxes[:0]` 도 모두 같은 구멍으로 지나간다.
+    # 이름이 아니라 **모양**을 못박는다: 그 자리에 적힐 수 있는 식은 그 호출 하나뿐이고,
+    # 껍데기는 `… if edge_labels else None` 하나만 허용한다. 모양을 정해 두면 상수 곱은
+    # 이름이 아무리 멀쩡해도 `BinOp` 라서 걸린다. 레이아웃을 정말 고쳐 쓸 일이 생기면
+    # 이 케이스가 붉어지는데, 그때가 바로 '기록의 숫자가 어디서 나오는지' 를 다시
+    # 적어야 하는 때다.
+    import ast
+    tree = ast.parse((HERE / 'erd.py').read_text(encoding='utf-8'))
+    draw = next((n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == 'draw_erd'), None)
+    if draw is None:
+        raise Fail('erd.py no longer has draw_erd()')
+
+    def show(node):
+        try:
+            return ast.unparse(node)
+        except Exception:                                         # noqa: BLE001
+            return f'<{type(node).__name__}>'
+
+    def _here(node):
+        """draw_erd 안의 문장 전부 — 다만 **중첩 함수 안은 안 본다** (같은 이름과 안 섞이게).
+
+        15라운드 판은 `draw.body` 의 직계 자식만 훑었다. 그러면 `if True:` 한 겹만
+        씌워도 그 대입이 안 보인다.
+        """
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            yield ch
+            yield from _here(ch)
+
+    def top_assign(name):
+        """draw_erd 안에서 그 이름에 값을 묶는 **모든** 자리.
+
+        15라운드 판은 **처음 만난** 대입 하나만 돌려줬다. 그러면 같은 이름에 두 번째
+        대입을 하는 것만으로 아래 모양 검사가 통째로 지나간다 — 첫 줄은 규칙대로 두고
+        다음 줄에 `checks = [(k, 0) for k, _ in checks]` 를 적으면 된다. 실제로 그렇게
+        해서 161개가 초록이었다. 그래서 묶는 자리를 전부 모으고, **전부가** 규칙을
+        지켜야 통과다.
+
+        대입이 아닌 묶기(증분 대입·`for`·`with … as`·`except … as`·바다코끼리)는 값의
+        모양을 읽을 수 없으므로 그 자리에서 죽는다 — 읽을 수 없는 것을 '괜찮다' 로
+        넘기는 것이 이 케이스가 세 번 물린 모양이다.
+        """
+        out = []
+        for st in _here(draw):
+            if isinstance(st, ast.Assign):
+                for t in st.targets:
+                    if getattr(t, 'id', '') == name:
+                        out.append(st.value)
+                    elif any(getattr(x, 'id', '') == name for x in ast.walk(t)
+                             if isinstance(x, ast.Name)):
+                        raise Fail(f'draw_erd() binds `{name}` inside the unpacking '
+                                   f'`{show(t)}` — this check can only read a plain '
+                                   f'`{name} = <expression>`')
+                continue
+            if isinstance(st, (ast.AugAssign, ast.AnnAssign, ast.NamedExpr)):
+                if getattr(st.target, 'id', '') == name:
+                    raise Fail(f'draw_erd() rebinds `{name}` with `{show(st)}` — a '
+                               f'second binding decides the number, and a shape check '
+                               f'that only reads the first one is checking nothing')
+                continue
+            targets = []
+            if isinstance(st, (ast.For, ast.AsyncFor)):
+                targets = [st.target]
+            elif isinstance(st, (ast.With, ast.AsyncWith)):
+                targets = [i.optional_vars for i in st.items if i.optional_vars]
+            elif isinstance(st, ast.ExceptHandler) and st.name == name:
+                raise Fail(f'draw_erd() rebinds `{name}` as an except target')
+            for t in targets:
+                if any(getattr(x, 'id', '') == name for x in ast.walk(t)
+                       if isinstance(x, ast.Name)):
+                    raise Fail(f'draw_erd() rebinds `{name}` as a loop or with target '
+                               f'— this check can only read a plain assignment')
+        # 묶기만 막으면 반쪽이다. `lab_boxes.clear()` 는 대입이 아니지만 먹이를 똑같이
+        # 굶긴다 — 이름은 그대로, 값만 비어 버린다. 이 이름들에 붙는 메서드 호출은
+        # 하나도 없어야 한다(오늘 erd.py 에도 없다).
+        for st in _here(draw):
+            if (isinstance(st, ast.Call) and isinstance(st.func, ast.Attribute)
+                    and getattr(st.func.value, 'id', '') == name):
+                raise Fail(f'draw_erd() calls `{show(st)}` — a method call on `{name}` '
+                           f'can empty the feed without touching the assignment this '
+                           f'check reads')
+        return out
+
+    def unguard(key, node):
+        if not isinstance(node, ast.IfExp):
+            return node
+        if not (isinstance(node.test, ast.Name)
+                and isinstance(node.orelse, ast.Constant) and node.orelse.value is None):
+            raise Fail(f'{key} is written as {show(node)} — the only shape allowed here '
+                       f'is `<count> if <flag> else None`; anything else can turn the '
+                       f'number off without turning the check red')
+        return node.body
+
+    def is_call(node, fname, args=()):
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == fname and not node.keywords
+                and len(node.args) == len(args)
+                and all(isinstance(a, ast.Name) and a.id == w
+                        for a, w in zip(node.args, args)))
+
+    def one(name, values):
+        """묶는 자리는 하나여야 하고 없어도 안 된다 — 그 하나를 돌려준다."""
+        if not values:
+            raise Fail(f'draw_erd() no longer assigns `{name}` anywhere this check can '
+                       f'read')
+        if len(values) > 1:
+            raise Fail(f'draw_erd() assigns `{name}` {len(values)} times '
+                       f'({" / ".join(show(v) for v in values)}) — the last one decides '
+                       f'the number, so every one of them must hold the shape; write it '
+                       f'once')
+        return values[0]
+
+    checks = one('checks', top_assign('checks'))
+    if not isinstance(checks, ast.List):
+        raise Fail('draw_erd() no longer builds a list called `checks` — the record is '
+                   'assembled somewhere this test cannot read, so nobody is checking '
+                   'that its numbers come from the counters')
+    for el in checks.elts:
+        if not (isinstance(el, ast.Tuple) and len(el.elts) == 2
+                and isinstance(el.elts[0], ast.Constant)):
+            raise Fail(f'`checks` holds `{show(el)}` — every entry must be a '
+                       f'(name, count) pair written right there, or this test cannot '
+                       f'tell where the number came from')
+    wiring = [(el.elts[0].value, el.elts[1]) for el in checks.elts]
+    eq([k for k, _ in wiring], list(MEASURES),
+       'the record carries exactly the five measures the test knows, in order')
+    shape = {'label_table': ('lab_hit', lambda v: isinstance(v, ast.Name)
+                             and v.id == 'lab_hit'),
+             'label_x': ('lab_hits()', lambda v: is_call(v, 'lab_hits')),
+             'thru': ('thru_nodes()', lambda v: is_call(v, 'thru_nodes')),
+             'v_overlap': ('overlaps(segs_v)',
+                           lambda v: is_call(v, 'overlaps', ('segs_v',))),
+             'h_overlap': ('overlaps(segs_h)',
+                           lambda v: is_call(v, 'overlaps', ('segs_h',)))}
+    for k, node in wiring:
+        want, ok = shape[k]
+        v = unguard(k, node)
+        if not ok(v):
+            raise Fail(f'the record writes {k} as `{show(v)}` — it must be exactly '
+                       f'`{want}`\n      a counter wired to a constant (or multiplied '
+                       f'by one, or `and False`) reads exactly like a clean diagram')
+
+    # `lab_hit` 은 이름이라 한 겹 더 따라간다. 그리고 그 셈에 먹이를 대는 두 목록도
+    # 함께 본다 — 자를 그대로 두고 **먹이만 굶기는** 뮤턴트가 따로 있었다.
+    lab_hit = one('lab_hit', top_assign('lab_hit'))
+    if not (isinstance(lab_hit, ast.Call) and isinstance(lab_hit.func, ast.Name)
+            and lab_hit.func.id == 'sum' and len(lab_hit.args) == 1
+            and isinstance(lab_hit.args[0], ast.GeneratorExp)):
+        raise Fail(f'lab_hit is `{show(lab_hit)}` — it must be exactly '
+                   f'`sum(<generator over lab_boxes × node_rects>)`')
+    gen = lab_hit.args[0]
+    if not (isinstance(gen.elt, ast.Constant) and gen.elt.value == 1):
+        raise Fail(f'lab_hit sums `{show(gen.elt)}` instead of 1 per hit')
+    eq(sorted(getattr(c.iter, 'id', show(c.iter)) for c in gen.generators),
+       ['lab_boxes', 'node_rects'],
+       'lab_hit must walk every label against every table — a sliced or filtered feed '
+       'is how the count stays 0 with the ruler untouched')
+    conds = [t for c in gen.generators for t in c.ifs]
+    if not (len(conds) == 1 and is_call(conds[0], 'boxes_touch', ('b', 'o'))):
+        raise Fail(f'lab_hit decides with `{"; ".join(show(c) for c in conds) or "nothing"}`'
+                   f' — the label/table check must use the same ruler as label/label')
+    for name, src in (('lab_boxes', 'placed'), ('node_rects', 'tnames')):
+        v = one(name, top_assign(name))
+        if not (isinstance(v, ast.ListComp) and len(v.generators) == 1
+                and isinstance(v.generators[0].iter, ast.Name)
+                and v.generators[0].iter.id == src and not v.generators[0].ifs):
+            raise Fail(f'{name} is built as `{show(v)}` — it must be one comprehension '
+                       f'over the whole of `{src}`, with nothing sliced off the end; '
+                       f'starving a counter is indistinguishable from a clean diagram')
+
+
 @case('verify: relationships that cross the corridors do not stack on an exit row')
 def _(work):
     # 위 허브-앤-스포크는 진출입 꼬리끼리 스치는 쪽이었다. 이쪽은 다른 갈래다:
@@ -957,6 +1584,254 @@ def _(work):
     finally:
         for k, v in keep.items():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+
+@case('selftest: the harness fails where it says it fails')
+def _(work):
+    # **재는 쪽은 아무도 재 주지 않는다** — 이 기록이 세 라운드째 같은 이름을 붙이고
+    # 있는 자리다. 14라운드의 뮤테이션이 그 목록을 늘렸다: `eq()` 가 절대 실패하지
+    # 않게 해도, `case()` 가 이름 중복을 그냥 넘겨도, `verify_recs()` 의 '기록이
+    # 없으면 실패' 를 `return []` 로 바꿔도, `verify_clean()` 이 판정을 그만둬도,
+    # 훑기의 '그린 장수 ↔ 기록 장수' 대조를 지워도 101개가 전부 통과했다.
+    # 도구가 제 실패를 말하지 못하면 그 도구가 낸 초록은 아무것도 뜻하지 않는다.
+    import selftest_kit as kit
+
+    def must_fail(fn, what):
+        try:
+            fn()
+        except (kit.Fail, AssertionError, RuntimeError):
+            return
+        raise Fail(f'{what} went through without a word')
+
+    # 15라운드. 프로브가 `eq(1, 2, 'x')` 와 `has('abcdef', 'zzz', 'x')` 딱 둘이라,
+    # **그 두 값에서만** 정직한 뮤턴트가 그대로 빠져나갔다: `eq()` 가 list·tuple·dict·
+    # set 에는 절대 실패하지 않게 해도 초록이었고(이 저장소 단정의 대부분이 목록·사전
+    # 비교다), `has()` 가 네 글자 이상 바늘에 절대 실패하지 않게 해도 초록이었다
+    # (긴 문자열 검색이 대부분이다). 도구가 어떤 값에 정직한지를 재려면 프로브가 실제로
+    # 쓰이는 값의 모양을 덮어야 한다 — 재는 쪽의 fixture 가 좁으면 재는 쪽도 좁게
+    # 정직하다. 반대 방향(같은 값에는 지나가야 한다)도 함께 둔다.
+    must_fail(lambda: eq(1, 2, 'x'), 'eq() on two different values')
+    must_fail(lambda: eq('abc', 'abd', 'x'), 'eq() on two different strings')
+    must_fail(lambda: eq([1, 2], [1, 3], 'x'), 'eq() on two different lists')
+    must_fail(lambda: eq((1, 2), (1, 3), 'x'), 'eq() on two different tuples')
+    must_fail(lambda: eq({'a': 1}, {'a': 2}, 'x'), 'eq() on two different dicts')
+    must_fail(lambda: eq({1, 2}, {1, 3}, 'x'), 'eq() on two different sets')
+    must_fail(lambda: eq(None, 0, 'x'), 'eq() on a missing value against a zero')
+    # 16라운드. 프로브의 모양을 짐작으로 고르지 않는다 — 한 벌을 계측해서 골랐다.
+    # `eq` 971회: list 782 · int 78 · tuple 36 · str 29 · dict 23 · **bool 13** ·
+    # set 8 · None 2. 위 일곱 줄에 **bool 이 없었다**. `eq(True, False)` 는 이 저장소가
+    # 열세 번 묻는 모양이고(`'[warn]' in out` 류), 불리언에만 정직한 뮤턴트는 그
+    # 열세 자리를 통째로 재운다. 길이 조건으로 갈래를 파는 거짓말도 함께 막는다 —
+    # 그 부류가 이번 라운드에 세는 함수 쪽에서 실제로 통했다.
+    must_fail(lambda: eq(True, False, 'x'), 'eq() on two different booleans')
+    must_fail(lambda: eq(False, None, 'x'), 'eq() on a false against a missing value')
+    must_fail(lambda: eq([('a', 1)], [('a', 2)], 'x'),
+              'eq() on two lists of pairs — the shape most of this suite compares')
+    must_fail(lambda: eq(list(range(50)), list(range(49)) + [99], 'x'),
+              'eq() on two fifty-item lists that differ in the last one')
+    must_fail(lambda: eq('x' * 4000 + 'a', 'x' * 4000 + 'b', 'x'),
+              'eq() on two long strings that differ at the end')
+    for same in (1, 'abc', [1, 2], (1, 2), {'a': 1}, {1, 2}, None, True, False,
+                 list(range(50))):
+        eq(same, same, 'eq() must let an equal value through')
+    must_fail(lambda: has('abcdef', 'zzz', 'x'), 'has() on a needle that is not there')
+    must_fail(lambda: has('abcdef', 'abcdefg', 'x'), 'has() on a seven-letter needle')
+    must_fail(lambda: has('<html>' + 'x' * 5000, 'ERD_VERIFY_LOG', 'x'),
+              'has() on a long needle missing from a long haystack')
+    must_fail(lambda: has([], 'anything', 'x'), 'has() on an empty haystack')
+    has('abcdef', 'cde', 'has() must let a needle that is there through')
+    # 그리고 공백 든 바늘. 계측하면 `has` 150회 중 **42회(28%)** 가 공백을 담고 있다 —
+    # 사용자에게 보이는 **문장**을 찾는 자리가 전부 그렇다. 16라운드 검증자가
+    # `has()` 를 '공백 든 바늘에는 절대 실패 안 함' 으로 바꿨더니 161개가 초록이었고,
+    # 위 다섯 줄은 한 글자도 공백을 안 담고 있어서 그럴 수밖에 없었다.
+    must_fail(lambda: has('abcdef', 'ab cd', 'x'), 'has() on a needle with a space')
+    must_fail(lambda: has('a b c d', 'b  c', 'x'),
+              'has() on a needle whose spacing is wrong')
+    must_fail(lambda: has('6 cases need a real server and were NOT run',
+                          '7 cases need a real server', 'x'),
+              'has() on a sentence needle that is off by one number')
+    must_fail(lambda: has('<svg>\n<g id="a"/>\n</svg>', 'stroke-width: 2\n', 'x'),
+              'has() on a multi-line needle missing from a document')
+    must_fail(lambda: has('  ' * 400 + 'tail', 'ERD_MAX_AREAS says so\n', 'x'),
+              'has() on a long needle with a space and a newline')
+    has('a b c d', 'b c', 'has() must let a needle with a space through')
+    has('<svg>\n<g id="a"/>\n</svg>', '<g id="a"/>\n</svg>',
+        'and one that spans two lines')
+
+    saved_cases = list(kit.CASES)
+    try:
+        kit.case('__probe__ duplicate')(lambda w: None)
+        must_fail(lambda: kit.case('__probe__ duplicate')(lambda w: None),
+                  'a second case registered under a name already taken')
+    finally:
+        kit.CASES[:] = saved_cases
+
+    # 등록이 아무것도 못 찾는 것은 '고칠 게 없다' 가 아니라 실패다. 글로브가 어긋나면
+    # 39개가 사라지는데 종료코드 0 에 마지막 줄은 초록 `all 62 passed` 였고,
+    # `install.sh --check` 는 그 마지막 줄만 사용자에게 보여 준다.
+    empty = work / 'nothing-beside-me'
+    empty.mkdir(parents=True, exist_ok=True)
+    saved_here = kit.HERE
+    try:
+        kit.HERE = empty
+        must_fail(kit.load_extras, 'load_extras() with no selftest_*.py to be found')
+    finally:
+        kit.HERE = saved_here
+
+    rec = {'file': 'erd_area_A.png', 'counts': {k: 0 for k in MEASURES},
+           'warn': [], 'tolerated': []}
+    eq(verify_faults(rec), [], 'an all-zero area record is clean')
+    saved = list(kit._LOGS), kit._DREW[0], kit._SWEPT[0]
+    try:
+        kit._LOGS.clear()
+        must_fail(lambda: verify_recs(work),
+                  'verify_recs() with not one record — "found nothing" is not "clean"')
+        # 먼저 **깨끗한** 기록 하나로 '그린 장수 ↔ 기록 장수' 만 묻는다. 더러운
+        # 기록으로 물으면 훑기가 어느 쪽 규칙 때문에 죽었는지 구분되지 않는다 —
+        # 실제로 그렇게 썼다가 대조를 지운 뮤턴트를 놓쳤다.
+        log = work / 'probe.jsonl'
+        log.write_text(json.dumps(rec) + '\n', encoding='utf-8')
+        kit._LOGS.append(log)
+        kit._DREW[0] = 2
+        must_fail(lambda: kit.sweep_verify('__probe__ none', work),
+                  'the sweep with 2 diagrams drawn and only 1 recorded')
+        kit._DREW[0] = 1
+        kit.sweep_verify('__probe__ none', work)        # 맞으면 지나간다
+        log.write_text(json.dumps(dict(rec, counts=dict(rec['counts'], thru=3),
+                                       tolerated=['thru'])) + '\n', encoding='utf-8')
+        must_fail(lambda: verify_clean(work),
+                  'verify_clean() on a record the drawing code itself called tolerable')
+        must_fail(lambda: kit.sweep_verify('__probe__ none', work),
+                  'the sweep over a diagram that is not clean')
+        # 봐주기는 상한이 아니라 정확값이다 — 넓혀 놓고 그 아래 회귀를 숨길 수 없게
+        log.write_text(json.dumps(dict(rec, counts=dict(rec['counts'], h_overlap=2)))
+                       + '\n', encoding='utf-8')
+        kit.RENDER_ALLOW['__probe__ allow'] = {'h_overlap': 9}
+        must_fail(lambda: kit.sweep_verify('__probe__ allow', work),
+                  'an allowance of 9 over diagrams that peak at 2')
+        kit.RENDER_ALLOW['__probe__ allow'] = {'h_overlap': 2}
+        kit.sweep_verify('__probe__ allow', work)      # 정확히 맞으면 지나간다
+    finally:
+        kit.RENDER_ALLOW.pop('__probe__ allow', None)
+        kit._LOGS[:], kit._DREW[0], kit._SWEPT[0] = saved[0], saved[1], saved[2]
+
+
+# ── 조용히 줄기를 막는 톱니 ─────────────────────────────────────────────────
+# 14라운드의 신고제(`EXPECT_CASES`)는 '조용히 0' 을 막는다. 그런데 15라운드에
+# `selftest_history.py` 에서 `@case` 셋을 떼고 `EXPECT_CASES` 를 40 → 37 로 함께
+# 고쳐 봤더니 `all 138 passed` 로 **조용히 줄었다**. 신고는 '내가 올린 수' 를 말할
+# 뿐이라, 신고와 실제를 같은 손으로 함께 낮추면 아무 데서도 안 붉는다.
+#
+# 그래서 바닥을 따로 둔다. 이 표는 **그 파일 바깥**(입구 파일)에 있으므로 한 파일만
+# 손보는 뮤턴트로는 못 내린다. 케이스를 더하는 것은 자유롭고(바닥은 하한이다),
+# 줄이려면 여기 숫자를 함께 내려야 한다 — 그러면 그 삭제가 diff 에 남는다.
+# `RENDER_ALLOW` 를 '코드를 고쳐서는 늘릴 수 없는 자리' 에 둔 것과 같은 이유다.
+#
+# 목록에 없는 새 파일은 1 이 바닥이다 — 새 파일에 손으로 적을 것을 늘리지 않는다.
+# 값은 15라운드가 끝나는 자리(2026-08-04)의 실측이다.
+# 값은 16라운드가 끝나는 자리(2026-08-04)의 실측이다.
+CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 23,
+              'selftest_r14_config': 25, 'selftest_r14_install': 13,
+              'selftest_r14_render': 10}
+
+# 그런데 이 표는 **파일 이름으로** 걸려 있다. 15라운드 수정자가 스스로 신고하고
+# 16라운드 검증자가 확정한 우회가 그래서 있다: `selftest_r14_render.py` 를
+# `selftest_r15_render.py` 로 개명하면서 케이스 4개를 지우면 개명된 이름은 표에 없어
+# 바닥이 1 이 되고, `all 157 passed` 가 초록으로 찍힌다. 이름표를 옮기면 그 이름표에
+# 걸린 바닥이 함께 사라진다 — 이름에 거는 한 원리적으로 그렇다.
+#
+# 그래서 이름을 하나도 안 보는 바닥을 하나 더 둔다. 파일이 몇 개든 무슨 이름이든,
+# **이 벌 전체가 몇 개인가**는 개명으로 바뀌지 않는다. 개명만 하는 것은 이 바닥을
+# 통과하고(그래도 좋다 — 개명 자체는 아무것도 안 잃는다), 개명에 삭제를 섞는 순간
+# 총계가 내려가 여기서 붉어진다. 도커 케이스는 서버가 있어야만 등록되므로 뺀다.
+TOTAL_FLOOR = 181
+
+# 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
+# **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
+# 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
+EXPECT_CASES = 70
+
+
+@case('selftest: every case file beside the kit is registered and says how many it added')
+def _(work):
+    # 13라운드가 36개를 만들고 아무 데도 등록하지 않았다. 14라운드가 글로브로 등록했는데
+    # 그 장치는 **제가 실패한 것을 스스로 말하지 못했다** — 등록을 통째로 지워도
+    # `all 62 passed` 가 초록으로 찍혔다. 총계를 상수로 박으면 다음 라운드에 곧
+    # 어긋나므로, 파일마다 제가 올린 수를 신고하게 하고 여기서 그 신고서를 읽는다.
+    import selftest_kit as kit
+    running = getattr(sys.modules.get('__main__'), '__file__', '')
+    want = {p.stem for p in HERE.glob('selftest_*.py')} - {'selftest_kit'}
+    if running:
+        want -= {os.path.splitext(os.path.basename(running))[0]}
+    got = dict(kit.LOADED)
+    eq(sorted(got), sorted(want),
+       'every selftest_*.py beside the kit reports itself — a file that loads silently '
+       'can also fail to load silently')
+    for stem, n in sorted(got.items()):
+        if n <= 0:
+            raise Fail(f'{stem}.py registered {n} cases')
+        mod = sys.modules[stem]
+        declared = getattr(mod, 'EXPECT_CASES', None)
+        # 15라운드. 신고는 선택이 아니다. 신고하지 않는 파일은 `load_extras()` 의
+        # '정확히 맞아야 한다' 를 통째로 비켜 가고, 그러면 그 파일에서 케이스가
+        # 사라지는 것을 아무것도 막지 않는다 — 아래 톱니도 신고서를 읽으므로 함께
+        # 눈이 먼다. 여기서 붉히는 쪽을 골랐지, `load_extras()` 에서 죽이는 쪽은
+        # 고르지 않았다: 신고 한 줄을 잊은 것 때문에 **시험이 한 개도 안 도는** 것은
+        # 이 저장소가 세 라운드째 물린 바로 그 모양이라, 한 줄 빨강으로 파일 이름을
+        # 대는 편이 낫다.
+        if declared is None:
+            raise Fail(f'{stem}.py registered {n} cases but declares no EXPECT_CASES — '
+                       f'add `EXPECT_CASES = {n}` to it; a file that does not say how '
+                       f'many it adds can also lose them without saying so')
+        eq(n, declared, f'{stem}.py says EXPECT_CASES = {declared}')
+        floor = CASE_FLOOR.get(stem, 1)
+        if n < floor:
+            raise Fail(f'{stem}.py is down to {n} cases from {floor} — a case may only '
+                       f'leave with its floor: lower CASE_FLOOR[{stem!r}] in '
+                       f'selftest.py in the same change, so the removal shows up in '
+                       f'the diff instead of in a tally nobody compares')
+    # ── 입구 파일 자신 ──────────────────────────────────────────────────────
+    # 15라운드 판은 여기서 `own > 0` 만 봤다. 그래서 입구 파일의 70개(시험 벌의 43%)에
+    # 대해서는 신고도 바닥도 없었다: `@case` 넷을 no-op 데코레이터로 바꾸면 `✗` 한 건
+    # 없이 `all 157 passed` 가, 케이스 셋을 지우면 `all 158 passed` 가 찍혔다.
+    # 위 다섯 파일에 건 규율을 입구 파일에도 똑같이 건다 — 신고(EXPECT_CASES)와
+    # 바닥(kit.ENTRY_FLOOR). 바닥이 kit 에 있는 이유는 위 표와 같다: 지키려는 파일
+    # 안에 두면 그 파일만 손보는 변경으로 함께 내릴 수 있다.
+    own = len(kit.CASES) - sum(got.values())
+    if own <= 0:
+        raise Fail(f'the entry file registered {own} cases of its own — the tally '
+                   f'{len(kit.CASES)} is coming from somewhere unexpected')
+    entry = os.path.splitext(os.path.basename(running))[0] if running else ''
+    if not entry:
+        raise Fail('this suite is running without a file name of its own, so the entry '
+                   'file cannot be held to the floor every other file is held to')
+    entry_mod = sys.modules.get('__main__')
+    declared = getattr(entry_mod, 'EXPECT_CASES', None)
+    if declared is None:
+        raise Fail(f'{entry}.py is the entry file and registered {own} cases but '
+                   f'declares no EXPECT_CASES — add `EXPECT_CASES = {own}` to it; the '
+                   f'file that runs the suite is the one file nothing was counting')
+    # 입구 파일이 도커 케이스를 안에서 등록할 수 있다 (selftest_history.py 가 그렇다).
+    # 그쪽 `EXPECT_CASES` 는 이미 그 수를 함께 세므로 신고 대조는 그대로 맞고, 바닥은
+    # 하한이라 6개가 더 붙어도 넘지 않는다.
+    eq(own, declared, f'{entry}.py is the entry file and says EXPECT_CASES = {declared}')
+    entry_floor = kit.ENTRY_FLOOR.get(entry, 1)
+    if own < entry_floor:
+        raise Fail(f'{entry}.py is the entry file and is down to {own} cases from '
+                   f'{entry_floor} — a case may only leave with its floor: lower '
+                   f'ENTRY_FLOOR[{entry!r}] in selftest_kit.py in the same change, so '
+                   f'the removal shows up in the diff instead of in a tally nobody '
+                   f'compares')
+
+    # ── 이름을 하나도 안 보는 바닥 ──────────────────────────────────────────
+    # 위의 두 표는 전부 **파일 이름**으로 걸려 있다. 개명하면 그 이름에 걸린 바닥이
+    # 함께 사라진다(TOTAL_FLOOR 옆의 설명 참고). 총계는 개명으로 안 바뀐다.
+    total = sum(1 for n, _f in kit.CASES if not n.startswith('db: '))
+    if total < TOTAL_FLOOR:
+        raise Fail(f'the suite is down to {total} cases from {TOTAL_FLOOR} — whatever '
+                   f'file they left, and whatever that file is called now, lower '
+                   f'TOTAL_FLOOR in selftest.py in the same change so the loss shows '
+                   f'up in the diff')
 
 
 # ── 그림 ─────────────────────────────────────────────────────────────────────

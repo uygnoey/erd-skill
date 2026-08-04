@@ -10,6 +10,8 @@ DDL 이 추가하는 컬럼을 뒤에 이어 `[추가]` 로 표시한다.
 
   ERD_SQL_DIR    파싱할 DDL 디렉토리 (기본 $ERD_PROJ/sql)
   ERD_SQL_FILES  읽을 파일을 직접 지정 (콤마 구분, 기본은 디렉토리의 *.sql 전부)
+  ERD_LABEL      여러 DB 를 합칠 때 붙일 라벨. 키가 '<라벨>.orders' 가 되고
+                 결과는 schema.<라벨>.json 으로 나간다 (introspect.py 와 같다)
   ERD_REF_SCHEMA 읽기 전용 원천 스키마를 함께 넣을 때 (선택)
   ERD_REF_TABLES 그 스키마에서 가져올 테이블 (콤마 구분, 선택)
   ERD_DEFAULT_PK PK 를 못 찾은 기존 테이블에 가정할 컬럼명 (선택)
@@ -21,18 +23,66 @@ import subprocess
 from pathlib import Path
 
 from i18n import t as T
-from config import RS, SCHEMA_JSON, SEP, SQL_DIR, psql
+# 경로 상수는 **부를 때** 묻는다. `from config import SCHEMA_JSON` 한 줄이 곧
+# `config.WORK` 를 만들라는 뜻이라, 이 파일을 inspect 하려고 import 만 한 회귀 시험이
+# 부르는 사람의 cwd 에 `erd-build/out` 을 남겼다 (config.py 의 '늦춰 두는 값' 참고).
+# 여기서도 이름을 당겨오지 않아야 그 사슬이 끊긴다.
+import config
+from config import RS, SEP, has_db as config_has_db, psql, safe_name
 
-OUT = SCHEMA_JSON
+# ERD_LABEL — SKILL.md·SKILL.ko.md 는 이것을 **범용 표**에 넣고 "여러 DB 를 합칠 때
+# 붙일 라벨(schema.<라벨>.json)" 이라 적는데, 16라운드 전에는 introspect.py 만 보고
+# 있었다. `ERD_LABEL=shop python3 parse_ddl.py` 는 라벨 없는 schema.json 에 라벨 없는
+# 키를 쓰고 **경고 한 줄이 없었다.** 그 파일을 merge_schemas.py 로 섞으면 이름이 같은
+# 테이블끼리 서로를 덮어쓴다(3라운드 발견) — 라벨이 있어야 안 부딪히는데, 라벨을
+# 적은 사람은 제가 적었다고 믿는다. 문서를 따르는 쪽으로 맞춘다: 여기서도 붙인다.
+#
+# 검사도 introspect.py 와 같은 자리에서 한다 — 아무것도 파싱하기 전이다. `a/b` 는
+# 마지막 쓰기에서 `ValueError: Invalid name` 이 되는데, 그때는 파일을 다 읽고 DB 까지
+# 다녀온 뒤라 왕복이 통째로 버려진다.
+LABEL = os.environ.get('ERD_LABEL', '').strip()
+if LABEL and safe_name(LABEL) != LABEL:
+    raise SystemExit(T('err.env_name', env='ERD_LABEL', value=LABEL,
+                       safe=safe_name(LABEL) or 'db1'))
+
+
+def _relabel(tables):
+    """테이블 키·스키마에 ERD_LABEL 을 붙인다 — introspect.key() 와 **같은 규칙**.
+
+    introspect 는 키를 `<라벨>.<스키마.이름 또는 이름>` 으로, `schema` 를
+    `<라벨>.<스키마>` 로 적고 `db` 에 라벨을 남긴다. 두 경로가 서로 다른 모양을
+    내면 merge_schemas 가 섞은 뒤 같은 DB 의 테이블이 두 규칙으로 흩어진다.
+
+    FK 의 `ref_table` 도 함께 옮긴다. parse_ddl 은 DDL 안에 정의가 없는 참조 대상도
+    반드시 `tables` 에 만들어 두므로(main 참고) 모든 `ref_table` 이 키다 — 하나라도
+    빼먹으면 그림에서 관계가 통째로 사라진다.
+    """
+    if not LABEL:
+        return tables
+    out = {f'{LABEL}.{k}': t for k, t in tables.items()}
+    for t in out.values():
+        t['db'] = LABEL
+        t['schema'] = f"{LABEL}.{t.get('schema') or 'public'}"
+        for fk in t['fks']:
+            fk['ref_table'] = f"{LABEL}.{fk['ref_table']}"
+    return out
+
 
 def sql_files():
     """읽을 DDL 파일 목록. 지정이 없으면 디렉토리의 *.sql 을 이름순으로 전부 읽는다."""
     named = [f.strip() for f in os.environ.get('ERD_SQL_FILES', '').split(',') if f.strip()]
     if named:
+        # 없는 파일·디렉토리를 적으면 read_text 가 `FileNotFoundError: [Errno 2]` 로
+        # 죽는데, 그 줄은 ERD_SQL_FILES 라는 말을 하지 않는다 (게다가 앞의 파일은
+        # 이미 읽은 뒤다). 하나라도 못 읽을 것이면 시작 자리에서 이름을 댄다.
+        bad = [f for f in named if not (config.SQL_DIR / f).is_file()]
+        if bad:
+            raise SystemExit(T('err.env_not_file', env='ERD_SQL_FILES',
+                               path=', '.join(str(config.SQL_DIR / f) for f in bad[:6])))
         return named
-    if not SQL_DIR.is_dir():
-        raise SystemExit(T('err.no_sql_dir', path=SQL_DIR))
-    return sorted(p.name for p in SQL_DIR.glob('*.sql'))
+    if not config.SQL_DIR.is_dir():
+        raise SystemExit(T('err.no_sql_dir', path=config.SQL_DIR))
+    return sorted(p.name for p in config.SQL_DIR.glob('*.sql'))
 
 
 def mask(sql):
@@ -553,8 +603,21 @@ def _rows(query, n):
         yield (line.split(SEP) + [''] * n)[:n]
 
 
-REF_SCHEMA = os.environ.get('ERD_REF_SCHEMA', '')
+REF_SCHEMA = os.environ.get('ERD_REF_SCHEMA', '').strip()
 REF_SOURCES = [t.strip() for t in os.environ.get('ERD_REF_TABLES', '').split(',') if t.strip()]
+
+
+def _lit(s):
+    """SQL 문자열 리터럴 하나. 이름 속 따옴표가 남의 문법이 되지 않게 escape 한다.
+
+    값 둘 다 환경변수(ERD_REF_SCHEMA·ERD_REF_TABLES)에서 그대로 와서 그대로 **살아
+    있는 서버**로 나간다. escape 를 지우면 나가는 문장이 이렇게 된다:
+        where c.table_schema='s1' or '1'='1' and c.table_name in ('x')
+    15라운드 전에는 이 자리를 재는 항목이 introspect 쪽에만 있었고 여기는 0건이라,
+    지워도 141개가 전부 초록이었다 (selftest_r14_config.py 의 'parse: a quote in
+    ERD_REF_SCHEMA…' 가 이제 그것을 문다).
+    """
+    return "'" + str(s).replace("'", "''") + "'"
 
 
 def fetch_ref(tables):
@@ -572,7 +635,7 @@ def fetch_ref(tables):
            else c.data_type end,
       c.is_nullable
     from information_schema.columns c
-    where c.table_schema='{REF_SCHEMA}' and c.table_name in ({','.join("'"+t+"'" for t in tables)})
+    where c.table_schema={_lit(REF_SCHEMA)} and c.table_name in ({','.join(_lit(t) for t in tables)})
     order by c.table_name, c.ordinal_position"""
     out = {}
     for tn, cn, ty, nul in _rows(q, 4):
@@ -596,7 +659,7 @@ def fetch_existing(names):
            else c.data_type end,
       c.is_nullable
     from information_schema.columns c
-    where c.table_schema='public' and c.table_name in ({','.join("'"+n+"'" for n in names)})
+    where c.table_schema='public' and c.table_name in ({','.join(_lit(n) for n in names)})
     order by c.table_name, c.ordinal_position"""
     out = {}
     for tn, cn, ty, nul in _rows(q, 4):
@@ -607,7 +670,7 @@ def fetch_existing(names):
 
 
 def main():
-    files = [(f, (SQL_DIR / f).read_text()) for f in sql_files()]
+    files = [(f, (config.SQL_DIR / f).read_text()) for f in sql_files()]
 
     # 이름이 두 스키마에 걸치면 키에 스키마를 붙인다 (introspect 와 같은 규칙).
     # 예전엔 shop.orders 와 mart.orders 가 한 테이블로 합쳐져 컬럼이 뒤섞였다.
@@ -646,10 +709,17 @@ def main():
     names = sorted(set(existing_names))
     # DDL 안에 정의가 없는 테이블을 FK 가 가리키면 DB 에서 컬럼을 채워 넣는다.
     # 접속 정보가 없으면 그것대로 진행한다 — 이름만 있는 상자로 그려진다.
-    has_db = bool(os.environ.get('ERD_PSQL') or os.environ.get('ERD_DB'))
+    #
+    # 16R. 물을 것이 없어도 `config_has_db()` 를 불렀다. 그 한 줄이 곧 ERD_PSQL 을
+    # 분해하라는 뜻이라, FK 가 밖을 안 가리키는 **순수 DDL** —
+    # `create table t (id bigint primary key);` — 도 `ERD_PSQL='psql "unclosed'`
+    # 하나로 rc 1 이었다. 14라운드가 config 의 지연으로, 15라운드가 그 범위를 좁히며
+    # 고친 것이 바로 '안 묻는 실행이 접속 설정에 걸려 죽는다' 인데, 이 자리까지는
+    # 오지 않았다. 물을 것이 있을 때만 묻는다.
+    has_db = config_has_db() if names else False
     if names and not has_db:
         print(T('log.ddl_no_db', n=len(names), list=', '.join(names[:6])))
-    db = fetch_existing(names) if names and has_db else {}
+    db = fetch_existing(names) if has_db else {}
     for n in existing_names:
         if n not in db:
             continue
@@ -657,9 +727,26 @@ def main():
         added_names = {c['name'] for c in added}
         base = [c for c in db[n] if c['name'] not in added_names]
         tables[n]['columns'] = base + added
-        default_pk = os.environ.get('ERD_DEFAULT_PK', '')
-        if not tables[n]['pk'] and default_pk:
-            tables[n]['pk'] = [default_pk]
+
+    # ERD_DEFAULT_PK 는 위 루프 **안**에 있었다. `if n not in db: continue` 아래라
+    # 접속이 없으면 db={} 로 루프가 한 번도 안 돌아, DDL 만으로 그리는 사람에게는
+    # 영원히 무효인 스위치였다 — 그런데 화면에는 한 글자도 안 나왔다. SKILL.md 도
+    # DB 가 필요하다는 말을 하지 않는다. 이제 접속과 무관하게 돌고, 붙이지 못한 것은
+    # 이름을 대어 말한다. (그 이름의 컬럼이 없는데도 PK 로 적던 것도 함께 멈춘다 —
+    # 정의서의 PK 칸이 있지도 않은 컬럼을 가리켰다.)
+    default_pk = os.environ.get('ERD_DEFAULT_PK', '').strip()
+    if default_pk:
+        no_col = []
+        for n in sorted(set(existing_names)):
+            if tables[n]['pk']:
+                continue
+            if any(c['name'] == default_pk for c in tables[n]['columns']):
+                tables[n]['pk'] = [default_pk]
+            else:
+                no_col.append(n)
+        if no_col:
+            print(T('log.default_pk_skipped', column=default_pk, n=len(no_col),
+                    list=', '.join(no_col[:6])))
 
     # PRIMARY KEY 컬럼은 Postgres 가 NOT NULL 을 자동으로 건다. DDL 에 따로 적지 않은
     # PK 를 nullable 로 두면 같은 테이블을 DB 에서 읽은 결과(introspect)와 어긋난다 —
@@ -674,9 +761,17 @@ def main():
         t.setdefault('schema', 'public')
     if REF_SOURCES and REF_SCHEMA:
         tables.update(fetch_ref(REF_SOURCES))
+    elif REF_SOURCES:
+        # 반쪽만 준 것은 안 준 것과 다르다 — 예전엔 아무 말 없이 무시했다.
+        print(T('log.ref_tables_ignored', n=len(REF_SOURCES),
+                list=', '.join(REF_SOURCES[:6])))
 
-    Path(OUT).write_text(json.dumps(tables, ensure_ascii=False, indent=2))
-    print(T('log.ddl_parsed', n=len(tables), path=OUT))
+    tables = _relabel(tables)
+
+    out = (config.SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL
+           else config.SCHEMA_JSON)
+    Path(out).write_text(json.dumps(tables, ensure_ascii=False, indent=2))
+    print(T('log.ddl_parsed', n=len(tables), path=out))
     for n, t in sorted(tables.items(), key=lambda x: (x[1]['origin'], x[0])):
         added = sum(1 for c in t['columns'] if c['added'])
         print(f"  [{t['origin']:8}] {n:32} "

@@ -18,9 +18,33 @@ from PIL import Image, ImageDraw, ImageFont
 Image.MAX_IMAGE_PIXELS = None      # 우리가 만드는 그림이라 폭탄 검사 불필요
 MAX_PIXELS = 160_000_000           # 이보다 커지면 배율을 낮춘다
 
-from config import OUT, SCHEMA_JSON, clean, excluded, load_spec
+import config
+from config import SCHEMA_JSON, clean, env_flag, excluded, load_spec
 from i18n import LANG, t as T
 from svg_canvas import SvgCanvas
+
+
+def __getattr__(name):
+    """`erd.OUT` 은 **물어볼 때** 만든다 (PEP 562 모듈 __getattr__).
+
+    `from config import OUT` 은 그 자리에서 `config` 의 지연 값을 깨워 `mkdir` 을
+    돌린다. 이 모듈은 OUT 을 제 코드에서 한 번도 쓰지 않고 **다시 내보내기만**
+    하는데(`build_erd.py` 의 `from erd import OUT`), 그 한 줄 때문에 `import erd`
+    만으로 부르는 사람의 cwd 에 `erd-build/out` 이 생겼다. 15라운드가 세운
+    '**import 는 아무것도 안 만든다**' 를 여기서도 그만큼 지킨다.
+
+    **지키지 못하는 나머지를 여기 적어 둔다.** 이 모듈은 25번째 줄에서 곧바로
+    `SCHEMA_JSON.read_text()` 를 한다 — 즉 `import erd` 는 정의상 '이 프로젝트의
+    스키마를 읽는다' 는 뜻이고, 그 물음이 `erd-build/`(WORK) 를 만든다. 그것까지
+    없애려면 SCHEMA·SPEC·AREAS 를 전부 지연 값으로 돌려야 하는데, 모듈 **안에서의**
+    전역 이름 조회는 PEP 562 를 거치지 않으므로 이 파일의 거의 모든 함수를 함께
+    고쳐야 한다. 16라운드는 그 크기의 변경을 다른 셋이 같은 워크트리를 고치는 중에
+    하지 않기로 했다 — 그래서 `import erd` 는 아직 `erd-build/` 하나를 만든다.
+    """
+    if name == 'OUT':
+        return config.OUT
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
 
 SCHEMA = {k: v for k, v in json.loads(SCHEMA_JSON.read_text()).items() if not excluded(k)}
 # 제외 규칙은 spec 쪽에서만 걸러지고 있어서, 그리는 쪽은 없는 테이블을 찾다 죽었다.
@@ -67,9 +91,9 @@ if len(set(_clean_key.values())) == len(_clean_key):
             _fk['ref_table'] = _clean_key.get(_fk['ref_table'], _fk['ref_table'])
 
 # PNG 옆에 같은 그림을 SVG 로도 남긴다. ERD_SVG=0 이면 끈다.
-SVG_OUT = os.environ.get('ERD_SVG', '1') not in ('0', 'false', 'no')
+SVG_OUT = env_flag('ERD_SVG', True)
 # SVG 는 문서에 박아 쓰는 용도라 그림 안 제목을 뺀다 (캡션이 따로 붙는다).
-SVG_TITLE = os.environ.get('ERD_SVG_TITLE', '0') not in ('0', 'false', 'no')
+SVG_TITLE = env_flag('ERD_SVG_TITLE', False)
 
 # ── 폰트 선택 ────────────────────────────────────────────────────────────────
 # 본문은 Pretendard 를 쓴다. 없으면 OS 기본 한글 폰트로 내려간다.
@@ -174,13 +198,27 @@ def _pick_font(env, candidates, kind):
     if reg:
         if not Path(reg).exists() or not _usable(reg):
             raise SystemExit(T('err.font_env', env=env, path=reg))
-        return (reg, 0), ((bold, 0) if bold and Path(bold).exists() else (reg, 0))
+        # 볼드도 **같은 자로 잰다.** 예전엔 exists() 만 봐서 두 갈래로 조용히 샜다:
+        # 폰트가 아닌 파일이면 한참 뒤 PIL 안에서 OSError 로 터졌고(사람 말이 아니라
+        # 트레이스백이다), 없는 파일이면 아무 말 없이 regular 로 내려가 굵은 글자가
+        # 통째로 사라졌다. 사람이 제 손으로 적은 설정이 빗나간 것이므로 regular 과
+        # 똑같이 죽는다 — '같은 버그를 반만 고쳤다' 를 여기서 끝낸다.
+        if bold and (not Path(bold).exists() or not _usable(bold)):
+            raise SystemExit(T('err.font_env', env=env + '_BOLD', path=bold))
+        return (reg, 0), ((bold, 0) if bold else (reg, 0))
     for r, b in candidates:
         rp, ri = _face(r)
         if not Path(rp).exists() or not _usable(rp, ri):
             continue
         bp, bi = _face(b)
-        return (rp, ri), ((bp, bi) if Path(bp).exists() else (rp, ri))
+        # 후보 목록의 볼드는 사람이 적은 설정이 아니라 우리가 짐작한 경로다. 그래서
+        # 여기서는 죽지 않고 regular 로 내려간다 — 다만 exists() 만 보면 열리지 않는
+        # 파일을 골라 놓고 PIL 이 뒤늦게 터지므로, 재는 자는 위와 같아야 한다.
+        # `and _usable(bp, bi)` 를 지우면 빨강인 것을 15라운드가 붙였다:
+        # `selftest_r14_render.py` 의 `errors: a bold font from the candidate list
+        # is opened before it is picked`. 14라운드는 env 갈래만 시험했다.
+        return (rp, ri), ((bp, bi) if Path(bp).exists() and _usable(bp, bi)
+                          else (rp, ri))
     raise SystemExit(T('err.font_none', kind=kind, env=env,
                        looked=', '.join(_face(r)[0] for r, _ in candidates)))
 
@@ -1062,6 +1100,15 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     # 쌓였고, 긴 컬럼명이 여럿이면 그대로 서로를 덮었다(`라벨↔라벨`
                     # 이 남던 자리다). 여백은 노드 위라 얼마든지 넓힐 수 있으니
                     # 줄을 늘리고 좌우로도 비켜 가며 빈자리를 찾는다.
+                    #
+                    # **이 두 갈래도 `on_a_table()` 을 지난다.** 예전엔 `clashes()`
+                    # 만 보았고, 그러고도 `라벨↔테이블` 이 0 이었던 것은 검사 덕이
+                    # 아니라 `ymax` 가 **모든** 테이블 top 의 최소라는 암묵 기하
+                    # 때문이었다 — 여백은 늘 그 위였다. 그러면 이 자리의 y 를 한 줄
+                    # 고치는 사람은 아무 경고 없이 라벨을 테이블 속에 넣게 된다.
+                    # 근거를 기하에 두지 않고 **검사에 둔다.** (오늘 이 검사가
+                    # 거르는 자리는 없다. 그래서 이 줄들은 그림을 바꾸지 않는다 —
+                    # 바뀌는 것은 다음 사람이 y 를 옮겼을 때다.)
                     p, q = segs[0]
                     cx = (p[0] + q[0]) / 2
                     ymax = min((r[1] for r in node_rects), default=top)
@@ -1069,14 +1116,24 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                         for sx in (0, bw + 14, -(bw + 14), 2 * bw + 28, -2 * bw - 28):
                             cand = (cx + sx - bw / 2 - LABEL_PAD_X, ymax - 22 - row * 19,
                                     cx + sx + bw / 2 + LABEL_PAD_X, ymax - 8 - row * 19)
-                            if not clashes(cand):
+                            if not on_a_table(cand) and not clashes(cand):
                                 box = cand
                                 break
                         if box:
                             break
                     # 그래도 없으면 겹치더라도 제 선 곁에 둔다 (여백 끝까지 찼다는 뜻).
-                    box = box or fallback or (cx - bw / 2 - LABEL_PAD_X, ymax - 22,
-                                              cx + bw / 2 + LABEL_PAD_X, ymax - 8)
+                    # `fallback` 은 위 후보 반복문이 `on_a_table()` 을 통과시킨 뒤에만
+                    # 담아 둔 자리라 테이블을 안 건드린다. 마지막 리터럴 상자에는 그
+                    # 보장이 없으므로 여기서 직접 확인하고, 닿으면 닿지 않을 때까지
+                    # 위로 올린다. **끝난다**: 한 번에 19 씩 올라가고 잉크 상자 높이는
+                    # 유한하며 어떤 테이블 top 도 ymax 아래로 내려가지 않으므로,
+                    # 잉크 아래끝이 ymax 위로 올라오는 순간 반복이 멎는다.
+                    if box is None and fallback is None:
+                        box = (cx - bw / 2 - LABEL_PAD_X, ymax - 22,
+                               cx + bw / 2 + LABEL_PAD_X, ymax - 8)
+                        while on_a_table(box):
+                            box = (box[0], box[1] - 19, box[2], box[3] - 19)
+                    box = box or fallback
                 placed.append(box)
                 placed_ink.append(label_ink_box(box, f['edge'], S))
                 # 배경 사각형으로 덮으면 그 아래를 지나던 다른 선이 끊겨 보인다.
@@ -1144,10 +1201,22 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     continue
                 if oy2 <= ylo or oy1 >= yhi:       # 세로로 안 겹치면 팔이 지날 일 없다
                     continue
-                if ox2 <= sx1:
+                # 갈래는 셋이다. 예전엔 앞의 둘만 보고 **x 구간이 원본과 걸치는**
+                # 셋째를 통째로 지나쳤다 — 같은 열의 더 넓은 테이블이 딱 그 모양이라
+                # (ox1 == sx1, ox2 > sx2), 오른쪽 방이 끝까지 열린 것으로 계산됐고
+                # 팔이 그 테이블 한가운데 심겼다. 걸치는 테이블은 그쪽 방을
+                # **없앤다** — 팔은 sx1 에서 왼쪽으로 / sx2 에서 오른쪽으로만 뻗으므로,
+                # 그 방향으로 삐져나온 테이블은 어디에 놓아도 지난다. 원본의 x 구간
+                # 안에 온전히 들어앉은 테이블은 어느 쪽도 막지 않는다 — 팔이 그
+                # 구간 안으로는 들어가지 않는다.
+                if ox2 <= sx1:                     # 완전히 왼쪽
                     left = max(left, ox2 + 10)
-                if ox1 >= sx2:
+                elif ox1 < sx1:                    # 왼쪽 가장자리를 물고 있다
+                    left = max(left, sx1)
+                if ox1 >= sx2:                     # 완전히 오른쪽
                     right = min(right, ox1 - 10)
+                elif ox2 > sx2:                    # 오른쪽 가장자리를 물고 있다
+                    right = min(right, sx2)
             return left, right
 
         for tname in tnames:
@@ -1166,18 +1235,31 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 want = max(30 + k * 22, min(need, 320))
 
                 # 높이와 좌우를 **함께** 고른다. 높이를 먼저 못박으면 그 띠에서
-                # 남는 폭이 얼마든 그대로 써야 하는데, 한 칸 더 벌리면 옆 테이블을
-                # 벗어나 팔을 온전히 놓을 수 있는 경우가 많다.
-                best, spare = None, None
-                for step in range(40):
-                    cand = dy0 + step * 13
-                    clear = min((min(abs(cy - cand - u), abs(cy + cand - u))
-                                 for u, _ua, _ub in used_hy), default=1e9)
+                # 남는 폭이 얼마든 그대로 써야 한다.
+                #
+                # 방(room)은 dy 가 자랄수록 **줄기만 한다.** loop_room 의 경계는 띠와
+                # 세로로 겹치는 테이블에서만 나오고, 띠는 dy 를 키울수록 넓어지기만
+                # 하므로 걸리는 테이블이 늘 뿐 줄지 않는다. 그러니 위로 올라가다
+                # 방이 없어지면 더 올라가 봐야 소용이 없고, 좁히는 수밖에 없다.
+                # 예전엔 방이 음수여도 그대로 채택하고 아래 lo/hi 에서 억지로 벌려
+                # 팔을 남의 테이블 속에 심었다.
+                def room_at(cand):
                     lft, rgt = loop_room(tname, cy - cand, cy + cand)
                     room_l, room_r = x1 - 12 - lft, rgt - (x2 + 12)
                     side, room = (('L', room_l) if room_l >= min(want, room_r)
                                   else ('R', room_r))
-                    entry = (cand, side, room, lft, rgt)
+                    return (cand, side, room, lft, rgt)
+
+                def clear_at(cand):
+                    return min((min(abs(cy - cand - u), abs(cy + cand - u))
+                                for u, _ua, _ub in used_hy), default=1e9)
+
+                best, spare = None, None
+                for step in range(40):
+                    entry = room_at(dy0 + step * 13)
+                    if entry[2] < 1:
+                        break        # 여기서 방이 없으면 더 넓은 띠에도 없다
+                    clear = clear_at(entry[0])
                     if clear < 12:
                         # 이 높이는 다른 가로선과 겹친다. 그래도 **가장 덜 겹치는**
                         # 것을 하나 챙겨 둔다 — 예전엔 전부 버리고 처음 높이로
@@ -1186,12 +1268,49 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                         if spare is None or clear > spare[0]:
                             spare = (clear, entry)
                         continue
-                    if best is None or room > best[2]:
+                    if best is None or entry[2] > best[2]:
                         best = entry
-                    if room >= want:
+                    if entry[2] >= want:
                         break
+                if best is None and spare is None:
+                    # dy0 에서 이미 방이 없다 = 위로는 전부 없다. 띠를 **좁혀** 본다.
+                    #
+                    # 이 반복문은 **살아 있다.** dy0 = 16 + k·24 이므로 k>=1 이면
+                    # range(27, 11, -13) = [27, 14] 이고, 시험 한 벌에서 본문이 44번
+                    # 돈다. 14라운드는 "dy0=16 이면 빈 range 라 한 번도 안 돈다" 고
+                    # 적었는데 그것은 k=0 일 때만 참이다. 그러면서도 통째로
+                    # `for cand in []:` 로 죽여도 시험은 전부 초록이었다 — 지키는
+                    # 케이스가 없었다는 뜻이다. 지금은 있다:
+                    # `selftest_r14_render.py` 의 `render: a self-reference arm with
+                    # no room in its own band narrows the band`.
+                    for cand in range(int(dy0) - 13, 11, -13):
+                        entry = room_at(cand)
+                        if entry[2] < 1:
+                            continue
+                        clear = clear_at(cand)
+                        # 좁히기는 **가장 덜 겹치는 후보**를 고른다. 예전엔 그 위에
+                        # `if clear >= 12: best = entry; break` 한 갈래가 더 있었다.
+                        # 그 갈래는 **도달할 수 없었다** — 15라운드가 실코드 계측으로
+                        # (자기참조 2~20개 × gap 12~60, 이 자리 진입 5322회, 방 있는
+                        # 후보 8181개, 최대 clear = 11.000, 발동 0회) 확인했고, 16라운드가
+                        # 같은 판을 다시 돌렸다(247판, 진입 **13,299회**, 최대 clear
+                        # **11.000**, 발동 **0회**). 산수도 같은 말을 한다: 첫 팔은 dy=16 에
+                        # 앉고 후보는 dy0-13m 이며 dy0 은 24 씩 뛰므로 후보와 앞 팔의
+                        # 거리는 12 를 못 넘고, `used_hy` 에는 가로선도 들어 있어 실제
+                        # 최소는 늘 더 작다. 반증할 수 없는 갈래를 '언젠가 되살아날지
+                        # 모른다' 는 이유로 남겨 두면 다음 라운드가 또 같은 자리를
+                        # 붙들게 되므로 지웠다 [없앰]. 지워도 뜻은 그대로다 — 후보가
+                        # 셋뿐인 반복문에서 '문턱을 넘으면 즉시 채택' 과 '전부 보고
+                        # 최선을 채택' 은 문턱을 넘는 후보가 없으면 같은 답이고,
+                        # 넘는 후보가 생기면 뒤엣것이 더 나은 답을 준다.
+                        if spare is None or clear > spare[0]:
+                            spare = (clear, entry)
                 if best is None:
-                    best = spare[1] if spare else (dy0, 'L', 0, x1 - 600, x2 + 600)
+                    # 어느 높이에도 방이 없다. 그때만 테이블에 바짝 붙인다(12px).
+                    # 옛 코드는 이 자리에 600px 창을 열어 두어, 방이 없을 때마다
+                    # 팔이 남의 테이블 한가운데 앉았다.
+                    best = spare[1] if spare else (dy0, room_at(dy0)[1], 0,
+                                                   x1 - 13, x2 + 13)
                 dy, side, room, lft, rgt = best
 
                 # 어느 쪽으로 나갈지는 넓이만으로 못 고른다. 넓어도 그 통로가 이미
@@ -1212,9 +1331,12 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                             return v
                     return None
 
-                lo_l, hi_l = min(max(lft, x1 - 600), x1 - 13), x1 - 12
-                lo_r, hi_r = x2 + 12, max(min(rgt, x2 + 600), x2 + 13)
-                free_l = clean_lane(x1 - max(min(want, x1 - 12 - lo_l), 12), lo_l, hi_l)
+                # 경계는 loop_room 이 준 그대로 쓴다. 예전엔 min(…, x1-13) ·
+                # max(…, x2+13) 로 **한 칸을 억지로 만들어**, 방이 없는 쪽에도 차선이
+                # 있는 것처럼 보이게 했다 — 그 한 칸이 곧 남의 테이블 속이다.
+                lo_l, hi_l = max(lft, x1 - 600), x1 - 12
+                lo_r, hi_r = x2 + 12, min(rgt, x2 + 600)
+                free_l = clean_lane(x1 - max(min(want, hi_l - lo_l), 12), lo_l, hi_l)
                 free_r = clean_lane(x2 + max(min(want, hi_r - lo_r), 12), lo_r, hi_r)
                 if side == 'L' and free_l is None and free_r is not None:
                     side, room = 'R', hi_r - lo_r
@@ -1224,18 +1346,43 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 # 세로 팔도 자리를 **잡아서** 쓴다. 예전엔 x1-dx 를 그냥 등록만 해
                 # 뒤에 오는 통로만 피하게 했는데, 그러면 이미 그 자리를 쓰고 있는
                 # 선과는 겹친다 — 팔이 길어질수록 더 그렇다.
-                # lo < hi 를 반드시 지킨다. 같거나 뒤집히면 slot() 이 경계를 버리고
-                # 아무 데나 자리를 잡는다 — 그 '아무 데나' 가 테이블 속이다.
-                if side == 'L':
-                    hi = x1 - 12
-                    lo = min(max(lft, x1 - 600), hi - 1)
-                    ax, near = slot(x1 - arm, used_vx, 14, lo=lo, hi=hi,
-                                    span=(cy - dy, cy + dy)), x1
-                else:
-                    lo = x2 + 12
-                    hi = max(min(rgt, x2 + 600), lo + 1)
-                    ax, near = slot(x2 + arm, used_vx, 14, lo=lo, hi=hi,
-                                    span=(cy - dy, cy + dy)), x2
+                #
+                # `hi > lo` 를 반드시 지킨다. 같거나 뒤집히면 slot() 이 경계를 통째로
+                # 버리고(`max(used) + pitch`) 아무 데나 자리를 잡는데, 그 '아무 데나'
+                # 가 남의 테이블 속이다. 벌리는 방향이 중요하다: 예전엔 방이 없는
+                # 쪽으로 **바깥으로** 600px 벌려 팔을 이웃 테이블에 심었고, 여기서는
+                # 제 테이블에 바짝 붙는 쪽으로만 벌린다 — 12px 는 어느 이웃도 들어올
+                # 수 없는 자기 몫이다.
+                #
+                # 15라운드까지 이 자리는 `if hi - lo < 1:` 한 갈래였다. 그 갈래는
+                # selftest 184 프로세스 + 퍼저 120 프로세스에서 **한 번도 실행되지
+                # 않았고**, 16라운드가 15라운드 코드에 계수기를 박아 다시 쟀을 때도
+                # 그랬다 — 퍼저(mix·big 4씨앗 × 60판) + 자기참조 판 247개에서 이 줄에
+                # **106,317번** 닿는 동안 발동 **0회**, 본 `hi - lo` 의 최솟값은
+                # **1.000**(테이블에 바짝 붙는 갈래의 값이다). 결과에 아무 흔적을 남기지
+                # 않는 조용한 수선이라 결과를 보는 어떤 시험으로도 반증할 수 없었다.
+                # 그래서 16라운드가 **갈래를 없앴다** [없앰]. 대신 같은 보장을 갈래
+                # 없이 편다 — 고른 쪽 경계에 12px 자기 몫을 `min`/`max` 로 보태면
+                # `hi - lo >= 1` 이 계산 자체의 결론이 된다:
+                #   · L: hi 는 정확히 x1-12 이고 lo <= x1-13 이므로 >= 1
+                #   · R: lo 는 정확히 x2+12 이고 hi >= x2+13 이므로 >= 1
+                # 보태는 자리가 **side 를 고른 뒤**인 것이 중요하다. 위 lo_l/hi_r 을
+                # 미리 벌리면 방이 없는 쪽에도 차선이 있는 것처럼 보여(clean_lane 이
+                # 그 한 칸을 찾아낸다) 팔이 그쪽 테이블로 갈아탄다 — 14라운드가 지운
+                # 바로 그 버그다. 여기서는 clean_lane 이 다 본 뒤라 차선 판단이 바뀌지
+                # 않는다. 보통 판에서는 lo_l 이 이미 x1-13 보다 작아 min/max 가 아무
+                # 것도 안 바꾼다.
+                #
+                # 남는 것은 '보태기 없이도 정말 안전한가' 인데, 그것은 코드가 아니라
+                # 불변식이라 시험이 직접 계측한다 — `selftest_r14_render.py` 의
+                # `render: the bounds handed to slot() for a self-reference arm are
+                # never empty` 가 아래 `near = …` 줄에서 lo·hi 를 그 자리의 지역
+                # 변수로 읽어 `hi - lo >= 1` 을 못박는다.
+                lo, hi = ((min(lo_l, x1 - 13), hi_l) if side == 'L'
+                          else (lo_r, max(hi_r, x2 + 13)))
+                near = x1 if side == 'L' else x2
+                ax = slot(near - arm if side == 'L' else near + arm, used_vx, 14,
+                          lo=lo, hi=hi, span=(cy - dy, cy + dy))
                 # 팔도 가로선이다 — 통로가 피하게. x 범위는 팔이 실제로 덮는 만큼만.
                 _ax0, _ax1 = min(ax, near), max(ax, near)
                 used_hy.extend(((cy - dy, _ax0, _ax1), (cy + dy, _ax0, _ax1)))

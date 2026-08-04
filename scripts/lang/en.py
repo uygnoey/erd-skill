@@ -48,6 +48,7 @@ M = {
     # ── column table ──────────────────────────────────────────────────────
     'col.name': 'Column',
     'col.type': 'Type',
+    'col.null': 'Null',
     'col.default': 'Default',
     'col.key': 'Key / Ref',
     'col.desc': 'Description',
@@ -61,6 +62,8 @@ M = {
     'html.rows_note': 'rows ≈ is an estimate from statistics',
     'html.toc': 'Contents',
     'html.db_tables': 'DB: {db} · tables {n}',
+    'html.badge_cols': 'cols {n}',
+    'html.badge_tables': '{n} tables',
     'html.overall': 'Overall structure',
     'html.overview_cap': '{title} — structure overview (tables {n} · relationships only)',
     'html.area_cap': '{name} — area detail ERD',
@@ -153,6 +156,11 @@ M = {
     'docx.ch5_2': '5.2 ETL load flows',
     'docx.ch5_2_intro': 'These are data flows, not FKs. The ref schema is read only, so '
                         'no physical constraint can be placed on it.',
+    # 16R 메모 — 아래 넷(`docx.ch6`·`ch6_intro`·`ch7`·`ch7_intro`)은 이름만 `docx.` 다.
+    # 15라운드에 HTML 도 같은 항목(doc.mapping·doc.open_items)을 싣게 되어 지금은 두
+    # 문서가 함께 쓰는 말이므로 `doc.*` 로 옮겨야 맞다. **이번 라운드에는 안 옮긴다** —
+    # 옮기는 순간 `build_html.py`·`build_docx.py` 의 호출이 함께 바뀌어야 하는데 그 둘은
+    # 다른 사람이 동시에 고치고 있다. 카탈로그와 호출을 한 라운드에서 같이 옮길 것.
     'docx.ch6': '6. Design proposal vs. what was built',
     'docx.ch6_intro': 'The table names in the design proposal differ from those in the '
                       'actual DDL. Each item is matched up below to show how it was '
@@ -197,6 +205,10 @@ M = {
                          'ERD_LABEL={label} first.',
     'err.no_sql_dir': 'no DDL directory: {path}  (set it with ERD_SQL_DIR)',
     'err.spec_no_area': '{path} defines areas, but none of them name a table that exists.',
+    'err.spec_dup_code': '{path}: two areas use the area code {code} (the other is written {other}).\n'
+                         '  Area codes become file names ({file}), and on macOS and Windows two\n'
+                         '  codes that differ only in case or in Unicode form are the same file —\n'
+                         '  one area diagram would silently overwrite the other. Give them different codes.',
     'err.spec_layer': 'layer {key} is malformed: {value}\n'
                       '  expected [fill, header, border, label] with #rrggbb colors',
     'err.spec_json': '{path} is not valid JSON: {err}',
@@ -212,6 +224,14 @@ M = {
                         '  Nothing was written. A run that read only part of the schema '
                         'produces a document that looks complete and is not.',
     'err.query_truncated': 'the result stopped in the middle of a row',
+    'err.env_not_dir': '{env}: {path} is not a directory — something else is already there.',
+    'err.env_not_file': '{env}: {path} is not a readable file.',
+    'err.env_bad': '{env} cannot be used: {why}\n  value: {value}',
+    'err.env_empty': '{env} is set to an empty value. Give it something, or unset it to '
+                     'fall back to the default.',
+    'err.env_name': '{env}={value} cannot be part of a file name. Try {safe}.',
+    'err.spec_type': '{path}: "{key}" must be {want} — got {got}.',
+    'err.spec_root': '{path} must be a JSON object with keys like "areas" — got {got}.',
 
     # ── progress output ───────────────────────────────────────────────────
     'log.query_fail': '  [warn] database query failed: {err}',
@@ -220,6 +240,20 @@ M = {
     'log.spec_empty': '  [warn] areas with no usable table, skipped: {list}',
     'log.spec_dup': '  [warn] {n} tables appear in more than one area — kept in the first: {list}',
     'log.spec_missing': '  [warn] spec names {n} tables that are not in the schema: {list}',
+    'log.max_areas_spec': '  [warn] {env}={value}, but {path} names its own areas — drawing all {n}\n'
+                          '          (the cap applies to automatic areas only; the spec wins)',
+    'log.spec_orphan': '  [warn] {n} tables are in no area of the spec — collected into '
+                       'an extra area so they are still drawn: {list}',
+    'log.spec_unknown': '  [warn] {n} top-level spec keys are not known and were ignored: {list}\n'
+                        '    known keys: {known}  (keys starting with _ are comments)',
+    'log.env_not_flag': '  [warn] {env}={value} is not a yes/no value — using {used} '
+                        '(off: 0 false no off n, or empty)',
+    'log.env_not_number': '  [warn] {env}={value} is not a number — using {default}',
+    'log.env_clamped': '  [warn] {env}={value} is below the minimum — using {used}',
+    'log.default_pk_skipped': '  [warn] ERD_DEFAULT_PK={column}: {n} tables keep no primary '
+                              'key because none of their columns is named that: {list}',
+    'log.ref_tables_ignored': '  [warn] ERD_REF_TABLES is set but ERD_REF_SCHEMA is not — '
+                              '{n} tables were not fetched: {list}',
     'log.introspected': 'tables {tables} · columns {columns} · FKs {fks} → {path}',
     'log.desc_from_db': '  column descriptions filled from DB comments: {n}/{total}',
     'log.desc_rest': '  → fill in the rest with merge_desc.py',
@@ -250,11 +284,11 @@ M = {
                            'still there: {path} — {err}',
     'log.html_done': 'HTML  tables {tables} · areas {areas} · figures {figs}  '
                      '{mb}MB → {name}',
-    'log.html_missing': '  [warn] areas with no diagram: {n} ({list})  '
-                        '→ run build_erd.py first',
     'log.stale_figs': '  [warn] embedding {n} diagrams older than the schema '
                       '(ERD_STALE): {list}',
     'log.docx_saved': 'saved: {name} ({kb} KB)',
     'log.figs_missing': '  [warn] diagrams not found, left out of the document: '
                         '{n} ({list})  → run build_erd.py first',
+    'log.row_truncated': '  [warn] {where}: {n} row(s) carry more cells than this table '
+                         'holds ({width}) — the extra cells were dropped: {list}',
 }

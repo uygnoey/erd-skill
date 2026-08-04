@@ -27,6 +27,29 @@ CASES = []
 FAILED = []
 NOTES = []                  # 결과 앞에 덧붙일 한 줄들 (안 돌린 것이 있으면 그것)
 
+# ── 입구 파일의 바닥 ─────────────────────────────────────────────────────────
+# `selftest.py` 의 `CASE_FLOOR` 는 **글로브로 올라오는 파일들**에만 걸린다. 입구
+# 파일(직접 돌린 그 파일) 자신은 `want` 에서 명시적으로 빠지고, 제가 올린 수가 0 보다
+# 큰지만 확인했다. 16라운드 검증자가 그 자리를 뚫었다:
+#
+#   selftest.py 안의 @case 4개를 no-op 데코레이터로 →  all 157 passed, rc=0, ✗ 0건
+#   selftest.py 안의 15R 검증 케이스 3개를 삭제      →  all 158 passed
+#
+# 시험 벌의 43%(70/161)에 대해 '조용히 줄기' 가 그대로 열려 있었다 — 15라운드가
+# 막았다고 적은 바로 그 결함이다.
+#
+# 그래서 바닥을 여기 둔다. `CASE_FLOOR` 를 `selftest.py` 에 둔 이유와 같다: 지키려는
+# 파일 **바깥**에 있어야 그 파일만 손보는 변경으로 못 내린다. 입구 파일은 정의상
+# `selftest.py` 안의 표로는 지킬 수 없으므로 한 칸 더 바깥, 곧 여기다.
+# 값은 16라운드가 끝나는 자리의 실측이다. 케이스를 더하는 것은 자유다(바닥은 하한이다).
+#
+# 표는 '어느 파일이 입구인가' 로 찾는다. 오늘 이 검사를 하는 케이스는 `selftest.py`
+# 안에 있고, `selftest_history.py` 를 직접 돌리면 `selftest.py` 는 글로브에 안 걸려
+# 아예 안 올라온다 — 그러니 `'selftest_history'` 행은 **오늘은 안 걸린다.** 지워도
+# 오늘의 동작은 같지만, 입구가 바뀌었을 때 바닥이 조용히 1 로 떨어지는 쪽보다
+# 적혀 있는 쪽이 낫다고 보고 남겨 둔다.
+ENTRY_FLOOR = {'selftest': 70, 'selftest_history': 40}
+
 # ── 한 케이스가 그린 것과 남긴 것 ────────────────────────────────────────────
 # erd.py 는 `ERD_VERIFY_LOG` 를 **프로세스마다** 처음부터 다시 쓴다(_LOG_STARTED 가
 # 프로세스 전역이다). 그래서 케이스 하나가 build_erd.py 를 두 번 이상 부르면, 뒤의
@@ -41,6 +64,7 @@ NOTES = []                  # 결과 앞에 덧붙일 한 줄들 (안 돌린 것
 # 없어서 뒤엣것을 잃었다.
 _LOGS = []                  # 이번 케이스가 만든 검증 기록 파일 (run() 부른 순서)
 _DREW = [0]                 # 이번 케이스가 그린 도판 수 — 기록이 아니라 찍힌 줄에서 센다
+_SWEPT = [0]                # 훑기가 실제로 끝까지 돈 케이스 수 (main 이 대조한다)
 
 
 def new_case():
@@ -307,7 +331,13 @@ def verify_clean(work, name='', what='the diagram must be clean', allow=None):
 # 일부러 어지러운 그림을 그리는 케이스는 여기에 숫자로 적는다. 어느 파일의 케이스든
 # 이름으로 여기 적는다 — 지금은 같은 허브 fixture(자식 24개)를 쓰는 둘뿐이다. 전체도는
 # 노드 진출 y 가 고정이라 그 모양에서 가로선이 다섯 번 스친다.
-# (허용치가 실제보다 헐거워지면 그만큼 회귀가 숨는다. 늘릴 때는 왜인지 같이 적는다.)
+#
+# **이 숫자는 상한이 아니라 정확값이다.** 상한으로 두었을 때, 5 를 50 으로 벌리는
+# 한 줄이면 그 케이스의 그림 품질 보증이 통째로 조용해졌다 (실제로 그 뮤턴트에
+# 11라운드의 '같은 선 두 번' 회귀를 함께 넣어도 101개가 전부 통과했다). 봐주는 수를
+# 늘리는 것과 그 자리에 회귀가 들어오는 것이 구분되지 않는 셈이다. 그래서 훑기는
+# 이 케이스가 남긴 기록 전체의 **최댓값이 정확히 이 수인지**를 본다 — 넓히면
+# 넓힌 만큼 빨강이고, 그림이 좋아져 수가 줄어도 빨강이다(그때는 줄여 적으면 된다).
 RENDER_ALLOW = {
     'render: a hub with many children keeps lines out of the tables':
         {'h_overlap': 5},
@@ -339,52 +369,120 @@ def sweep_verify(name, tmp):
                    f'{drew - kept} went unchecked\n'
                    f'      (logs: {[p.name for p in logs]})')
     if not logs:
+        _SWEPT[0] += 1
         return                      # 그림을 안 그리는 케이스 — 여기서 잴 것이 없다
     allow = RENDER_ALLOW.get(name)
-    for p in logs:
-        for r in _read_log(p):
-            bad = verify_faults(r, allow)
-            if bad:
-                raise Fail(f'the diagrams this case drew are not clean\n'
-                           f'      {r["file"]}: ' + '; '.join(bad)
-                           + f'\n      counts: {r["counts"]}')
+    recs = [r for p in logs for r in _read_log(p)]
+    for r in recs:
+        bad = verify_faults(r, allow)
+        if bad:
+            raise Fail(f'the diagrams this case drew are not clean\n'
+                       f'      {r["file"]}: ' + '; '.join(bad)
+                       + f'\n      counts: {r["counts"]}')
+    # 봐주기는 상한이 아니라 **정확값**이다 (RENDER_ALLOW 주석 참고). 케이스가 5 를
+    # 적었으면 이 케이스의 기록 중 어딘가에 정확히 5 가 있어야 한다 — 넓혀 놓고
+    # 그 아래에 회귀를 숨길 수 없게.
+    for k, want in (allow or {}).items():
+        peak = max((r.get('counts', {}).get(k) or 0) for r in recs)
+        if peak != want:
+            raise Fail(f'this case is allowed {k}={want} but its diagrams peak at {peak}'
+                       f' — the allowance is an exact number, not a ceiling\n'
+                       f'      (widen it only with a reason; lower it when the drawing '
+                       f'improves)\n'
+                       f'      records: {[r["counts"].get(k) for r in recs]}')
+    _SWEPT[0] += 1
 
 
 # ── 등록 ────────────────────────────────────────────────────────────────────
+LOADED = []                 # [(모듈 이름, 그 파일이 등록한 케이스 수)] — 신고서
+
+
 def load_extras():
     """옆에 놓인 `selftest_*.py` 를 전부 불러 CASES 에 등록한다.
 
     `selftest.py` 가 import 한 줄을 직접 들고 있으면, 파일이 하나 더 늘 때 그 줄을
     잊는 것으로 끝난다 — 잊어도 아무 말이 없고 '전부 통과' 만 찍힌다. 실제로 한 번
     그랬다. 그래서 사람이 적는 대신 옆에 있는 것을 센다.
+
+    **등록이 조용히 0 이 되는 자리를 막는다.** 13라운드가 만든 이 장치는 제가 실패한
+    것을 스스로 말하지 못했다 — 글로브 패턴이 어긋나면 39개가 사라지는데 종료코드 0
+    에 마지막 줄은 초록 `all 62 passed` 였고, `install.sh --check` 는 그 줄만 보여
+    준다. 이름 중복은 `case()` 가 죽여 '조용히 두 배' 를 막았지만 '조용히 0' 은
+    아무도 안 막고 있었다. 그래서 여기서 셋을 못박는다:
+      · 옆에 `selftest_*.py` 가 **하나도 없으면** 그 자체가 실패다 (패턴이 어긋난 것)
+      · 파일 하나가 케이스를 **하나도 안 올리면** 실패다
+      · 파일이 `EXPECT_CASES` 를 신고했으면 그 수와 **정확히** 맞아야 한다
+    총계 상수를 여기 적지 않는 이유는, 케이스는 라운드마다 늘어서 곧 어긋나기
+    때문이다 — 세는 자리를 파일 옆에 둔다.
     """
     if str(HERE) not in sys.path:
         sys.path.insert(0, str(HERE))   # 어디서 불러도 옆 파일을 찾게
-    for p in sorted(HERE.glob('selftest_*.py')):
-        if p.stem == Path(__file__).stem:
-            continue                 # 이 파일 자신
-        importlib.import_module(p.stem)
+    # 돌고 있는 파일 자신은 뺀다. `python3 selftest_history.py` 처럼 곁가지 파일을
+    # 직접 부르면 그 파일은 이미 `__main__` 으로 올라와 있고, 여기서 제 이름으로 한 번
+    # 더 import 하면 **같은 파일이 두 번째 모듈**이 되어 케이스 이름이 통째로 겹친다.
+    _self = getattr(sys.modules.get('__main__'), '__file__', None)
+    _self = Path(_self).resolve() if _self else None
+    files = [p for p in sorted(HERE.glob('selftest_*.py'))
+             if p.stem != Path(__file__).stem and p.resolve() != _self]
+    if not files:
+        raise RuntimeError(
+            f'no selftest_*.py next to {Path(__file__).name} — the glob found nothing, '
+            f'so every extra case would vanish and the tally would still print green')
+    done = {n for n, _ in LOADED}
+    for p in files:
+        if p.stem in done:
+            continue
+        before = len(CASES)
+        mod = importlib.import_module(p.stem)
+        n = len(CASES) - before
+        want = getattr(mod, 'EXPECT_CASES', None)
+        if want is None:
+            if n == 0:
+                raise RuntimeError(
+                    f'{p.name} registered no case at all — a selftest_*.py that adds '
+                    f'nothing is either broken or should not be named that')
+        elif n != want:
+            raise RuntimeError(f'{p.name} says EXPECT_CASES = {want} but registered {n}')
+        LOADED.append((p.stem, n))
+    return LOADED
 
 
 def main():
+    # 등록은 여기서 한 번 더 확인한다. 예전엔 `selftest.py` 의 `__main__` 한 줄만이
+    # 39개를 불러왔고, 그 줄이 사라져도 초록 `all 62 passed` 였다. import 는 두 번
+    # 불러도 sys.modules 에서 그대로 돌아오므로 이 줄은 안전하고, 부르는 자리가
+    # 하나 없어져도 개수가 조용히 줄지 않는다.
+    load_extras()
     only = sys.argv[1] if len(sys.argv) > 1 else ''
     cases = [(n, f) for n, f in CASES if only in n]
     if not cases:
         print(f'no case matches {only!r}')
         return 2
     width = max(len(n) for n, _ in cases)
+    passed = 0
+    before_sweep = _SWEPT[0]
     for name, fn in cases:
         tmp = Path(tempfile.mkdtemp(prefix='erd-selftest-'))
         new_case()
         try:
             fn(tmp / 'work')
             sweep_verify(name, tmp)
+            passed += 1
             print(f'  \033[32m✓\033[0m {name}')
         except Exception as e:                                    # noqa: BLE001
             FAILED.append((name, e))
             print(f'  \033[31m✗\033[0m {name.ljust(width)}  {e}')
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+    # 훑기가 실제로 돌았는가. 13라운드의 간판인 sweep_verify() 는 호출을 통째로
+    # 지워도 아무 데서도 빨강이 뜨지 않았다 — **재는 장치가 빠진 것과 잴 것이 없는
+    # 것을 구분하지 못했다.** 통과한 케이스 수와 훑은 케이스 수를 맞춰 둔다.
+    swept = _SWEPT[0] - before_sweep
+    if swept != passed:
+        FAILED.append(('selftest: every passing case has its diagrams swept',
+                       Fail(f'{passed} cases passed but the sweep ran on {swept}')))
+        print(f'  \033[31m✗\033[0m the diagram sweep ran on {swept} of {passed} '
+              f'passing cases')
     print()
     # 안 돈 것이 있으면 여기서 말한다. 마지막 줄은 집계여야 한다 — `install.sh --check`
     # 가 tail -1 만 떼어 보여 주므로, 뒤에 한 줄이라도 붙으면 개수가 안 보인다.

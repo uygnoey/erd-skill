@@ -18,10 +18,19 @@ import json
 import os
 
 from i18n import t as T
-from config import (EXCLUDE, SCHEMA_JSON, SCHEMAS, QueryFailed, clean, excluded,
-                    psql_rows)
+# ERD_SCHEMAS 와 경로 상수는 **부를 때** 묻는다 (config.py 의 '늦춰 두는 값' 참고) —
+# import 만으로 cwd 에 erd-build 를 만들지 않게, 그리고 이 파일을 읽기만 하는 쪽이
+# 남의 ERD_SCHEMAS 판정에 걸리지 않게.
+import config
+from config import EXCLUDE, QueryFailed, clean, excluded, psql_rows, safe_name
 
-LABEL = os.environ.get('ERD_LABEL', '')
+# ERD_LABEL 은 파일명(schema.<label>.json)과 테이블 키에 그대로 들어간다. `a/b` 를
+# 주면 조회를 **전부 끝낸 뒤** 마지막 쓰기에서 `ValueError: Invalid name` 으로 죽어
+# 왕복이 통째로 버려졌다. 그래서 아무것도 묻기 전에 여기서 본다.
+LABEL = os.environ.get('ERD_LABEL', '').strip()
+if LABEL and safe_name(LABEL) != LABEL:
+    raise SystemExit(T('err.env_name', env='ERD_LABEL', value=LABEL,
+                       safe=safe_name(LABEL) or 'db1'))
 
 
 DUP = set()      # 이름이 두 스키마 이상에 걸쳐 있는 테이블
@@ -188,7 +197,10 @@ def server_version():
 
 
 def main():
-    schemas = ', '.join(f"'{s}'" for s in SCHEMAS)
+    # 스키마 이름은 SQL 리터럴로 박히므로 따옴표를 escape 한다. 예전엔
+    # ERD_SCHEMAS="s1','s2" 가 `in ('s1'', ''s2')` 라는 남의 문법이 됐다.
+    # (빈 목록 — `in ()` — 은 config 가 시작 자리에서 이름을 대고 막는다.)
+    schemas = ', '.join("'" + s.replace("'", "''") + "'" for s in config.SCHEMAS)
     q = lambda tpl: tpl.format(schemas=schemas)
     tables = {}
 
@@ -281,7 +293,8 @@ def main():
     if not tables:
         raise SystemExit(T('err.no_tables'))
 
-    out_path = SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL else SCHEMA_JSON
+    out_path = (config.SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL
+                else config.SCHEMA_JSON)
     out_path.write_text(json.dumps(tables, ensure_ascii=False, indent=2))
     n_col = sum(len(t['columns']) for t in tables.values())
     n_fk = sum(len(t['fks']) for t in tables.values())  # noqa: E501  (dropped 반영 후)

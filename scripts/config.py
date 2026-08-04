@@ -19,47 +19,141 @@ spec 이 없으면 스키마와 테이블명 접두어로 자동 추론한다.
   # DDL 파싱을 쓸 때만 (introspect.py 대신 parse_ddl.py 사용 시)
   ERD_SQL_DIR   파싱할 DDL 디렉토리
   ERD_MODEL_DIR 컬럼 설명을 뽑을 ORM 모델 디렉토리
+
+빈 값(`ERD_X=`)의 뜻은 **자리마다 다르다.** 세 규칙이고, 셋 다 여기 적는다 — 15라운드
+전에는 세 자리에 흩어져 있고 어디에도 함께 적혀 있지 않아, 하나를 보고 나머지를
+짐작하면 틀렸다.
+
+  경로 (ERD_PROJ·ERD_WORK·ERD_SPEC·ERD_SQL_DIR·ERD_MODEL_DIR·ERD_DOC_HTML …)
+      빈 값·공백뿐인 값 = **설정하지 않은 것** → 위에 적힌 기본값 (`_p`)
+      Path('') 이 Path('.') 이 되어 산출물이 부르는 사람의 cwd 에 흩어지는 것을 막는다.
+
+  켜짐/꺼짐 (ERD_SVG·ERD_HTML_SVG·ERD_HTML_FULL·ERD_HTML_STATS·ERD_SVG_TITLE·ERD_STALE)
+      빈 값 = **꺼짐** (`env_flag`)
+      셸에서 `ERD_SVG= cmd` 로 한 번만 끄는 것이 흔한 손버릇이다. 기본값으로 되돌리는
+      길은 따로 있다 — `unset`.
+
+  목록 (ERD_SCHEMAS)
+      빈 값 = **여기서 멈춘다** (`_schemas`)
+      경로처럼 '없는 셈' 치면 기본값 public 으로 슬며시 돌아가는데, 그러면 사용자가
+      물은 적 없는 스키마의 문서가 완성된 얼굴로 나온다. 잘못 적었다고 말하는 편이 낫다.
 """
 import json
 import os
 import re
 import shlex
 import subprocess
+import unicodedata
 from pathlib import Path
 
 from i18n import t as T
 
 
+def env_flag(env, default=False):
+    """켜짐/꺼짐 환경변수 하나 — 규칙은 **이것 하나뿐이다.**
+
+    예전엔 다섯 자리가 저마다 `os.environ.get(...) not in ('0','false','no')` 를 적고
+    있었다. 소문자 세 낱말만 끄므로 `ERD_HTML_SVG=False`·`NO`·`off` 는 **껐는데
+    켜졌고**, `'0 '` 은 공백 하나로 도로 켜졌다. 같은 저장소의 ERD_STALE 은
+    `.strip().lower()` 를 하고 있었으니 코드가 제 안에서 두 규칙을 쓴 셈이다.
+
+    모르는 값은 참으로 치지 않는다 — 그러면 `flase` 같은 오타가 조용히 켜짐이 된다.
+    이름을 대어 알리고 그 변수의 기본값으로 간다.
+
+    **이 규칙을 지나야 하는 변수 목록은 모듈 첫머리에 있다.** 낱말을 더 받아야 하는
+    변수는 그 낱말만 제 자리에서 먼저 걸러 내고 **나머지는 여기로 넘긴다** — 규칙을
+    복사해 가면 곧 두 규칙이 된다. `ERD_STALE` 이 그 모양이다: 'warn'·'ok' 는
+    build_erd.py 가 제 뜻으로 받고, 그 밖의 값은 `env_flag('ERD_STALE', False)` 가
+    답한다. 켜짐/꺼짐을 새로 다는 자리는 그냥 이것만 부르면 된다.
+    """
+    raw = os.environ.get(env)
+    if raw is None:
+        return default
+    v = raw.strip().lower()
+    if v in ('', '0', 'false', 'no', 'off', 'n', 'f'):
+        return False
+    if v in ('1', 'true', 'yes', 'on', 'y', 't'):
+        return True
+    print(T('log.env_not_flag', env=env, value=raw, used='1' if default else '0'))
+    return default
+
+
 def _p(env, default):
-    return Path(os.environ.get(env, default)).expanduser()
+    """경로 환경변수 하나. **빈 값은 설정하지 않은 것으로 친다.**
+
+    `os.environ.get(env, default)` 는 빈 문자열도 값으로 받아 `Path('')` → `Path('.')`
+    이 됐다. `ERD_WORK=''` 하나로 중간 산출물과 out/ 이 부르는 사람의 cwd 에 흩어졌다 —
+    지우려 해도 어디에 생겼는지 모른다. 공백만 있는 값도 같다.
+    """
+    raw = os.environ.get(env, '')
+    return Path(raw if raw.strip() else str(default)).expanduser()
 
 
-PROJ = _p('ERD_PROJ', Path.cwd())
-PROJ.mkdir(parents=True, exist_ok=True)     # 없는 경로를 줬다고 마지막 단계에서 죽지 않게
-WORK = _p('ERD_WORK', PROJ / 'erd-build')
-WORK.mkdir(parents=True, exist_ok=True)
-OUT = WORK / 'out'
-OUT.mkdir(exist_ok=True)
+def as_dir(path, env):
+    """디렉토리로 쓸 자리. 다른 종류의 노드가 있으면 **변수 이름을 대고** 멈춘다.
 
-SCHEMA_JSON = WORK / 'schema.json'
-SPEC_JSON = _p('ERD_SPEC', WORK / 'erd.spec.json')
-SQL_DIR = _p('ERD_SQL_DIR', PROJ / 'sql')
-MODEL_DIR = _p('ERD_MODEL_DIR', PROJ / 'models')
+    mkdir 이 던지는 `FileExistsError: [Errno 17]` 은 어느 환경변수가 그랬는지도,
+    무엇이 이미 거기 있는지도 말해 주지 않는다.
+    """
+    if path.exists() and not path.is_dir():
+        raise SystemExit(T('err.env_not_dir', env=env, path=path))
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise SystemExit(T('err.env_bad', env=env, value=path, why=e))
+    return path
 
-def _docname():
-    """파일명으로 쓸 수 있게 다듬는다.
+
+def as_file(path, env):
+    """읽을 파일 자리. 디렉토리를 가리키면 `IsADirectoryError` 대신 이름을 댄다.
+
+    없는 파일은 여기서 막지 않는다 — 부르는 쪽이 '없으면 기본값' 을 쓸 수 있어야 한다.
+    """
+    if path.exists() and not path.is_file():
+        raise SystemExit(T('err.env_not_file', env=env, path=path))
+    return path
+
+
+_BAD_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def safe_name(raw):
+    """파일명 조각으로 쓸 수 있게 다듬는다.
 
     슬래시가 섞이면 어떤 스크립트는 죽고 어떤 스크립트는 하위 디렉토리를 만들어 엉뚱한
-    자리에 쓴다. 빈 값이면 '.html' 같은 숨김 파일이 되어 찾지 못한다.
+    자리에 쓴다. 앞뒤의 점·공백은 '.html' 같은 숨김 파일을 만든다.
     """
-    raw = os.environ.get('ERD_DOCNAME', '')
-    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', raw).strip('. ')
-    return name or 'ERD'
+    return _BAD_NAME.sub('_', str(raw)).strip('. ')
+
+
+def _docname():
+    return safe_name(os.environ.get('ERD_DOCNAME', '')) or 'ERD'
 
 
 DOCNAME = _docname()
-SCHEMAS = [s.strip() for s in os.environ.get('ERD_SCHEMAS', 'public').split(',') if s.strip()]
+
+
+def _schemas():
+    """ERD_SCHEMAS — 설정했는데 빈 값이면 기본값으로 슬며시 돌아가지 않는다.
+
+    `ERD_SCHEMAS=''` 는 `where table_schema in ()` 라는 문법 오류 SQL 이 되어,
+    사용자는 제 변수 대신 psql 의 파서 오류를 봤다. 빈 값의 뜻이 경로 변수와 왜
+    다른지는 모듈 첫머리에 적혀 있다.
+    """
+    raw = os.environ.get('ERD_SCHEMAS', 'public')
+    out = [s.strip() for s in raw.split(',') if s.strip()]
+    if not out:
+        raise SystemExit(T('err.env_empty', env='ERD_SCHEMAS'))
+    return out
+
+
+# 정규식은 **쓰기 전에** 한 번 컴파일해 본다. 예전엔 excluded() 안에서 처음 컴파일돼,
+# `re.error: unterminated character set` 이 어느 변수 탓인지 말도 없이 튀어나왔다.
 EXCLUDE = os.environ.get('ERD_EXCLUDE', '')
+try:
+    _EXCLUDE_RE = re.compile(EXCLUDE) if EXCLUDE else None
+except re.error as e:
+    raise SystemExit(T('err.env_bad', env='ERD_EXCLUDE', value=EXCLUDE, why=e))
 
 
 _CTRL = {c: ' ' for c in range(32)}
@@ -78,10 +172,97 @@ def clean(s):
     return ' '.join(str(s).translate(_CTRL).split())
 
 
+def _psql_words():
+    """ERD_PSQL 을 **시작 자리에서 한 번** 분해해 본다.
+
+    따옴표가 안 맞으면 shlex 가 `ValueError: No closing quotation` 을 던지는데, 그
+    자리는 첫 조회 직전이라 사용자는 제 변수 이름 대신 shlex 의 말을 봤다.
+    """
+    raw = os.environ.get('ERD_PSQL', '')
+    if not raw.strip():
+        return []
+    try:
+        words = shlex.split(raw)
+    except ValueError as e:
+        raise SystemExit(T('err.env_bad', env='ERD_PSQL', value=raw, why=e))
+    if not words:
+        raise SystemExit(T('err.env_empty', env='ERD_PSQL'))
+    return words
+
+
+# ── 늦춰 두는 값 ────────────────────────────────────────────────────────────
+# 14라운드까지 아래 아홉은 모듈 최상단의 **대입**이었다. 그래서 `import config` 한 번에
+# 경로가 만들어지고 ERD_PSQL·ERD_SCHEMAS 가 판정됐다. 두 가지가 딸려 왔다.
+#
+# ① cwd 오염.  `import config` → `PROJ = as_dir(_p('ERD_PROJ', Path.cwd()), …)` →
+#    `path.mkdir(parents=True, exist_ok=True)`. DB 도 안 보고 그림도 안 그리는 import
+#    하나가 부르는 사람의 cwd 에 `erd-build/out` 을 만들었다 — 빈 디렉터리에서 회귀
+#    시험을 돌리면 `./erd-build` 가 남았고(시험이 parse_ddl 을 inspect 하려고 import
+#    한 것이 전부다), README·SKILL 이 안내하는 직접 실행 경로도 같았다. 14라운드는
+#    `install.sh --check` 쪽만 임시 디렉터리로 피했다 — 그 자리의 증상만 가린 셈이다.
+#
+# ② 사망 범위.  `ERD_PSQL='psql "unclosed'` 하나로 **DB 를 한 번도 안 쓰는**
+#    build_html.py·build_docx.py·merge_desc.py 가 전부 rc 1 이었다. 이미 있는
+#    schema.json 으로 문서만 다시 뽑는 실행이 통째로 막혔다. 같은 이유로
+#    `ERD_SCHEMAS=''` 도 그림·문서 쪽 스크립트를 함께 죽였다.
+#
+# 값은 **처음 물어볼 때** 만든다 (PEP 562 모듈 __getattr__). 계산은 한 번뿐이고,
+# 실제로 쓰는 쪽(`from config import OUT`)에서는 예전과 똑같이 그 자리에서 만들어지고
+# 예전과 똑같이 이름을 대고 멈춘다 — 옮긴 것은 **누가 그 값을 묻는가** 뿐이다.
+# 모듈 안에서는 전역 이름 조회가 __getattr__ 을 거치지 않으므로 _get() 으로 부른다.
+_LAZY = {
+    'PROJ': lambda: as_dir(_p('ERD_PROJ', Path.cwd()), 'ERD_PROJ'),
+    'WORK': lambda: as_dir(_p('ERD_WORK', _get('PROJ') / 'erd-build'), 'ERD_WORK'),
+    'OUT': lambda: as_dir(_get('WORK') / 'out', 'ERD_WORK'),
+    'SCHEMA_JSON': lambda: _get('WORK') / 'schema.json',
+    'SPEC_JSON': lambda: as_file(_p('ERD_SPEC', _get('WORK') / 'erd.spec.json'),
+                                 'ERD_SPEC'),
+    'SQL_DIR': lambda: _p('ERD_SQL_DIR', _get('PROJ') / 'sql'),
+    'MODEL_DIR': lambda: _p('ERD_MODEL_DIR', _get('PROJ') / 'models'),
+    'SCHEMAS': _schemas,
+    'PSQL_WORDS': _psql_words,
+}
+_LAZY_DONE = {}
+
+
+def _get(name):
+    """늦춰 둔 값 하나 — 계산은 이름마다 한 번뿐이다.
+
+    16R. 15라운드가 여기 적어 둔 근거는 "mkdir 도 **경고도** 두 번 나지 않는다"
+    였는데, `_LAZY` 에 든 아홉 중 경고를 찍는 것은 하나도 없다 — `as_dir`·`as_file`
+    은 실패하면 경고가 아니라 SystemExit 이고, `_schemas`·`_psql_words` 도 멈추거나
+    조용하다. 있지도 않은 피해를 근거로 세운 셈이라 문장을 코드가 하는 일에 맞춘다.
+
+    그래서 **이 캐시를 지워도 지금은 밖에서 아무것도 달라지지 않는다.** mkdir 은
+    `exist_ok=True` 라 멱등이고 `shlex.split` 은 순수하다 — 검증자가 캐시를 지우고
+    161개를 돌려 전부 초록이었다(16R 뮤턴트 `M6`). 그것을 무는 케이스는 **일부러
+    만들지 않았다**: 관측할 수 없는 것을 재는 시험은 동작이 아니라 구현을 베껴
+    적는 것이고, 그러면 다음 사람이 이 자리를 못 고친다.
+
+    캐시가 지키는 것은 **다음** 지연 값이다. 여기에 경고를 찍는 것이나 부를 때마다
+    답이 달라질 수 있는 것(`Path.cwd()` 를 그때그때 읽는 따위)을 넣는 순간 캐시가
+    곧 동작이 되고, 그때는 그것을 무는 케이스를 함께 넣어야 한다.
+    """
+    if name not in _LAZY_DONE:
+        _LAZY_DONE[name] = _LAZY[name]()
+    return _LAZY_DONE[name]
+
+
+def __getattr__(name):
+    if name in _LAZY:
+        return _get(name)
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
+def has_db():
+    """DB 에 붙을 수 있는가 — 빈 값·공백뿐인 값은 설정 안 한 것으로 친다."""
+    return bool(_get('PSQL_WORDS') or os.environ.get('ERD_DB', '').strip())
+
+
 def psql_cmd():
     """psql 실행 명령. ERD_PSQL 이 있으면 그것을, 없으면 docker exec 를 쓴다."""
-    if os.environ.get('ERD_PSQL'):
-        return shlex.split(os.environ['ERD_PSQL'])
+    if _get('PSQL_WORDS'):
+        return list(_get('PSQL_WORDS'))
     db = os.environ.get('ERD_DB', '')
     if not db:
         raise SystemExit(
@@ -163,7 +344,7 @@ def psql_rows(query, n):
 
 
 def excluded(table):
-    return bool(EXCLUDE) and re.search(EXCLUDE, table) is not None
+    return _EXCLUDE_RE is not None and _EXCLUDE_RE.search(table) is not None
 
 
 # ── 그림 뼈대 (spec) ────────────────────────────────────────────────────────
@@ -190,6 +371,22 @@ def _code(i):
         i, r = divmod(i - 1, 26)
         out = chr(ord('A') + r) + out
     return out
+
+
+def _code_key(code):
+    """**같은 파일이 될 코드**끼리 묶는 열쇠.
+
+    영역 코드는 `erd_area_<코드>.png` 라는 파일 이름이 된다. 그 이름이 서로 다른지를
+    파이썬의 `==` 로 물으면 틀린다 — macOS(APFS·HFS+ 기본)와 Windows 는 대소문자를
+    가리지 않고, macOS 는 유니코드 결합 형태도 가리지 않는다. `'A' != 'a'` 인데
+    `erd_area_A.png` 와 `erd_area_a.png` 는 **같은 파일**이라, 뒤에 그린 영역이 앞의
+    영역 그림을 조용히 덮어썼다(문서의 'Orders' 절에 남의 영역 그림이 실린다).
+    경고 한 줄 없이 HTML 은 `figures 5` 라고 적었다.
+
+    NFC 로 모으고 casefold 로 접는다 — 리눅스(대소문자를 가리는 FS)에서는 필요 이상으로
+    엄한 셈이지만, 넘치게 잡으면 이름을 하나 바꾸면 되고 모자라면 그림이 사라진다.
+    """
+    return unicodedata.normalize('NFC', str(code)).casefold()
 
 
 def _is_color(c):
@@ -240,6 +437,112 @@ def _split(tables, schema_name, max_areas, min_size=3):
     return keep or [(schema_name, sorted(tables))]
 
 
+# spec 에서 아는 최상위 키와, 그 키가 어떤 모양이어야 하는지.
+# 이 목록이 곧 '아는 키' 다 — 여기 없는 키는 오타로 보고 이름을 대어 알린다.
+_SPEC_SHAPE = {
+    'areas':        (list, '[[code, name, schema, [table, …]], …]'),
+    'layers':       (dict, '{code: [fill, header, border, label]}'),
+    'layer_labels': (dict, '{code: label}'),
+    'layer_of':     (dict, '{table: layer code}'),
+    'roles':        (dict, '{table: role name}'),
+    'derives':      (list, '[[from, to, label], …]'),
+    'doc':          (dict, '{"title": …, "subtitle": …, …}'),
+}
+
+
+def _jtype(v):
+    """JSON 이 부르는 이름으로 무엇이 왔는지 말한다."""
+    if isinstance(v, bool):
+        return 'a boolean'
+    return {dict: 'an object', list: 'an array', str: 'a string', int: 'a number',
+            float: 'a number', type(None): 'null'}.get(type(v), type(v).__name__)
+
+
+def _spec_bad(key, got):
+    raise SystemExit(T('err.spec_type', path=_get('SPEC_JSON'), key=key,
+                       want=_SPEC_SHAPE[key][1], got=_jtype(got)))
+
+
+def _spec_val(spec, key):
+    """spec 의 키 하나 — 모양이 다르면 **키 이름과 기대 모양을 대고** 멈춘다.
+
+    4라운드가 이 자리를 고치면서 areas 에만 손댔다. 그래서 `"roles": "users"` 는
+    `ValueError: dictionary update sequence element #0 has length 1` 로,
+    `"layer_of": ["orders"]` 는 같은 부류로, `"doc": [1,2]` 는 저 멀리 build_erd 의
+    `AttributeError` 로 나왔다. 아는 키는 전부 같은 자리에서 같은 말로 답한다.
+    """
+    want, _shape = _SPEC_SHAPE[key]
+    v = spec.get(key)
+    if v is None:
+        return want()
+    if not isinstance(v, want):
+        _spec_bad(key, v)
+    return v
+
+
+def _clean_deep(v):
+    """spec 이 실어 오는 문자열을 전부 clean() 에 통과시킨다.
+
+    clean() 이 있는 이유를 적은 주석이 "수기 사전과 손으로 고친 schema.json 은 안
+    걸린다" 였는데, 정작 **가장 손으로 쓰는 파일인 spec** 이 그 그물 밖이었다.
+    `roles` 의 개행 하나로 PIL 이 폭을 못 재 그림이 0장이 됐고, `doc.subtitle` 의
+    \\x0b 하나로 docx 가 lxml 에서 죽었다 — 같은 입력에 HTML 만 살아남아, 한 바이트로
+    무엇이 나오고 무엇이 안 나오는지가 갈렸다.
+    """
+    if isinstance(v, str):
+        return clean(v)
+    if isinstance(v, dict):
+        return {(clean(k) if isinstance(k, str) else k): _clean_deep(x)
+                for k, x in v.items()}
+    if isinstance(v, list):
+        return [_clean_deep(x) for x in v]
+    return v
+
+
+MAX_AREAS_DEFAULT = 12
+
+
+def _max_areas():
+    """ERD_MAX_AREAS — 못 읽으면 **말하고** 기본값으로 간다.
+
+    예전 판은 `int(raw) if raw.strip().lstrip('-').isdigit() else 12` 였다. 셋이
+    한꺼번에 걸린다: `abc`·`3.5`·`1e3` 은 아무 말 없이 12 가 되고(사용자는 제가 적은
+    값이 쓰인 줄 안다), `lstrip('-')` 때문에 `--5` 와 `²` 는 검사를 통과해 바로 다음
+    `int()` 에서 raw ValueError 로 죽고, `0`·`-3` 은 max(1,…) 에 눌려 1 이 되는데
+    그것도 말이 없었다.
+    """
+    raw = os.environ.get('ERD_MAX_AREAS', '')
+    if not raw.strip():
+        return MAX_AREAS_DEFAULT
+    try:
+        n = int(raw.strip())
+    except ValueError:
+        print(T('log.env_not_number', env='ERD_MAX_AREAS', value=raw,
+                default=MAX_AREAS_DEFAULT))
+        return MAX_AREAS_DEFAULT
+    if n < 1:
+        print(T('log.env_clamped', env='ERD_MAX_AREAS', value=n, used=1))
+        return 1
+    return n
+
+
+def _free_code(used):
+    """아직 안 쓴 영역 코드 하나. spec 이 A·B 를 이미 썼으면 그 뒤부터 고른다.
+
+    '안 썼다' 는 `_code_key` 로 판정한다. 예전엔 `_code(i) in used` 였는데, `_code` 는
+    언제나 대문자를 내놓고 spec 은 소문자를 적을 수 있다 — `'A' in {'a'}` 가 거짓이라
+    '기타' 영역이 `A` 를 받아 갔고, macOS·Windows 에서 `erd_area_a.png` 와
+    `erd_area_A.png` 는 같은 파일이라 **Orders 영역 그림이 mart-other 그림으로 조용히
+    덮였다.** 두 장을 그렸다고 찍고 한 장만 남는데 경고는 없었다.
+    """
+    keys = {_code_key(u) for u in used}
+    i = 0
+    while _code_key(_code(i)) in keys:
+        i += 1
+    used.add(_code(i))
+    return _code(i)
+
+
 def load_spec(schema):
     """erd.spec.json 을 읽고, 빠진 항목은 스키마·접두어로 자동 추론한다.
 
@@ -251,21 +554,57 @@ def load_spec(schema):
       derives  [[원천, 대상, 라벨], …]                  ETL 흐름 (FK 아님)
     """
     try:
-        spec = json.loads(SPEC_JSON.read_text()) if SPEC_JSON.exists() else {}
+        spec_json = _get('SPEC_JSON')
+        spec = json.loads(spec_json.read_text()) if spec_json.exists() else {}
     except json.JSONDecodeError as e:
-        raise SystemExit(T('err.spec_json', path=SPEC_JSON, err=e))
+        raise SystemExit(T('err.spec_json', path=spec_json, err=e))
+    if not isinstance(spec, dict):
+        raise SystemExit(T('err.spec_root', path=spec_json, got=_jtype(spec)))
+    # 아는 키 목록에 없는 최상위 키는 오타로 본다. 예전엔 `areas` 를 `area` 로 적으면
+    # spec 이 통째로 없는 것과 같아져 자동 추론이 대신 나왔는데, 화면에는 한 글자도
+    # 안 알렸다. `_` 로 시작하는 키는 주석이다 (examples/*.spec.json 이 쓴다).
+    unknown = [str(k) for k in spec if not str(k).startswith('_') and k not in _SPEC_SHAPE]
+    if unknown:
+        print(T('log.spec_unknown', n=len(unknown), list=', '.join(sorted(unknown)[:6]),
+                known=', '.join(sorted(_SPEC_SHAPE))))
     tables = [t for t in schema if not excluded(t)]
 
     # ── 그룹 나누기: 스키마 → (테이블이 많으면) 접두어 ──
-    if spec.get('areas'):
+    if _spec_val(spec, 'areas'):
         # spec 은 사람이 손으로 쓴다. 오타 하나에 traceback 을 뱉는 대신, 무엇이
         # 이상한지 말해 주고 그릴 수 있는 만큼 그린다.
         areas, seen, missing, dup, empty = [], set(), [], [], []
+        codes = {}                 # _code_key → 그 이름을 먼저 가져간 코드 원문
         for raw in spec['areas']:
+            if not isinstance(raw, (list, tuple)):
+                _spec_bad('areas', raw)
             a = (list(raw) + ['', '', '', []])[:4]
-            code, name, sch, ts = a[0], a[1], a[2] or 'public', list(a[3] or [])
+            if a[3] and not isinstance(a[3], (list, tuple)):
+                _spec_bad('areas', raw)
+            code, name = clean(a[0]), clean(a[1])
+            # 영역 코드는 erd_area_<코드>.png 라는 **파일 이름**이 된다. `x/y` 를 적으면
+            # 없는 디렉토리에 쓰려다 PIL 이 `FileNotFoundError` 로 죽어 그 뒤 산출물이
+            # 통째로 사라진다 — 자동 생성 코드(_code)가 '[' 를 피하는 것과 같은 이유다.
+            # 손으로 적는 쪽만 그 검사 밖에 있었다.
+            if _BAD_NAME.search(code):
+                raise SystemExit(T('err.env_name', env=f'{spec_json}: area code',
+                                   value=code, safe=safe_name(code) or 'A'))
+            # 두 영역이 **같은 파일 이름이 될** 코드를 적으면 여기서 멈춘다. 예전엔
+            # 그대로 지나가서 erd_area_<코드>.png 두 장이 서로 덮어썼고 — 뒤에 그린 것만
+            # 남는데 화면에는 두 장을 그렸다고 찍혔다. 'A' 와 'a' 처럼 파이썬으로는
+            # 다르지만 macOS·Windows 에서는 같은 이름인 짝이 특히 조용했다.
+            # 그리는 도중에 알아서는 늦다 — 앞의 산출물이 이미 지워진 뒤다.
+            key = _code_key(code)
+            if key in codes:
+                raise SystemExit(T('err.spec_dup_code', path=spec_json,
+                                   code=code, other=codes[key],
+                                   file=f'erd_area_{code}.png'))
+            codes[key] = code
+            sch, ts = clean(a[2]) or 'public', list(a[3] or [])
             ok = []
             for t in ts:
+                if not isinstance(t, str):   # 테이블 이름이 아니면 (dict·list 는 곧
+                    _spec_bad('areas', raw)  # unhashable 이라 `in` 에서 죽는다)
                 if t not in schema:
                     missing.append(t)
                 elif t in seen:
@@ -284,14 +623,42 @@ def load_spec(schema):
         if empty:
             print(T('log.spec_empty', list=', '.join(empty[:6])))
         if not areas:
-            raise SystemExit(T('err.spec_no_area', path=SPEC_JSON))
+            raise SystemExit(T('err.spec_no_area', path=spec_json))
+        # ── 어느 영역에도 없는 테이블 ──
+        # spec 쪽 오류 셋(missing·dup·empty)은 세어 말해 주면서 **네 번째 방향** 만
+        # 빠져 있었다. 자리가 없는 테이블은 좌표가 안 생겨 erd.py 가 `pos[n]` 에서
+        # KeyError 로 죽었고 — 경고 한 줄 없이 GraphML·PNG·SVG·HTML·docx 가 통째로
+        # 0개가 됐다. SKILL.md 에 실린 예제(영역 하나짜리)가 바로 그 모양이다.
+        # 이름을 대어 알리고, 남은 것을 '기타' 영역으로 받아 그림은 낸다.
+        left = [t for t in tables if t not in seen]
+        if left:
+            print(T('log.spec_orphan', n=len(left), list=', '.join(left[:6])))
+            # 테이블이 하나도 안 남아 버려진 영역의 코드도 이미 쓴 것으로 친다 —
+            # 그 코드를 '기타' 에게 다시 내주면 사용자가 적은 이름과 그림이 어긋난다.
+            used = set(codes.values())
+            by_sch = {}
+            for t in left:
+                by_sch.setdefault(clean(schema[t].get('schema', 'public')) or 'public',
+                                  []).append(t)
+            for sch, ts in sorted(by_sch.items()):
+                areas.append([_free_code(used), T('word.area_other', schema=sch),
+                              sch, sorted(ts)])
+        # ERD_MAX_AREAS 는 **자동 분류에만** 거는 상한이다 (아래 else 가지). spec 이
+        # 손으로 적은 영역은 그 상한과 무관하게 전부 그린다 — 사용자가 이름까지 적어
+        # 둔 절을 말없이 버리는 것이 더 나쁘다. 다만 상한을 적어 둔 사람에게는
+        # **그 수가 안 지켜진다는 사실**을 말한다. 예전엔 한 글자도 안 나왔고,
+        # 거기에 '기타' 영역까지 얹혀 상한 1 에 영역 3개가 나왔다.
+        if os.environ.get('ERD_MAX_AREAS', '').strip():
+            cap = _max_areas()      # 한 번만 부른다 — 못 읽은 값의 경고가 두 번 찍힌다
+            if len(areas) > cap:
+                print(T('log.max_areas_spec', env='ERD_MAX_AREAS', value=cap,
+                        n=len(areas), path=spec_json))
     else:
         by_schema = {}
         for t in tables:
             by_schema.setdefault(schema[t].get('schema', 'public'), []).append(t)
         areas = []
-        raw_max = os.environ.get('ERD_MAX_AREAS', '')
-        max_areas = int(raw_max) if raw_max.strip().lstrip('-').isdigit() else 12
+        max_areas = _max_areas()
         # 상한은 문서 전체 기준이다 — 스키마마다 따로 세면 스키마가 셋일 때
         # 상한 4 가 12 개가 되어 버린다. 단 스키마를 통째로 버릴 수는 없으므로
         # 스키마마다 한 영역은 반드시 남긴다. 그래서 실제 하한은 스키마 개수다.
@@ -306,11 +673,14 @@ def load_spec(schema):
                 areas.append([_code(len(areas)), gname, sch, sorted(gts)])
 
     # ── 레이어(색): 명시 없으면 영역 단위로 배정 ──
-    layer_of = dict(spec.get('layer_of', {}))
+    # 레이어 코드는 그림 안(GraphML 설명)에도 그대로 실린다 — 양쪽을 같은 규칙으로
+    # 씻어야 spec 이 적은 코드와 여기서 만든 코드가 계속 맞는다.
+    layer_of = {k: clean(v) for k, v in _spec_val(spec, 'layer_of').items()}
     if not layer_of:
         for a in areas:
             for t in a[3]:
                 layer_of[t] = a[0]
+    labels = {clean(k): clean(v) for k, v in _spec_val(spec, 'layer_labels').items()}
     keys, layers = [], {}
     for a in areas:
         k = layer_of.get(a[3][0], a[0]) if a[3] else a[0]
@@ -319,25 +689,35 @@ def load_spec(schema):
     for i, k in enumerate(keys):
         c = PALETTE[i % len(PALETTE)]
         label = next((a[1] for a in areas if layer_of.get(a[3][0] if a[3] else '') == k), k)
-        layers[k] = (*c, spec.get('layer_labels', {}).get(k, label))
-    for k, v in (spec.get('layers') or {}).items():
-        v = list(v)
+        layers[k] = (*c, labels.get(k, label))
+    for k, v in _spec_val(spec, 'layers').items():
         # 색이 하나라도 이상하면 PIL 이 알 수 없는 색이라며 죽는다. HTML 쪽은 그대로
         # style 에 박아 버려 더 나쁘다 — 여기서 막는다.
+        if not isinstance(v, (list, tuple)):
+            raise SystemExit(T('err.spec_layer', key=k, value=v))
+        v = [clean(x) if isinstance(x, str) else x for x in v]
         if len(v) < 4 or not all(_is_color(c) for c in v[:3]):
             raise SystemExit(T('err.spec_layer', key=k, value=v))
-        layers[k] = tuple(v[:4])
+        layers[clean(k)] = tuple(v[:4])
 
     # ── 역할명: spec → DB 테이블 코멘트 → 빈값 ──
-    roles = dict(spec.get('roles', {}))
+    roles = {k: clean(v) for k, v in _spec_val(spec, 'roles').items()}
     for t in tables:
-        roles.setdefault(t, schema[t].get('note', '') or '')
+        roles.setdefault(t, clean(schema[t].get('note', '')))
+
+    derives = []
+    for x in _spec_val(spec, 'derives'):
+        # `"derives": "ab"` 는 죽지도 않고 [["a"],["b"]] 라는 쓰레기를 만든 뒤,
+        # 한참 뒤에 엉뚱한 KeyError 로 나왔다.
+        if not isinstance(x, (list, tuple)):
+            _spec_bad('derives', x)
+        derives.append([clean(v) if isinstance(v, str) else v for v in x])
 
     return {
         'areas': areas,
         'layers': layers,
         'layer_of': layer_of,
         'roles': roles,
-        'derives': [list(x) for x in spec.get('derives', [])],
-        'doc': spec.get('doc', {}),
+        'derives': derives,
+        'doc': _clean_deep(_spec_val(spec, 'doc')),
     }

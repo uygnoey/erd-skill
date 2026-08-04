@@ -48,6 +48,7 @@ M = {
     # ── カラム表 ──────────────────────────────────────────────────────────
     'col.name': 'カラム',
     'col.type': '型',
+    'col.null': 'Null',
     'col.default': '既定値',
     'col.key': 'キー/参照',
     'col.desc': '説明',
@@ -61,6 +62,8 @@ M = {
     'html.rows_note': 'rows ≈ は統計に基づく推定値',
     'html.toc': '目次',
     'html.db_tables': 'DB: {db} · テーブル {n}件',
+    'html.badge_cols': 'カラム {n}',
+    'html.badge_tables': 'テーブル {n}件',
     'html.overall': '全体構造',
     'html.overview_cap': '{title} — 全体構造の概要図 (テーブル {n}件 · 関係のみ表示)',
     'html.area_cap': '{name} — 領域詳細 ERD',
@@ -188,6 +191,10 @@ M = {
                          'introspect.py を実行すること。',
     'err.no_sql_dir': 'DDL ディレクトリがない: {path}  (ERD_SQL_DIR で指定)',
     'err.spec_no_area': '{path} の areas に実在するテーブルが一つもない。',
+    'err.spec_dup_code': '{path}: 二つの領域が同じ領域コード {code} を使っている (もう一方は {other})。\n'
+                         '  領域コードはファイル名になる({file})。macOS・Windows では大文字小文字や\n'
+                         '  Unicode の形だけが違うコードは同じファイルなので、一方の領域図が\n'
+                         '  もう一方を黙って上書きする。別々のコードを与えること。',
     'err.spec_layer': 'レイヤー {key} の形式が不正だ: {value}\n'
                       '  [塗り, ヘッダ, 枠, ラベル] で、色は #rrggbb でなければならない',
     'err.spec_json': '{path} が正しい JSON ではない: {err}',
@@ -202,6 +209,14 @@ M = {
                         '  何も書いていない。スキーマを半分しか読めなかった実行は、'
                         '完成して見えるだけの文書を作る。',
     'err.query_truncated': '結果が行の途中で切れた',
+    'err.env_not_dir': '{env}: {path} はディレクトリではない — そこにすでに別のものがある。',
+    'err.env_not_file': '{env}: {path} は読めるファイルではない。',
+    'err.env_bad': '{env} は使えない: {why}\n  値: {value}',
+    'err.env_empty': '{env} が空の値で設定されている。値を与えるか、既定値を使うなら設定を外す。',
+    'err.env_name': '{env}={value} はファイル名に使えない。{safe} のように書く。',
+    'err.spec_type': '{path}: "{key}" は {want} の形でなければならない — 受け取ったのは {got}。',
+    'err.spec_root': '{path} は "areas" のようなキーを持つ JSON オブジェクトでなければ'
+                     'ならない — 受け取ったのは {got}。',
 
     # ── 進行状況の出力 ────────────────────────────────────────────────────
     'log.query_fail': '  [警告] DB クエリ失敗: {err}',
@@ -209,6 +224,20 @@ M = {
     'log.spec_empty': '  [警告] 使えるテーブルがない領域を飛ばす: {list}',
     'log.spec_dup': '  [警告] テーブル {n}件が複数の領域に重複 — 最初の領域だけに置く: {list}',
     'log.spec_missing': '  [警告] spec が指すテーブル {n}件がスキーマにない: {list}',
+    'log.max_areas_spec': '  [警告] {env}={value} だが {path} が領域を自分で書いている — {n}個をそのまま描く\n'
+                          '          (上限は自動分類にのみ効く。spec が優先される)',
+    'log.spec_orphan': '  [警告] どの領域にも入っていないテーブル {n}件 — 別の領域に'
+                       'まとめて描く: {list}',
+    'log.spec_unknown': '  [警告] spec のトップレベルキー {n}件は知らない名前なので無視した: {list}\n'
+                        '    知っているキー: {known}  (_ で始まるキーはコメント)',
+    'log.env_not_flag': '  [警告] {env}={value} はオン/オフの値ではない — {used} とする '
+                        '(オフになる値: 0 false no off n、空)',
+    'log.env_not_number': '  [警告] {env}={value} は数値ではない — {default} を使う',
+    'log.env_clamped': '  [警告] {env}={value} は最小値より小さい — {used} に上げる',
+    'log.default_pk_skipped': '  [警告] ERD_DEFAULT_PK={column} だがその名前の列がなく、'
+                              '{n}件のテーブルは主キーなしのまま: {list}',
+    'log.ref_tables_ignored': '  [警告] ERD_REF_TABLES はあるが ERD_REF_SCHEMA がない — '
+                              '{n}件のテーブルを取得しなかった: {list}',
     'log.introspected': 'テーブル {tables} · カラム {columns} · FK {fks} → {path}',
     'log.desc_from_db': '  DB コメントから補完したカラム説明 {n}/{total}',
     'log.desc_rest': '  → 残りは merge_desc.py で補完すること',
@@ -239,11 +268,11 @@ M = {
                            '{path} — {err}',
     'log.html_done': 'HTML  テーブル {tables} · 領域 {areas} · 図版 {figs}点  '
                      '{mb}MB → {name}',
-    'log.html_missing': '  [警告] 図のない領域 {n}件: {list}  '
-                        '→ 先に build_erd.py を実行すること',
     'log.stale_figs': '  [警告] スキーマより古い図 {n}枚をそのまま埋め込む '
                       '(ERD_STALE): {list}',
     'log.docx_saved': '保存: {name} ({kb} KB)',
     'log.figs_missing': '  [警告] 画像ファイルがなく文書から除いた図 {n}点: '
                         '{list}  → 先に build_erd.py を実行する',
+    'log.row_truncated': '  [警告] {where}: {n} 行がこの表の桁数({width})より多くの'
+                         'セルを持っており、あふれたセルは捨てられた: {list}',
 }
