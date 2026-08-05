@@ -756,6 +756,167 @@ def _(work):
        'a constraint spelled inside a string literal is part of the value')
 
 
+@case('parse: an opening paren inside a quoted name does not swallow the CREATE TABLE')
+def _(work):
+    # `parse_create` 가 본문 괄호 짝을 **이름까지 덮은 사본** 에서 세지 않으면
+    # `"a(b"` 의 그 괄호가 함께 세어져 짝이 영영 안 닫힌다 — `if depth: continue`
+    # 로 그 문이 통째로 빠지고, 테이블 0개에 경고 한 줄 없이 끝났다. 위 콤마
+    # 케이스와 다른 자리다(그쪽은 `split_top_level` 의 자를 자리를 잰다).
+    s = ddl(work, 'CREATE TABLE t (id int, c text COLLATE "a(b" NOT NULL);\n')
+    eq(sorted(s), ['t'], 'the statement still yields its table')
+    eq([c['name'] for c in s['t']['columns']], ['id', 'c'],
+       'a paren inside a quoted name is not a body paren')
+
+
+@case('parse: a quote inside a name is not a literal, and a literal\'s " is not a name')
+def _(work):
+    # 앞의 반: `mask` 가 큰따옴표 식별자를 건너뛰지 않던 때는 이름 안의 `'` 하나가
+    # 리터럴의 시작으로 읽혀 그 뒤가 전부 어긋났고, `CREATE TABLE` 이 통째로 사라졌다.
+    s = ddl(work, "CREATE TABLE t (id int, c text COLLATE \"it's ok\", z int);\n")
+    eq(sorted(s), ['t'], 'the statement still yields its table')
+    eq([c['name'] for c in s['t']['columns']], ['id', 'c', 'z'],
+       "an apostrophe inside a quoted name is part of the name, not a literal")
+
+    # 뒤의 반이 이 케이스가 **혼자** 재는 자리다. 앞의 반만 두면 아무것도 안 잰다:
+    # 큰따옴표를 건너뛰는 가지를 어떻게 부수든 아래 `--` 케이스가 **반드시 함께**
+    # 붉어지고, 그쪽은 주석 임자까지 보므로 단독 킬러가 따로 있다. 그래서 앞의 반은
+    # 글자 하나(`'`)를 못박는 값만 있고 검출력은 0 이다 — 잰 것: 그 가지를 죽이는
+    # 뮤턴트에서 두 케이스가 같이 붉어졌다.
+    #
+    # 그 값을 채우는 것이 여기다. `mask` 는 큰따옴표를 알아본 대가로 **되돌림 판**을
+    # 하나 들고 있다: 건너뛰고 나니 끝나지 않는 리터럴이 남으면(`ran_off`) `"` 를
+    # 모르던 방식으로 한 번 더 읽어 그쪽이 성하면 그것을 쓴다. 아래 입력의 `"` 는
+    # 식별자의 시작이 아니라 **리터럴 안**의 글자라, 짝으로 집힌 `"` 를 건너뛰면
+    # 남은 `'` 가 파일 끝까지 리터럴이 된다 — 되돌림 판이 없으면 이 파일의 테이블이
+    # **둘 다** 사라진다(경고 한 줄 없이). 손으로 쓰다 만 DDL 에서 뒤따르는 문을 다
+    # 잃는 것이 이 저장소가 가장 싫어하는 모양인데, 그 되돌림 판을 통째로 들어내도
+    # 나머지 케이스는 전부 초록이었다.
+    s = ddl(work, 'CREATE TABLE q (a "b text DEFAULT \'has " quote\', z int);\n'
+                  'CREATE TABLE u (id int);\n',
+            sql_dir=work / 'sql2')
+    eq(sorted(s), ['q', 'u'],
+       'a " that turns out to be inside a literal costs no statement at all')
+
+
+@case('parse: a -- inside a quoted name is not a comment but a real one still is')
+def _(work):
+    # 같은 부류의 셋째다. 이름 안의 `--` 를 줄 주석으로 읽으면 그 줄의 나머지와
+    # 뒤따르는 컬럼이 함께 가려져 사라졌다. 그러면서 **진짜** 주석은 계속 주석이어야
+    # 하므로, 이름이 사는 것과 설명이 제 임자에게 가는 것을 한자리에서 못박는다.
+    s = ddl(work, 'CREATE TABLE t (id int, "a--b" text,  -- real note\n  z int);\n')
+    eq([(c['name'], c['comment']) for c in s['t']['columns']],
+       [('id', ''), ('a--b', 'real note'), ('z', '')],
+       'the quoted -- stays in the name and the one after it is still a comment')
+
+
+@case('parse: an unmatched closing bracket does not swallow the columns after it')
+def _(work):
+    # `paren_depth` 가 짝을 안 맞추고 그냥 세면 `]` 에서 깊이가 음수로 떨어져
+    # `depth == 0` 이 뒤로 영영 거짓이 된다 — b·c 가 통째로 a 의 기본값 속으로
+    # 사라졌다. 짝 없는 기호는 없는 셈 쳐야 뒤가 예전처럼 읽힌다.
+    s = ddl(work, 'CREATE TABLE q ( a int DEFAULT 1], b text, c text );\n')
+    eq([c['name'] for c in s['q']['columns']], ['a', 'b', 'c'],
+       'an unmatched ] hides nothing behind it')
+
+
+@case('parse: an unmatched opening bracket does not swallow the columns after it')
+def _(work):
+    # 위 케이스의 **반대쪽**이다. `max(0, depth - 1)` 로 누르는 처방은 닫는 쪽만
+    # 막고 이쪽은 못 막는다 — 깊이가 1 에서 안 내려와 똑같이 뒤를 삼킨다. 두
+    # 방향을 따로 재지 않으면 반만 고친 처방이 초록으로 통과한다.
+    s = ddl(work, 'CREATE TABLE r ( a int DEFAULT [1, b text, c text );\n')
+    eq([c['name'] for c in s['r']['columns']], ['a', 'b', 'c'],
+       'an unmatched [ hides nothing behind it')
+
+
+@case('parse: a quoted name cannot close a bracket the DEFAULT left open')
+def _(work):
+    # 위 둘(짝 안 맞는 괄호)과 그 위 셋(따옴표 이름)이 **만나는** 자리다. 어느 한
+    # 쪽만 재면 못 잡는다.
+    #
+    # `_default_end` 가 깊이를 세기 전에 큰따옴표 이름을 덮지 않으면, 짝 없이 열린
+    # `[` 가 **이름 안의** `]` 와 짝지어진다. 그러면 그 뒤의 `COLLATE` 이 깊이 1 로
+    # 보여 경계에서 빠지고, 기본값이 `[1 COLLATE "a]b"` 통째가 된다 — `_default_end`
+    # 주석이 지키겠다고 적어 둔 바로 그것이다(*"이름 안의 `(` 하나가 뒤따르는 제약을
+    # 통째로 안 보이게 만든다"*). 덮고 세면 짝 없는 `[` 는 아무와도 안 짝지어져
+    # 없는 셈이 되고, `COLLATE` 이 깊이 0 에서 잡혀 값이 `[1` 로 끊긴다.
+    #
+    # 이름 없이 `DEFAULT [1 COLLATE ...` 만 쓰면 두 코드가 **똑같이** 답한다 —
+    # 이름 안의 닫는 기호가 있어야만 갈린다. 그래서 이름과 짝 없는 괄호를 한
+    # 입력에 같이 둔다.
+    s = ddl(work, 'CREATE TABLE t ( a text DEFAULT [1 COLLATE "a]b", z int );\n')
+    eq([(c['name'], c['default']) for c in s['t']['columns']],
+       [('a', '[1'), ('z', '')],
+       'a ] inside a name closes nothing, so COLLATE is still a boundary')
+
+
+@case('parse: ADD COLUMN IF NOT EXISTS written twice adds the column once')
+def _(work):
+    # 두 마이그레이션 파일이 같은 `ADD COLUMN IF NOT EXISTS` 를 들고 있는 것은 흔한
+    # 모양인데, 그냥 append 하던 동안 정의서에 같은 컬럼이 두 줄로 실렸다. 실제
+    # PostgreSQL 은 컬럼이 이미 있으면 그 문을 **통째로** 건너뛰므로(NOTICE 한 줄)
+    # 먼저 적힌 것이 이긴다.
+    d = work / 'sql'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'a.sql').write_text('CREATE TABLE t (id bigint PRIMARY KEY);\n'
+                             'ALTER TABLE t ADD COLUMN IF NOT EXISTS code text UNIQUE;\n',
+                             encoding='utf-8')
+    (d / 'b.sql').write_text('ALTER TABLE t ADD COLUMN IF NOT EXISTS code text UNIQUE;\n',
+                             encoding='utf-8')
+    run('parse_ddl.py', work, sql_dir=d)
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    eq([c['name'] for c in s['t']['columns']], ['id', 'code'],
+       'a column already present is not added a second time')
+
+
+@case('parse: a repeated ADD COLUMN drops its REFERENCES along with the column')
+def _(work):
+    # 위 케이스와 같은 모양인데 **재는 자리가 다르다.** 위 것은 컬럼 줄만 보므로,
+    # 건너뛰기를 "컬럼만 안 붙이고 제약은 그대로 받는" 반쪽으로 바꿔도 그대로
+    # 초록이다. 그 반쪽이 바로 `parse_ddl` 주석이 금지한 것이다 — 실제 PostgreSQL
+    # 은 `IF NOT EXISTS` 에 걸리면 **문 하나를 통째로** 건너뛰므로 뒤 문의
+    # REFERENCES 도 안 붙는다.
+    #
+    # 왜 UNIQUE 로는 못 재는가: 인라인 UNIQUE 는 아래 케이스가 재는 **다른**
+    # 가드(`[cname] not in t['uniques']`)에 한 번 더 걸려 증상이 가려진다.
+    # FK 에는 그 가드가 없다 — 두 벌이 그대로 실려 관계선이 겹쳐 그려진다.
+    # 그래서 같은 중복을 `REFERENCES` 로 쓴 케이스가 따로 있어야 한다.
+    d = work / 'sql'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'a.sql').write_text('CREATE TABLE users (id bigint PRIMARY KEY);\n'
+                             'CREATE TABLE t (id bigint PRIMARY KEY);\n'
+                             'ALTER TABLE t ADD COLUMN IF NOT EXISTS uid bigint '
+                             'REFERENCES users(id);\n',
+                             encoding='utf-8')
+    (d / 'b.sql').write_text('ALTER TABLE t ADD COLUMN IF NOT EXISTS uid bigint '
+                             'REFERENCES users(id);\n',
+                             encoding='utf-8')
+    run('parse_ddl.py', work, sql_dir=d)
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    eq([c['name'] for c in s['t']['columns']], ['id', 'uid'],
+       'the second statement adds no second column')
+    eq([(f['column'], f['ref_table']) for f in s['t']['fks']], [('uid', 'users')],
+       'the skipped statement leaves no relationship behind either')
+
+
+@case('parse: an inline UNIQUE does not repeat a UNIQUE the table already declares')
+def _(work):
+    # 위 케이스가 막는 길(컬럼 중복)을 **비켜 가는** 자리다: 테이블 수준
+    # `UNIQUE (code)` 만 있고 컬럼은 나중에 ALTER 로 붙으면, 컬럼은 처음 보는
+    # 것이라 건너뛰기에 안 걸리는데 인라인 UNIQUE 는 이미 있는 것과 겹친다.
+    # 가드가 없으면 uniques 에 같은 것이 두 벌 실려 정의서가 제약을 두 번 적는다.
+    d = work / 'sql'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'a.sql').write_text('CREATE TABLE t (id bigint, UNIQUE (code));\n',
+                             encoding='utf-8')
+    (d / 'b.sql').write_text('ALTER TABLE t ADD COLUMN code text UNIQUE;\n',
+                             encoding='utf-8')
+    run('parse_ddl.py', work, sql_dir=d)
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    eq(s['t']['uniques'], [['code']],
+       'the same one-column UNIQUE is listed once however many statements spell it')
+
+
 # ── 설명 ─────────────────────────────────────────────────────────────────────
 @case('merge_desc: common dictionary follows ERD_LANG')
 def _(work):
@@ -2025,12 +2186,12 @@ CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 26,
 # **이 벌 전체가 몇 개인가**는 개명으로 바뀌지 않는다. 개명만 하는 것은 이 바닥을
 # 통과하고(그래도 좋다 — 개명 자체는 아무것도 안 잃는다), 개명에 삭제를 섞는 순간
 # 총계가 내려가 여기서 붉어진다. 도커 케이스는 서버가 있어야만 등록되므로 뺀다.
-TOTAL_FLOOR = 201
+TOTAL_FLOOR = 210
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 83
+EXPECT_CASES = 92
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
