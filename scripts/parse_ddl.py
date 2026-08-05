@@ -586,7 +586,20 @@ def _column(cname, rest, comment, added):
             _refs(rest_sc))
 
 
-def parse_create(sql: str, src: str, tables: dict, dup: set):
+def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = None):
+    """`dropped` 는 **읽지 못해 버린 CREATE TABLE** 을 내보내는 자리다 — {키: 스키마}.
+
+    버리기만 하고 그 사실을 알리지 않으면, 같은 이름을 대는 뒤 문장들이 그 테이블을
+    **다시 세운다** — 무엇이 왜 되살아나는지는 `parse_alter`·`main` 의 그 자리에 적었다.
+
+    키는 성공했을 때 쓰였을 바로 그 키다(`f'{sch}.{name}' if name in dup else name`).
+    묻는 쪽 둘이 '이 키로 tables 에 넣을까' 를 묻고 있어 같은 자로 재야 한다. 스키마를
+    따로 들고 다니는 것은 **키만으로는 모자라기** 때문이다: 이름이 한 스키마에만 있으면
+    키에 스키마가 안 붙어(`q`), 버린 `public.q` 와 성한 `audit.q` 가 같은 키가 된다.
+    실제로 `CREATE TABLE q (…어긋남…); ALTER TABLE audit.q ADD COLUMN z;` 에서 키만
+    보던 판은 **남의 테이블인 audit.q 를 함께 버렸다.** 스키마 글자가 양쪽에 다 있는
+    자리(ALTER)에서는 그것까지 맞춰 본다.
+    """
     ms, mc, msc = mask(sql)
     head_pat = re.compile(r'CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+'
                           r'(?:IF\s+NOT\s+EXISTS\s+)?'
@@ -598,10 +611,22 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
     # 이름을 읽는 head_pat 와 본문 슬라이스는 msc 를 그대로 쓴다 — 덮은 사본에서
     # 이름을 읽으면 `_IDC` 가 빈 자리를 보게 된다.
     msc_q = blank_quoted(msc)
+    # 짝이 안 맞는 괄호로 **읽지 못한** CREATE TABLE — 아래 두 자리에서 모인다.
+    # 이름을 대고 넘어가려고 들고 다닌다 (파일 하나가 끝날 때 한 줄로 낸다).
+    unread = []
     for m in head_pat.finditer(msc):
         sch, name = unq(m.group(1)) or 'public', unq(m.group(2))
         i, depth = m.end(), 1                     # 괄호 짝으로 본문을 자른다
         while i < len(msc_q) and depth:
+            # 본문은 **제 문을 넘지 못한다.** 넘던 때는 짝 안 맞는 `(` 하나가 뒤
+            # 문장을 통째로 빨아들였다 — `CREATE TABLE r ( a int DEFAULT (1, b text );`
+            # 다음에 `CREATE TABLE u (…)` 가 오면 짝은 **u 의 닫는 괄호** 에서
+            # 맞아떨어져, r 의 a 가 `(1, b text ); CREATE TABLE u ( a int DEFAULT 1)`
+            # 을 기본값으로 들고 정의서에 실렸다. 경고는 한 줄도 없었다.
+            # 성한 DDL 의 본문에는 `;` 가 있을 수 없다 — 리터럴·달러인용·주석 속의
+            # 것은 mask 가, 큰따옴표 이름 속의 것은 blank_quoted 가 이미 지웠다.
+            if msc_q[i] == ';':
+                break                             # 짝을 못 찾은 채 문이 끝났다
             if msc_q[i] == '(':
                 depth += 1
             elif msc_q[i] == ')':
@@ -609,10 +634,63 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
                 if not depth:
                     break
             i += 1
-        if depth:
-            continue                              # 안 닫혔다 — 잘린 파일
-        body_mc, body_ms, body_sc = mc[m.end():i], ms[m.end():i], msc[m.end():i]
+        # ── 짝이 안 맞으면 무엇을 하는가 ──────────────────────────────────────
+        # 본문의 끝은 **여는 괄호의 짝** 이다. 짝이 맞는 DDL 에서는 위 순차 세기가
+        # 그 자리를 정확히 짚으므로 아래 두 갈래는 **닿지 않는다** — 그래서 성한
+        # 입력에서 달라지는 칸이 원리상 0 이다. 안 맞을 때만 여기로 온다.
+        #
+        # 대괄호와 왜 다르게 다루는가. `paren_depth` 는 짝 없는 기호를 **없는 셈 치고**
+        # 넘어가는데(그 주석 참고), 그것이 옳은 이유는 대괄호가 본문의 **경계를 정하지
+        # 않기** 때문이다 — `DEFAULT 1]` 의 `]` 는 컬럼 정의 안에 섞인 잡음일 뿐,
+        # 테이블이 어디서 끝나는지는 여전히 괄호가 안다. 그래서 그 문은 끝까지 읽힌다
+        # (`a, b, c`). 괄호는 그 경계 자체다. 짝이 어긋나면 **어느 컬럼이 이 테이블
+        # 것인지를 알 방법이 없다** — 없는 셈 치는 처방을 여기에 그대로 대면 파서가
+        # 경계를 스스로 지어내는 것이 되고, Postgres 가 거부한 DDL 이 정의서에서는
+        # 멀쩡한 표로 실린다. 반쯤 읽은 것을 완성본처럼 내놓지 않는다는 것이 이 파일이
+        # `_rows(core=True)`·`fetch_existing` 에서 이미 고른 답이라, 여기도 같게 둔다:
+        # **짓지 않고 버리되, 이름을 대고 버린다.**
+        #
+        # 못 다루는 것은 적어 둔다. 아래 둘째 갈래는 `) ,` 라는 한 모양만 잡는다.
+        # `DEFAULT 1)(,` 처럼 남는 `)` 뒤에 다시 `(` 가 오면 뒤가 통째로 짝이 맞아
+        # 버려서, 본문은 `a` 에서 끊긴 채 아무 말도 못 한다. 넓히려면 '테이블 뒤에
+        # 올 수 있는 것'(INHERITS·PARTITION BY·WITH·TABLESPACE …)을 다 알아야 하고,
+        # 그것을 반만 알면 **성한 DDL 을 버리는** 쪽으로 틀린다.
+        #
+        # 대는 이름은 **DDL 이 적은 그대로** 다 — 스키마를 안 적었으면 안 붙인다.
+        # 이 자리는 테이블이 만들어지기 전이라 키(`sch.name` 또는 `name`)가 없고,
+        # 없는 키를 지어 대면 사람이 파일에서 찾을 수 없는 이름이 화면에 뜬다.
+        # 어느 파일인지도 함께 댄다 — 한 번에 여러 파일을 읽으므로.
+        said = f'{unq(m.group(1))}.{name}' if m.group(1) else name
         key = f'{sch}.{name}' if name in dup else name
+
+        def give_up(_said=said, _key=key, _sch=sch):
+            """이름을 대고 버린다 — 그리고 **버렸다는 것을 내보낸다.**"""
+            unread.append(f'{_said} ({src})')
+            if dropped is not None:
+                dropped[_key] = _sch          # sch 는 이미 'public' 으로 채워진 실효값
+
+        if depth:
+            give_up()                             # 여는 괄호가 끝내 안 닫혔다
+            continue
+        # 남는 `)` 는 본문을 **너무 일찍** 끊는다: `a int DEFAULT 1), b text` 는
+        # 그 `)` 를 닫는 괄호로 읽어 b 뒤가 통째로 문 밖으로 밀려났고, 테이블은
+        # 컬럼 하나만 든 채 아무 말 없이 실렸다. 닫는 괄호 **바로 다음이 콤마** 인
+        # 것은 성한 DDL 에 있을 수 없다 — 테이블 뒤에 오는 어떤 절도 콤마로
+        # 시작하지 않는다(INHERITS·PARTITION BY·WITH·USING·ON COMMIT·TABLESPACE·
+        # AS SELECT …). 그 한 모양만 보고, 그때는 이 문을 못 읽은 것으로 친다.
+        # 이 꼬리는 문 끝(`;`)에서 끊지 않아도 된다 — 끊은 쪽이 공백뿐이면 안 끊은
+        # 쪽의 첫 글자는 그 `;` 라 어차피 콤마가 아니고, 아니면 두 쪽의 첫 글자가
+        # 같다. (한때 끊어 두었다가 지웠다. 뮤턴트로 재 보니 답이 달라지는 입력이
+        # 하나도 없어, 지키는 것 없는 줄이 규칙만 둘로 보이게 했다.)
+        #
+        # 넓히면 안 된다. '콤마가 **어딘가** 있다' 로 재던 판은 세미콜론을 빠뜨린
+        # `CREATE TABLE a (x int)` 뒤의 `ALTER TABLE a ADD COLUMN y int, …` 와
+        # `WITH (fillfactor = 70, autovacuum_enabled = false)` 를 함께 물어
+        # **성한 테이블을 버렸다**.
+        if msc_q[i + 1:].lstrip().startswith(','):
+            give_up()
+            continue
+        body_mc, body_ms, body_sc = mc[m.end():i], ms[m.end():i], msc[m.end():i]
         t = tables.setdefault(key, {
             'name': name, 'origin': 'new', 'src_file': src, 'schema': sch,
             'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
@@ -675,8 +753,41 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
                 t['fks'].append({'column': cname, 'ref_table': _ref_key(ref, sch, dup),
                                  'ref_column': ref[2][0], 'on_delete': ref[3]})
 
+    # 버린 것은 이름을 대고 버린다. 예전엔 `continue` 한 줄이 전부라, 괄호 하나가
+    # 어긋난 파일은 테이블 0개에 rc 0 으로 조용히 끝났다 — 화면에는 '테이블 0개'
+    # 말고는 아무 단서가 없어서 DDL 을 다시 들여다볼 이유조차 남지 않았다.
+    # 문구는 `log.query_incomplete` 를 그대로 쓴다. 그 두 문장('읽지 못했다',
+    # '문서에서 딱 그만큼이 빠진다')이 여기서 둘 다 참이어야 한다.
+    # (fetch_existing 이 이 문구를 마다한 이유가 **앞**문장이 그쪽에서는 거짓이라서였다.
+    # 여기서 앞문장은 참이다 — 정말로 못 읽었다.)
+    #
+    # **뒷**문장은 거저 참이 되지 않는다. 버리기만 하고 끝냈을 때 이랬다:
+    #     CREATE TABLE q ( a int DEFAULT 1), b text );  ALTER TABLE q ADD COLUMN z int;
+    #   → [warn] … q … 딱 그만큼이 빠진다
+    #     [existing] q  컬럼 1개        ← 빠지지 않았다. 성격까지 바뀌어 남았다
+    # `parse_alter` 가 없는 테이블에 스텁을 세우는 자리와 `main` 의 FK 대상 스텁이
+    # 이름만 보고 q 를 **되살렸다**. 그래서 뒷문장이 이 자리에서 거짓이 됐다.
+    # 세 가지가 한꺼번에 틀렸다: ⑴ 빠진다고 말해 놓고 안 빠졌다 ⑵ 배지가 `NEW` 에서
+    # `기존` 으로 뒤집혔다(HEAD 는 origin='new' cols=[a,z], 그때는 'existing' cols=[z])
+    # ⑶ 신규 테이블인데 `log.ddl_no_db` 가 'ERD_DB/ERD_PSQL 을 주면 채워진다' 고 안내해
+    # 접속 문제를 쫓게 만들었다 — DB 에 있을 리 없는 테이블이다.
+    #
+    # 그래서 버린 키를 `dropped` 로 내보내고, 되살리는 두 자리에서 막는다. 고른 답은
+    # **버린 것을 끝까지 버린다** 이다 — 남은 갈래(스텁을 인정하고 문구를 바꾼다)는
+    # 어느 기존 카탈로그 키로도 참이 되지 않는다. `log.ddl_no_db` 는 'DDL 에 정의가
+    # 없는' 이 거짓이고(정의는 있다, 못 읽었을 뿐이다), `log.ddl_not_in_db` 는 DB 를
+    # 뒤진 적이 있다는 말이라 접속 없이 도는 실행에서 거짓이다. 새 키는 이 자리에서
+    # 만들 수 없다. 무엇보다, 컬럼 한 줄만 든 상자를 완성본처럼 싣지 않는다는 것이
+    # 바로 위 갈래·`_rows(core=True)`·`fetch_existing` 이 이미 고른 답이다.
+    #
+    # 버린 테이블을 가리키던 ALTER·COMMENT·FK 는 함께 사라진다. 따로 알리지 않는 것은
+    # 이 한 줄이 **테이블 이름** 을 대기 때문이다 — 'q 를 못 읽었고 q 만큼이 빠진다'
+    # 는 q 에 붙는 모든 문장을 포함한다. 두 번 말하면 같은 사실이 두 가지 일로 읽힌다.
+    if unread:
+        print(T('log.query_incomplete', list=', '.join(unread)))
 
-def parse_alter(sql: str, src: str, tables: dict, dup: set):
+
+def parse_alter(sql: str, src: str, tables: dict, dup: set, dropped: dict = None):
     r"""ALTER TABLE … ADD COLUMN / ADD CONSTRAINT.
 
     pg_dump 는 제약을 전부 `ALTER TABLE ONLY public.t ADD CONSTRAINT …` 로 내놓는다.
@@ -684,6 +795,7 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
     DDL 에서는 PK 와 FK 가 하나도 잡히지 않았다.
     """
     ms, mc, msc = mask(sql)
+    dropped = dropped or {}
     # `IF EXISTS` 는 손으로 쓰는 마이그레이션에 흔한데, 이 자리에서 넘지 못하면
     # 문 전체가 **아무 말 없이** 버려졌다 — `ALTER TABLE IF EXISTS t ADD COLUMN …`
     # 뒤에 `ADD` 가 바로 오지 않아 어느 루프에도 안 걸린다. 문법 순서는 Postgres 그대로
@@ -702,6 +814,30 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
             # 스키마를 적어 준 ALTER 는 그 스키마의 테이블로 새로 만든다. 이름만으로
             # 가져다 쓰면 audit.users 의 컬럼이 public.users 에 붙는다.
             key = f'{sch}.{name}' if sch and (name in dup or name in tables) else name
+            # 그 키를 `parse_create` 가 **읽지 못해 버렸다면** 여기서 세우지 않는다.
+            # 세우던 동안 `CREATE TABLE q (…괄호 어긋남…); ALTER TABLE q ADD COLUMN z;`
+            # 는 'q 를 못 읽었다, 그만큼이 빠진다' 고 찍어 놓고 컬럼 하나짜리 q 를
+            # 정의서에 실었다. 그 상자는 반쯤 읽은 것이 아니라 **거의 아무것도 안 읽은**
+            # 것이다 — 본문의 컬럼은 하나도 없고 나중에 붙인 것만 있다. 게다가 origin 이
+            # 'existing' 이라 배지가 `기존` 으로 뒤집혀, 새로 만드는 테이블이 이미 DB 에
+            # 있는 것처럼 보였다. 자세한 것은 parse_create 끝의 주석에 적었다.
+            #
+            # 여기서 `continue` 는 이 ALTER **문 하나** 를 통째로 건너뛴다 — 컬럼만 빼고
+            # 제약은 받는 식으로 반만 건너뛰지 않는다(바로 아래 중복 컬럼 자리와 같은
+            # 규율이다).
+            #
+            # 재는 자는 키 **와 스키마** 둘 다다. 키만 보던 판은 남의 테이블을 함께
+            # 버렸다 — `CREATE TABLE q (…어긋남…); ALTER TABLE audit.q ADD COLUMN z;`
+            # 에서 audit.q 의 키가 `q` 로 접혀 버린 public.q 와 겹쳤다(parse_create
+            # 의 docstring 참고). 스키마를 안 적은 ALTER 는 parse_create 와 같은
+            # 기본값 'public' 으로 읽는다.
+            #
+            # 남는 어긋남 하나는 적어 둔다: 이름이 여러 스키마에 걸치는데(`dup`) ALTER
+            # 가 스키마를 안 적으면 키가 `q` 라 버린 `shop.q` 와 안 맞아 스텁이 선다.
+            # 그때는 **세우는 쪽**으로 틀린다 — 어느 스키마를 말하는지 DDL 이 안 적었고,
+            # 성한 테이블을 버리는 것보다 못 버리는 것이 덜 나쁘다.
+            if dropped.get(key) == (sch or 'public'):
+                continue
             t = tables.setdefault(key, {
                 'name': name, 'origin': 'existing', 'src_file': src,
                 'schema': sch or 'public',
@@ -1022,10 +1158,18 @@ def main():
     dup = {n for n, schs in seen.items() if len(schs) > 1}
 
     tables = {}
+    # 읽지 못해 버린 CREATE TABLE — {키: 스키마}. 파일을 다 읽은 뒤에 쓰므로 한 파일이
+    # 버린 이름을 다른 파일의 ALTER·FK 가 되살리는 길까지 막는다 (parse_create 끝 주석).
+    dropped = {}
     for f, sql in files:
-        parse_create(sql, f, tables, dup)
+        parse_create(sql, f, tables, dup, dropped)
+    # 성하게 읽힌 정의가 이미 있으면 버린 것이 아니다 — 같은 이름을 두 번 적고 한쪽만
+    # 깨진 DDL 에서, 성한 쪽에 붙는 ALTER 까지 함께 버리지 않는다. 파일 차례와 무관하게
+    # 같은 답이 나오도록 **다 읽은 뒤** 한 번에 걷는다.
+    for k in tables:
+        dropped.pop(k, None)
     for f, sql in files:                      # 제약·주석은 테이블이 다 모인 뒤에
-        parse_alter(sql, f, tables, dup)
+        parse_alter(sql, f, tables, dup, dropped)
         parse_unique(sql, tables)
         parse_comments(sql, tables)
     if dup:
@@ -1037,6 +1181,19 @@ def main():
     for t in list(tables.values()):
         for fk in t['fks']:
             rt = fk['ref_table']
+            if rt in dropped:
+                # 읽지 못해 버린 테이블을 FK 가 가리킨다. 여기서 상자를 세우면 그것이
+                # `log.ddl_no_db` 의 목록에 들어가 'DDL 에 정의가 없고 참조만 되는
+                # 테이블 — ERD_DB/ERD_PSQL 을 주면 컬럼을 채운다' 는 안내를 받는다.
+                # 세 마디가 다 어긋난다: 정의는 **있고**(못 읽었을 뿐이다), 참조만 되는
+                # 것이 아니며, 새로 만들 테이블이라 접속을 준들 DB 에 없다 — 사용자는
+                # 있지도 않은 접속 문제를 쫓는다. 세우지 않는다.
+                #
+                # 이 FK 는 부모의 fks 에 그대로 남는다. DDL 이 정말로 적은 관계이고,
+                # 없는 테이블을 가리키는 FK 는 이 저장소가 이미 다루는 모양이다 —
+                # erd.py 가 그림에서 걷고(`ref_table in SCHEMA`), HTML 은 링크 없이
+                # 이름만 적는다. 여기서 지우면 '못 읽었다' 밖의 사실까지 지우는 것이다.
+                continue
             if rt not in tables:
                 # 키(rt)는 _ref_key 가 만든 것이라 이름이 여러 스키마에 걸릴 때만
                 # `<스키마>.<이름>` 이다. 그것을 'name' 에 그대로 넣던 탓에
