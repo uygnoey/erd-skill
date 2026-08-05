@@ -1052,6 +1052,160 @@ def _(work):
        'the same one-column UNIQUE is listed once however many statements spell it')
 
 
+# ── 이름 안의 이스케이프 큰따옴표 (`"a""b"` = 이름 `a"b`) ────────────────────
+# Postgres 는 따옴표 친 이름 **안**의 따옴표를 두 개로 적는다. `_QID` 가 그것을
+# 못 넘던 동안 이름이 첫 `""` 에서 끊겨, 그 컬럼이 — 헤더면 그 `CREATE TABLE`
+# 통째가 — **경고 한 줄 없이** 사라졌다. 아래 셋이 그 세 자리를 나눠 못박는다.
+#
+# 나머지 넷은 그 고침이 **딸려 온 대가**를 지킨다. `_QID` 는 갈래가 둘인데
+# (`parse_ddl.py` 의 `_QID` 옆 주석) 그 모양은 전부 지우거나 느슨하게 해도 217개가
+# 초록이던 자리라, 하나씩 못을 박는다: ②갈래가 **있는가**, ①갈래가 줄을 **안**
+# 넘는가, ②갈래가 줄을 **반드시** 넘는가. 마지막 하나는 갈래가 아니라 판단을
+# 지킨다 — `blank_quoted`·`_scan` 을 `""` **모르는 채로 두는** 것이다.
+@case('parse: an escaped double quote in a column name survives')
+def _(work):
+    # `"[^"]*"` 로 이름을 재던 때는 `"a""b"` 에서 `"a"` 만 집히고 남은 `"b"` 가 뒤
+    # 규칙과 어긋나, 그 컬럼이 아무 말 없이 빠졌다 — HEAD 는 `['id', 'z']` 였다.
+    s = ddl(work, 'CREATE TABLE t (id int, "a""b" text, z int);\n')
+    eq([(c['name'], c['type']) for c in s['t']['columns']],
+       [('id', 'int'), ('a"b', 'text'), ('z', 'int')],
+       'the escaped quote is one character of the name, and the type still follows it')
+
+
+@case('parse: a table named with an escaped double quote is not lost')
+def _(work):
+    # 같은 고장이 **헤더**에서 나면 잃는 것이 컬럼 하나가 아니라 문 하나다.
+    # HEAD 는 이 파일에서 테이블을 `{}` 로 냈다 — 경고도 없이.
+    s = ddl(work, 'CREATE TABLE "a""b" (id int primary key, z int);\n')
+    eq(sorted(s), ['a"b'], 'the statement yields its table, under the name Postgres gives it')
+    eq([c['name'] for c in s['a"b']['columns']], ['id', 'z'], 'with both columns')
+
+
+@case('parse: an escaped name is reachable from every clause')
+def _(work):
+    # 위 둘은 `CREATE TABLE` 의 두 자리만 본다. 이름 조각은 그 밖에도 스무 자리
+    # 넘게 쓰이는데, 자리마다 **다른 규칙**을 쓰면 반만 고친 판이 초록으로 지나간다.
+    #
+    # HEAD 가 딱 그 모양이었다: PK·UNIQUE·FK 는 `_names`/`_INPAREN` 으로 읽어
+    # `a"b` 를 제대로 적었는데 **컬럼 목록에는 그 이름이 없었다** — 정의서가 있지도
+    # 않은 컬럼을 PK 로 적는다. 그래서 마지막 확인이 이 케이스의 알맹이다:
+    # 제약에 적힌 이름은 전부 컬럼 목록 안에 있어야 한다.
+    #
+    # (`ALTER TABLE … ALTER COLUMN … SET NOT NULL` 은 일부러 안 넣었다 — 이 파서는
+    #  그 문을 이름이 어떻든 아예 안 읽으므로, 넣어 봐야 이름에 대해 아무것도 안
+    #  재고 '재는 척' 만 한다. 대신 `ALTER TABLE` 의 **테이블 이름** 자리에 걸었다.)
+    s = ddl(work,
+            'CREATE TABLE p ("a""b" int PRIMARY KEY);\n'
+            'CREATE TABLE "t""x" (\n'
+            '  id int,\n'
+            '  "a""b" int NOT NULL,\n'
+            '  "c""d" int,\n'
+            '  PRIMARY KEY ("a""b"),\n'
+            '  UNIQUE ("c""d"),\n'
+            '  FOREIGN KEY ("a""b") REFERENCES p ("a""b")\n'
+            ');\n'
+            'COMMENT ON COLUMN "t""x"."a""b" IS \'note\';\n'
+            'ALTER TABLE "t""x" ADD COLUMN "e""f" int;\n'
+            'ALTER TABLE "t""x" ADD CONSTRAINT fk2 FOREIGN KEY ("e""f") '
+            'REFERENCES p ("a""b");\n'
+            'CREATE UNIQUE INDEX ix ON "t""x" ("e""f");\n')
+    eq(sorted(s), ['p', 't"x'], 'both tables are read')     # HEAD: ['p'] 하나뿐이었다
+    eq([c['name'] for c in s['p']['columns']], ['a"b'],
+       'a table whose only column is an escaped name is not an empty box')
+    t = s['t"x']
+    eq([(c['name'], c['comment']) for c in t['columns']],
+       [('id', ''), ('a"b', 'note'), ('c"d', ''), ('e"f', '')],
+       'CREATE TABLE, COMMENT ON COLUMN and ADD COLUMN all find it')
+    eq(t['pk'], ['a"b'], 'PRIMARY KEY names it')
+    eq(t['uniques'], [['c"d'], ['e"f']], 'UNIQUE and CREATE UNIQUE INDEX name it')
+    eq([(f['column'], f['ref_table'], f['ref_column']) for f in t['fks']],
+       [('a"b', 'p', 'a"b'), ('e"f', 'p', 'a"b')],
+       'and REFERENCES names it on both ends, from CREATE and from ALTER alike')
+    have = {c['name'] for c in t['columns']}
+    named = set(t['pk']) | {c for u in t['uniques'] for c in u} \
+        | {f['column'] for f in t['fks']}
+    eq(sorted(named - have), [],
+       'no constraint names a column the table does not have')
+
+
+@case('parse: a quoted name containing a newline still parses')
+def _(work):
+    # `_QID` ②갈래(`"[^"]*\n[^"]*"`)의 지킴이다. ①갈래는 속도 때문에 줄을 안 넘어서,
+    # ②를 빼면 **HEAD 가 읽던 것**을 못 읽는다 — 이 테이블이 통째로 사라진다.
+    # 문법으로 되는 이름이고 HEAD 가 냈으므로, 고치면서 잃으면 그것이 회귀다.
+    s = ddl(work, 'CREATE TABLE "a\nb" (id int primary key);\n')
+    eq(sorted(s), ['a\nb'], 'a newline inside a quoted name costs no statement')
+
+
+@case('parse: an unmatched quote does not swallow the statement after it')
+def _(work):
+    # `_QID` ①갈래에 **`\n` 을 못박은** 것의 지킴이다. ①이 줄을 넘을 수 있으면 짝
+    # 없는 `"""` 하나가 닫는 따옴표를 다음 줄 너머에서 찾아, **두 문을 통째로**
+    # 한 이름으로 먹는다 — 뒤의 성한 `c` 가 사라진다(HEAD 는 냈다).
+    #
+    # 모양을 가린다. 삼킴은 ①이 넘어간 자리에서 **뒤 문의 따옴표가 짝을 채워 줄
+    # 때만** 벌어진다. `"""` 테이블 하나 뒤에 평범한 `CREATE TABLE c` 를 두는
+    # (가장 자연스럽게 적을) 모양은 채울 따옴표가 없어 ①의 `\n` 을 지워도 안 붉는다.
+    # 컬럼 이름·PK 목록·인덱스·COMMENT 로 쓴 여섯 모양도 마찬가지였다. 무는 것은
+    # 뒤 문이 `REFERENCES """` 로 따옴표를 하나 더 내놓는 이 모양과, 짝 없는 `"""`
+    # 테이블이 둘 연달아 오는 모양뿐이다 — 여덟 모양을 물려 보고 고른 것이다.
+    #
+    # 이름 있는 테이블만 센다. `REFERENCES """` 가 이름이 빈 상자를 하나 세우는데,
+    # 그것은 지금도 HEAD 도 같은 모양이라 이 케이스가 재는 것이 아니다 —
+    # 구멍 ①(짝 없는 따옴표를 조용히 잃는 것)의 자리이지 이 못의 자리가 아니다.
+    s, out = _ddl_run(work,
+                      'CREATE TABLE """ (id int);\n'
+                      'CREATE TABLE c (id int, p int REFERENCES """ (id));\n')
+    eq([n for n in sorted(s) if n], ['c'],
+       'the healthy statement after an unmatched quote is still read')
+    eq([col['name'] for col in s['c']['columns']], ['id', 'p'], 'with both its columns')
+    eq([n for n in s if '\n' in n], [],
+       'and no table is filed under a name made of two swallowed statements')
+
+
+@case('parse: an unclosed name list packed with "" finishes in time')
+def _(work):
+    # `_QID` ②갈래에 **`\n` 을 못박은** 것의 지킴이다. 그 못이 없으면 두 갈래가
+    # 줄바꿈 없는 이름을 **똑같이** 물어, `_INPAREN` 의 `(?:이름|[^)])+\)` 가 짝
+    # 없는 괄호에서 되짚어 올 때 갈래가 겹친 만큼 글자 수에 지수로 터진다.
+    # 무는 것은 같으므로 결과로는 못 잰다 — **시간**으로만 잰다.
+    #
+    # 잰 값(이 저장소, 2026-08-05): 지금 0.52초 · 겹치는 판 48초. 문턱 2초는 그
+    # 사이 어디든 좋게 넉넉하다. 실패가 '느리다' 로 보이도록 rc 가 아니라 시계를
+    # 본다 — 겹치는 판에서는 이 케이스 하나가 시험 전체보다 오래 걸린다.
+    import time
+    sql = ('CREATE TABLE t (id int);\n'
+           'ALTER TABLE t ADD CONSTRAINT k PRIMARY KEY (' + '""a' * 14 + ';\n')
+    began = time.perf_counter()
+    s = ddl(work, sql)
+    took = time.perf_counter() - began
+    eq(sorted(s), ['t'], 'the healthy table is still read')
+    if took > 2.0:
+        raise Fail(f'a 14-deep "" name list took {took:.1f}s (ceiling 2.0s) — the two '
+                   f'_QID branches are matching the same text again; see the comment '
+                   f'beside _QID in parse_ddl.py')
+
+
+@case('parse: an unmatched " before a "" is masked from the left')
+def _(work):
+    # 이름 조각(`_QID`)은 `""` 를 넘게 고쳤지만 **덮는 쪽**(`blank_quoted`·`_scan`)은
+    # 일부러 안 고쳤다 — 성한 입력에서는 어느 쪽이든 결과가 같아서다. 그 '안 고친다'
+    # 는 판단을 아무도 안 지키고 있었다: 둘을 `""` 아는 판으로 바꿔도 217이 전부
+    # 초록이었다. 그러면 다음 사람이 주석만 지우고 고쳐 놓아도 아무 데서도 안 붉는다.
+    #
+    # 갈리는 것은 **짝이 안 맞는** 따옴표가 든 입력이다. 아래 `"a(""b` 는 따옴표가
+    # 셋이라, 지금 판은 앞의 둘을 짝지어 덮어 그 사이의 `(` 를 가린다. `""` 를 아는
+    # 판은 첫 따옴표가 `""` 를 넘어가다 닫는 짝을 못 찾아 **아무것도 안 덮고**, 그
+    # `(` 가 본문 괄호로 세어져 짝이 영영 안 닫힌다 — 테이블이 통째로 버려진다.
+    # (`parse: an opening paren inside a quoted name…` 과 같은 고장, 다른 입력이다.)
+    s, out = _ddl_run(work, 'CREATE TABLE t (id int, c text COLLATE "a(""b, z int);\n')
+    eq(sorted(s), ['t'], 'the statement still yields its table')
+    eq([c['name'] for c in s['t']['columns']], ['id', 'c', 'z'],
+       'a ( between an unmatched " and a "" is still masked, so the body closes')
+    eq([ln for ln in out.splitlines() if 'could not be read' in ln], [],
+       'and nothing is cried over')
+
+
 # ── 설명 ─────────────────────────────────────────────────────────────────────
 @case('merge_desc: common dictionary follows ERD_LANG')
 def _(work):
@@ -2321,12 +2475,15 @@ CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 26,
 # **이 벌 전체가 몇 개인가**는 개명으로 바뀌지 않는다. 개명만 하는 것은 이 바닥을
 # 통과하고(그래도 좋다 — 개명 자체는 아무것도 안 잃는다), 개명에 삭제를 섞는 순간
 # 총계가 내려가 여기서 붉어진다. 도커 케이스는 서버가 있어야만 등록되므로 뺀다.
-TOTAL_FLOOR = 217
+#
+# 2026-08-05: 이름 안의 이스케이프 큰따옴표(`"a""b"`)를 고치면서 그 자리를 지키는
+# 케이스 일곱을 더한다: 217 → 224.
+TOTAL_FLOOR = 224
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 99
+EXPECT_CASES = 106
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
