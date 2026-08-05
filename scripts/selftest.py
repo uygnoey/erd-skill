@@ -1206,6 +1206,120 @@ def _(work):
        'and nothing is cried over')
 
 
+# ── 이름 안의 `;` 가 문을 끊던 자리 (`parse_alter` 의 `_stmts`) ───────────────
+# `parse_alter` 는 문을 `(ADD\s+COLUMN\b.*?);` 로 **첫 `;` 까지** 잘랐다. 그런데
+# Postgres 에서 `"a;b"` 는 `a;b` 라는 이름 하나다 — 이름 안의 `;` 에서 문이 끊겼다.
+# `parse_create` 는 같은 일을 `blank_quoted` 로 이름까지 덮은 사본에서 재고 있었고,
+# 이 자리만 안 그랬다. 고침은 그 사본(`msc_q`)에서 끝을 재는 것이다.
+#
+# **자르는 자리는 둘이다** — ADD COLUMN 루프와 ADD CONSTRAINT 루프. 한쪽만 되돌리는
+# 뮤턴트를 만들어 보면 두 부류가 서로를 **전혀 못 잡는다**(직접 잰 격자, 2026-08-05):
+#
+#            ADD COLUMN 만 되돌림   ADD CONSTRAINT 만 되돌림   둘 다(=고침 전체 되돌림)
+#   아래 ①              빨강                 초록                        빨강
+#   아래 ②              빨강                 초록                        빨강
+#   아래 ③              초록                 빨강                        빨강
+#   아래 ④              빨강                 빨강                        빨강
+#
+# 그래서 ①·②(ADD COLUMN 쪽)만 아무리 늘려도 ADD CONSTRAINT 쪽은 무방비다. ③이
+# 그 자리의 유일한 못이다. 여기서 하나를 뺄 때는 그 열이 통째로 초록이 되는지
+# **먼저 확인해라** — 이 고침은 되돌려도 `all 224 passed` 이던 자리다.
+#
+# 이름 안의 줄바꿈·연속공백이 접히는 것(`"a\nb"` → `a b`)은 **HEAD 부터의 성질이고
+# 이 고침과 무관**하므로 일부러 안 박았다. 지금 동작을 못박으면 그것을 고치려는
+# 사람이 여기서 막힌다.
+@case('parse: a ; inside a quoted name does not cut the ADD COLUMN statement short')
+def _(work):
+    # ① 잃는 쪽. 끊긴 자리 뒤가 통째로 안 읽히므로 `"a;b"` 만이 아니라 **같은 문에
+    # 이어 적은 성한 `memo` 까지** 함께 사라졌다 — 경고 한 줄 없이. HEAD 는 이
+    # 파일에서 `['id']` 를 냈다.
+    s = ddl(work, 'CREATE TABLE t (id bigint PRIMARY KEY);\n'
+                  'ALTER TABLE t ADD COLUMN "a;b" int, ADD COLUMN memo text;\n')
+    eq([(c['name'], c['type']) for c in s['t']['columns']],
+       [('id', 'bigint'), ('a;b', 'int'), ('memo', 'text')],
+       'a quoted name is one name however many ; it holds, and the column written '
+       'after it in the same statement is read too')
+
+
+@case('parse: a statement spelled inside a quoted name does not reach another table')
+def _(work):
+    # ② **짓는** 쪽 — 같은 고장의, 잃는 것보다 나쁜 얼굴이다. 이름 안에 문을 통째로
+    # 적으면 예전 자르기는 이름 속 `;` 에서 문을 끝내고 그 **다음 글자부터** 다시
+    # 머리를 찾아, 이름의 나머지를 진짜 문으로 읽었다: 남의 테이블 `u` 에 아무 데도
+    # 안 적힌 컬럼 `z` 가 붙었다(HEAD 실측: u = ['id', 'z']).
+    # PG16 대조 — `u` 에는 아무것도 안 붙고, `t` 에 그 긴 이름의 컬럼 하나가 붙는다.
+    s = ddl(work, 'CREATE TABLE t (id int);\n'
+                  'CREATE TABLE u (id int);\n'
+                  'ALTER TABLE t ADD COLUMN '
+                  '"a int; ALTER TABLE u ADD COLUMN z text" bigint;\n')
+    eq([c['name'] for c in s['u']['columns']], ['id'],
+       'a table named only inside another table quoted name gains nothing')
+    eq([c['name'] for c in s['t']['columns']],
+       ['id', 'a int; ALTER TABLE u ADD COLUMN z text'],
+       'the whole quoted text is the one column name it is')
+
+
+@case('parse: a ; inside a quoted name does not misname what ADD CONSTRAINT reads')
+def _(work):
+    # ③ **ADD CONSTRAINT 루프의 유일한 못이다.** 위 둘은 이 자리에서 초록이다 —
+    # 루프가 둘이고 각자 제 몫만 자르기 때문이다(위 격자).
+    #
+    # 여기서도 잃는 쪽과 짓는 쪽이 함께 나온다. PK·UNIQUE 는 이름 속 `;` 뒤가 잘려
+    # **빈 채로** 남고(HEAD: pk []), FK 는 더 나쁘다 — `REFERENCES parts ("part;no")`
+    # 가 `("part` 에서 끊겨 참조 컬럼을 못 읽자 `_refs` 의 기본값이 켜져서, **`parts`
+    # 에 있지도 않은 `id`** 를 가리키는 관계가 지어졌다(HEAD 실측: ('pn','parts','id')).
+    # 정의서와 ERD 가 없는 컬럼으로 선을 긋는다.
+    s = ddl(work,
+            'CREATE TABLE parts ("part;no" int PRIMARY KEY, "lot;id" int);\n'
+            'CREATE TABLE orders (pn int, "ord;no" int);\n'
+            'ALTER TABLE orders ADD CONSTRAINT pk PRIMARY KEY ("ord;no");\n'
+            'ALTER TABLE parts ADD CONSTRAINT uq UNIQUE ("lot;id");\n'
+            'ALTER TABLE orders ADD CONSTRAINT fk FOREIGN KEY (pn) '
+            'REFERENCES parts ("part;no");\n')
+    # 짓는 쪽을 먼저 본다 — 하나가 붉으면 뒤는 안 돌므로, 더 나쁜 얼굴이 화면에 뜬다.
+    eq([(f['column'], f['ref_table'], f['ref_column']) for f in s['orders']['fks']],
+       [('pn', 'parts', 'part;no')],
+       'REFERENCES points at the column that is actually there')
+    have = {c['name'] for c in s['parts']['columns']}
+    eq(sorted(f['ref_column'] for f in s['orders']['fks'] if f['ref_column'] not in have),
+       [], 'no relationship names a column the referenced table does not have')
+    eq(s['orders']['pk'], ['ord;no'], 'PRIMARY KEY reads the whole quoted name')
+    eq(s['parts']['uniques'], [['lot;id']], 'and so does UNIQUE')
+
+
+@case('parse: ALTER heads with no ; after them do not cost the square of the file')
+def _(work):
+    # ④ 고침이 **딸려 온 값**의 지킴이다. 예전 자르기는 머리마다 `.*?;` 로 파일
+    # 끝까지 훑고 실패했다 — 뒤에 `;` 가 하나도 없으면 머리 수 × 남은 길이, 곧
+    # O(n²) 다. 지금은 `find(';')` 가 한 번에 -1 을 내고 그 자리에서 멎는다.
+    # 결과는 두 판이 **똑같다**(어느 쪽도 이 문들을 안 읽는다) — 시간으로만 갈린다.
+    #
+    # `;` 를 잃은 덤프·이어붙이다 깨진 파일에서 나오는 모양이다. 지금 것은 '아무것도
+    # 못 읽었다' 를 1초 안에 말하고, 예전 것은 같은 말을 하는 데 분 단위로 갔다.
+    #
+    # 잰 값(이 저장소, 2026-08-05, 12,000문): 지금 0.45초 · ADD COLUMN 쪽만 되돌린
+    # 판 7.7초 · ADD CONSTRAINT 쪽만 되돌린 판 7.9초 · 둘 다 되돌린 판 14.9초.
+    # 문턱 3.0초는 그 사이다 — 이 기계보다 **6배 느린** 기계에서도 안 붉고, 한쪽만
+    # 되돌린 판은 **2.5배 빠른** 기계에서도 붉는다. 두 루프를 다 걸도록 두 종류를
+    # 섞어 적는다: ADD COLUMN 만 적으면 ADD CONSTRAINT 쪽 열이 초록이 된다.
+    import time
+    sql = ['CREATE TABLE t (id int);\n']
+    for i in range(6000):
+        sql.append(f'ALTER TABLE t ADD COLUMN c{i} int\n')
+        sql.append(f'ALTER TABLE t ADD CONSTRAINT k{i} UNIQUE (id)\n')
+    began = time.perf_counter()
+    s = ddl(work, ''.join(sql))
+    took = time.perf_counter() - began
+    eq(sorted(s), ['t'], 'the healthy CREATE TABLE is still read')
+    eq([c['name'] for c in s['t']['columns']], ['id'],
+       'and a statement that never reaches a ; is read by neither the old nor the '
+       'new cut — this case measures the time, not the reading')
+    if took > 3.0:
+        raise Fail(f'12,000 ALTER heads with no ; took {took:.1f}s (ceiling 3.0s) — '
+                   f'a statement end is being looked for with a scan per head again; '
+                   f'see _stmts in parse_ddl.py')
+
+
 # ── 설명 ─────────────────────────────────────────────────────────────────────
 @case('merge_desc: common dictionary follows ERD_LANG')
 def _(work):
@@ -2478,12 +2592,17 @@ CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 26,
 #
 # 2026-08-05: 이름 안의 이스케이프 큰따옴표(`"a""b"`)를 고치면서 그 자리를 지키는
 # 케이스 일곱을 더한다: 217 → 224.
-TOTAL_FLOOR = 224
+#
+# 2026-08-05: `parse_alter` 가 이름 안의 `;` 에서 문을 끊던 것을 고쳤는데, 그 고침을
+# **통째로 되돌려도 224개가 전부 초록**이었다 — 자르는 자리가 둘(ADD COLUMN·ADD
+# CONSTRAINT)인데 어느 쪽에도 못이 없었다. 넷을 더한다: 224 → 228. 어느 케이스가
+# 어느 루프를 잡는지는 그 케이스들 위의 격자표에 적어 두었다.
+TOTAL_FLOOR = 228
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 106
+EXPECT_CASES = 110
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')

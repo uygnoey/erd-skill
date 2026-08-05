@@ -896,6 +896,53 @@ def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = Non
         print(T('log.query_incomplete', list=', '.join(unread)))
 
 
+def _stmts(pat, msc, msc_q):
+    r"""`pat` 로 문의 머리를 찾아 (머리 매치, 문을 끝내는 `;` 자리) 를 차례로 낸다.
+
+    문을 자르는 자리가 `parse_alter` 안에만 둘이라(ADD COLUMN·ADD CONSTRAINT) 규칙을
+    한 벌로 둔다. 두 벌로 적어 두면 다음 사람이 또 한쪽만 고친다 — 이 파일이 이미
+    여러 번 겪은 모양이고, 여기가 바로 그렇게 절반만 고쳐진 채 남아 있던 자리다.
+
+    ── 요점: 끝을 재는 사본이 다르다 ──────────────────────────────────────────
+    머리는 `msc`(문자열·주석만 가린 사본)에서 찾고, 끝나는 `;` 는 `msc_q`
+    (거기에 **큰따옴표 이름까지 덮은** 사본)에서 찾는다. 예전엔 `(ADD\s+COLUMN\b.*?);`
+    한 줄로 둘을 함께 했고, 그래서 **이름 안의 `;` 가 문을 끊었다.** Postgres 에서
+    `"a;b"` 는 `a;b` 라는 이름 하나인데, 파서는 거기서 문이 끝난 줄 알았다:
+      · `ALTER TABLE t ADD COLUMN "a;b" int;`      → 컬럼이 통째로 사라졌다
+      · `ALTER TABLE t ADD COLUMN "a;b" int, ADD COLUMN c text;`
+                                                   → **성한 c 까지** 함께 사라졌다
+      · `ALTER TABLE t ADD CONSTRAINT c PRIMARY KEY ("a;b");`  → PK 칸이 비었다
+      · `… FOREIGN KEY (a) REFERENCES p ("i;d");`  → 없는 컬럼 `id` 를 가리키는
+        관계가 생겼다 (`_refs` 의 기본값이 켜졌다). 잃는 것보다 나쁜, **짓는** 쪽이다
+      · 테이블이 아직 없으면 컬럼 0개짜리 `origin='existing'` 상자만 남아,
+        `log.ddl_no_db` 가 '접속을 주면 채워진다' 고 없는 문제를 쫓게 했다
+    전부 경고 한 줄 없이 벌어졌다. `blank_quoted` 를 대는 네 번째 자리다.
+
+    ── 어디서부터 다시 읽는가 ────────────────────────────────────────────────
+    다음 판은 그 `;` **다음**부터 본다 — `finditer` 가 매치를 소비하며 나아가던
+    예전과 **같은 자리**다. 그래서 성한 DDL 에서는 낼 것도 도는 자리도 예전과 같다.
+    한 문 안에서 머리를 다시 찾지 않으므로, 이름 안에 문을 통째로 적은
+    `ADD COLUMN "a int; ALTER TABLE u ADD COLUMN z text" bigint` 이 남의 테이블 u 에
+    **없는 컬럼 z 를 짓던 것**도 함께 멎는다(PG16 대조: u 에는 아무것도 안 붙는다).
+
+    `;` 가 더 없으면 끝낸다. 예전 정규식도 `.*?;` 가 `;` 를 **요구**했으므로 뒤에
+    `;` 가 하나도 없으면 어느 머리에서도 매치가 안 됐다 — 같은 자리에서 멎는다.
+    (그래서 세미콜론 없이 끝나는 마지막 문을 새로 읽어 주지도 **않는다**. 검출을
+     넓히는 것은 이 자리에서 할 일이 아니다 — 넓히는 뮤턴트가 성한 DDL 을 버리는
+     것을 이 파서가 이미 실측으로 겪었다.)
+    """
+    pos = 0
+    while True:
+        m = pat.search(msc, pos)
+        if not m:
+            return
+        end = msc_q.find(';', m.end())
+        if end < 0:
+            return
+        yield m, end
+        pos = end + 1
+
+
 def parse_alter(sql: str, src: str, tables: dict, dup: set, dropped: dict = None):
     r"""ALTER TABLE … ADD COLUMN / ADD CONSTRAINT.
 
@@ -904,6 +951,12 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set, dropped: dict = None
     DDL 에서는 PK 와 FK 가 하나도 잡히지 않았다.
     """
     ms, mc, msc = mask(sql)
+    # 문이 어디서 끝나는지를 재는 사본은 **이름까지 덮은 것** 이다 (`blank_quoted`
+    # 참고 — 같은 규칙을 쓰는 네 번째 자리이고, `parse_create` 의 본문 슬라이서가
+    # `msc_q` 로 `;` 를 보는 것과 **같은 자, 같은 이름**이다). 이름을 읽는 `head` 와
+    # 값을 꺼내는 슬라이스는 msc·sql 을 그대로 쓴다 — 덮은 사본에서 이름을 읽으면
+    # `_IDC` 가 빈 자리를 보게 되어 `ALTER TABLE "t;x"` 가 통째로 안 잡힌다.
+    msc_q = blank_quoted(msc)
     dropped = dropped or {}
     # `IF EXISTS` 는 손으로 쓰는 마이그레이션에 흔한데, 이 자리에서 넘지 못하면
     # 문 전체가 **아무 말 없이** 버려졌다 — `ALTER TABLE IF EXISTS t ADD COLUMN …`
@@ -916,7 +969,7 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set, dropped: dict = None
     def find(sch, name):
         return _find(tables, sch, name)
 
-    for m in re.finditer(head + r'(ADD\s+COLUMN\b.*?);', msc, re.S | re.I):
+    for m, end in _stmts(re.compile(head + r'(ADD\s+COLUMN\b)', re.S | re.I), msc, msc_q):
         sch, name = unq(m.group(1)), unq(m.group(2))
         t = find(sch, name)
         if t is None:
@@ -953,9 +1006,9 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set, dropped: dict = None
                 'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
             })
         t['altered_by'] = src
-        for raw_code, code, comment in split_top_level(mc[m.start(3):m.end(3)],
-                                                       ms[m.start(3):m.end(3)],
-                                                       msc[m.start(3):m.end(3)]):
+        for raw_code, code, comment in split_top_level(mc[m.start(3):end],
+                                                       ms[m.start(3):end],
+                                                       msc[m.start(3):end]):
             # `IF NOT EXISTS` 를 안 넘던 때는 그 세 낱말의 첫 마디가 컬럼 이름이 됐다 —
             # `ADD COLUMN IF NOT EXISTS memo text` 가 이름 `IF`, 타입 `NOT` 인 컬럼으로
             # 정의서에 실리고 memo 는 사라졌다. 경고는 없었다. `IF` 뒤에 반드시 공백을
@@ -1006,12 +1059,12 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set, dropped: dict = None
                     'ref_table': _ref_key(ref, t.get('schema') or 'public', dup),
                     'ref_column': ref[2][0], 'on_delete': ref[3]})
 
-    for m in re.finditer(head + r'ADD\s+CONSTRAINT\s+' + _ID + r'\s+(.*?);',
-                         msc, re.S | re.I):
+    for m, end in _stmts(re.compile(head + r'ADD\s+CONSTRAINT\s+' + _ID + r'\s+',
+                                    re.S | re.I), msc, msc_q):
         t = find(unq(m.group(1)), unq(m.group(2)))
         if t is None:
             continue
-        code = ' '.join(sql[m.start(3):m.end(3)].split())
+        code = ' '.join(sql[m.end():end].split())
         pk = re.search(r'PRIMARY\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
         if pk:
             t['pk'] = _names(pk.group(1))
