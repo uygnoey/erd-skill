@@ -212,6 +212,12 @@ M = {
     'err.spec_layer': 'layer {key} is malformed: {value}\n'
                       '  expected [fill, header, border, label] with #rrggbb colors',
     'err.spec_json': '{path} is not valid JSON: {err}',
+    'err.fig_unregistered': 'the diagram {stem} has no figure number — fig_numbers() in '
+                            'build_erd.py does not list it.\n'
+                            '  Every diagram this script draws takes its number from that list, and the '
+                            'number is drawn into the picture itself, not only into the caption — an '
+                            'unregistered diagram would carry a different number than its caption.\n'
+                            '  Registered: {known}',
     'err.stale_figs': '{n} diagrams are older than {path}: {list}\n'
                       '  They depict an earlier schema — the document would show one thing '
                       'in the tables and another in the figures.\n'
@@ -237,6 +243,15 @@ M = {
     'log.query_fail': '  [warn] database query failed: {err}',
     'log.query_incomplete': '  [warn] could not be read: {list} — the document is missing '
                             'exactly those parts',
+    'log.psql_undecodable': '  [warn] the database reply was not valid UTF-8 — those characters '
+                            'are � in the document now.\n'
+                            '          PGCLIENTENCODING={enc} is set for the psql we start, but a '
+                            'wrapper (docker, ssh) does not carry it across that boundary.\n'
+                            '          Put it inside the ERD_PSQL command itself: '
+                            'docker exec -e PGCLIENTENCODING={enc} … / '
+                            'ssh host PGCLIENTENCODING={enc} psql …',
+    'log.ddl_not_in_db': '  [warn] {n} tables were not found in the schemas searched ({schemas}) '
+                         '— drawn as name-only boxes: {list}',
     'log.spec_empty': '  [warn] areas with no usable table, skipped: {list}',
     'log.spec_dup': '  [warn] {n} tables appear in more than one area — kept in the first: {list}',
     'log.spec_missing': '  [warn] spec names {n} tables that are not in the schema: {list}',
@@ -259,6 +274,7 @@ M = {
     'log.desc_rest': '  → fill in the rest with merge_desc.py',
     'log.dup_names': '  {n} table names exist in more than one schema — keyed as schema.table: {list}',
     'log.exclude_rule': '  exclude rule: {rule}',
+    'log.exclude_dropped': '  the exclude rule removed {n} tables: {list}',
     'log.fk_dropped': '  dropped FKs that point outside the target: {n}',
     'log.per_schema': '  [{schema}] {n}',
     'log.doc_missing': '  [warn] ERD_DOC_HTML document not found: {path}',

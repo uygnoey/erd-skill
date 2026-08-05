@@ -259,6 +259,9 @@ def has_db():
     return bool(_get('PSQL_WORDS') or os.environ.get('ERD_DB', '').strip())
 
 
+PGENC = 'UTF8'        # psql 파이프의 인코딩. PostgreSQL 이 부르는 이름 (파이썬은 utf-8)
+
+
 def psql_cmd():
     """psql 실행 명령. ERD_PSQL 이 있으면 그것을, 없으면 docker exec 를 쓴다."""
     if _get('PSQL_WORDS'):
@@ -270,7 +273,11 @@ def psql_cmd():
             "  export ERD_PSQL='psql postgresql://user:pass@host:5432/dbname'\n"
             "  export ERD_DB=" + T('err.no_conn_db'))
     container, user, name = (db.split(':') + ['', '', ''])[:3]
-    return ['docker', 'exec', container, 'psql', '-U', user, '-d', name]
+    # `-e` 로 컨테이너 **안**의 psql 에도 클라이언트 인코딩을 넘긴다. 우리 프로세스의
+    # 환경변수(_psql_env)는 docker exec 가 컨테이너로 실어 주지 않으므로, 이 경로만
+    # 빼먹으면 안쪽 psql 은 컨테이너 로케일(보통 C)이 정한 인코딩으로 답한다.
+    return ['docker', 'exec', '-e', f'PGCLIENTENCODING={PGENC}',
+            container, 'psql', '-U', user, '-d', name]
 
 
 SEP = '\x1f'          # 구분자. | 는 기본값·코멘트에 섞여 나와 쓸 수 없다
@@ -285,18 +292,79 @@ class QueryFailed(RuntimeError):
     """
 
 
+def _psql_env():
+    """psql 에게 줄 환경 — 클라이언트 인코딩을 **보내는 쪽에** 못 박는다.
+
+    읽는 쪽만 utf-8 로 못 박으면 반쪽이다. psql 은 client_encoding 을 제 로케일에서
+    정하므로, 우리가 utf-8 로 읽겠다고 정해도 상대는 cp949 로 보낼 수 있다. 양쪽을
+    같은 값으로 맞춰야 왕복이 로케일과 무관해진다.
+
+    **사용자가 이미 준 PGCLIENTENCODING 도 덮어쓴다.** 이 파이프는 사람이 보는
+    화면이 아니라 우리가 규격을 통째로 정하는 기계용 통로다 — 이미 `-tA`, 구분자
+    `\\x1f`, `row_to_json` 까지 우리가 지정한다. 게다가 UTF8 은 서버가 무엇으로
+    저장하든 그 글자를 전부 담을 수 있는 유일한 선택이다: 다른 값을 주면 옮길 수
+    없는 글자에서 psql 이 'character with byte sequence … has no equivalent in
+    encoding …' 로 조회를 통째로 실패시킨다. 사용자의 다른 psql 세션에는 영향이
+    없다 — 자식 프로세스의 환경만 바꾼다.
+    """
+    env = dict(os.environ)
+    env['PGCLIENTENCODING'] = PGENC
+    return env
+
+
 def _run(query, rs='\n'):
     """psql 을 한 번 돌린다. 실패는 **부분 출력이 있어도** 반드시 알린다.
 
     예전엔 `returncode != 0 and not r.stdout` 일 때만 경고했다. 그래서 몇 행 흘리고
     죽은 조회(문 타임아웃·서버 재기동)는 경고 한 줄 없이 지나갔다 — 21개 테이블이
     조용히 4개가 됐다.
+
+    **파이프도 파일과 같은 자리다.** `text=True` 만 주면 파이썬은 psql 의 출력을
+    **로케일 인코딩**으로 읽는다 — ascii 로케일(LC_ALL=C)에서는 한글 코멘트가 든 DB
+    가 여기서 `UnicodeDecodeError` 로 죽어, utf-8 로 못 박아 둔 schema.json 쓰기에
+    닿지도 못했다. 읽는 값과 보내는 값(_psql_env)을 같은 것으로 못 박는다.
+
+    `errors='replace'` 는 마지막 그물이다. 서버가 SQL_ASCII 면 psql 은 아무 변환도
+    하지 않고 저장된 바이트를 그대로 보내므로 무엇으로 읽어도 어긋날 수 있는데,
+    그때 예외가 나면 이 자리는 raw 트레이스백이 된다(psql_rows 밖의 부르는 이도
+    있었다). 글자가 U+FFFD 로 보이는 편이 낫다 — 적어도 문서에서 눈에 띈다.
+
+    다만 '눈에 띈다' 는 **문서를 끝까지 읽는 사람에게만** 참이었다. rc 는 0 이고
+    화면에는 한 글자도 안 나왔다 — 실측된 모양이 이렇다:
+        customers | note = '���� ���̺�'
+    그래서 값을 손에 쥐는 이 자리에서 한 번 알린다. _run 이 psql·psql_rows 두 갈래가
+    함께 지나는 유일한 목이라 여기 두면 어느 쪽으로 읽어도 걸린다.
     """
     r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-R', rs, '-c', query],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', env=_psql_env())
     if r.returncode != 0:
         print(T('log.query_fail', err=_why(r)))
+    _warn_undecodable(r.stdout)
     return r
+
+
+_ENC_WARNED = False      # 옮기지 못한 글자는 한 번만 알린다 — 조회마다 울면 소음이 된다
+
+
+def _warn_undecodable(text):
+    """읽은 값에 U+FFFD 가 섞였으면 **한 번** 알린다.
+
+    되풀이를 막는 방식은 i18n 의 `_WARNED` 와 같다: 한 번 운 것은 기억해 두고 다시
+    울지 않는다. 그쪽은 키마다, 여기는 프로세스마다다 — 원인이 하나(클라이언트
+    인코딩)라 두 번째 조회가 같은 말을 해도 알려 주는 것이 없다. introspect 는 조회를
+    열 번 넘게 돌리고 그 대부분이 컬럼 코멘트를 실어 오므로, 행마다 울면 진짜 진행
+    출력이 경고에 묻힌다.
+
+    `errors='replace'` 가 만든 U+FFFD 와 DB 에 원래 그 글자가 들어 있던 경우를 여기서
+    구별하지는 못한다. 후자는 사실상 없고(그 자체가 이미 깨진 값이다), 있더라도 이
+    문구가 가리키는 손잡이를 확인해 보라는 말이라 사용자가 잃는 것이 없다.
+    """
+    global _ENC_WARNED
+    if _ENC_WARNED or '�' not in (text or ''):
+        return
+    _ENC_WARNED = True
+    print(T('log.psql_undecodable', enc=PGENC))
 
 
 def _why(r):
@@ -343,8 +411,52 @@ def psql_rows(query, n):
     return out
 
 
-def excluded(table):
-    return _EXCLUDE_RE is not None and _EXCLUDE_RE.search(table) is not None
+def excluded(name):
+    """ERD_EXCLUDE 판정 — **이 규칙은 이것 하나뿐이다.**
+
+    부르는 세 자리가 손에 든 것이 서로 다르다. introspect 는 조회에서 막 나온
+    **테이블 이름**(라벨도 스키마도 아직 안 붙었다), erd.py 와 load_spec 은 schema.json
+    의 **키**(`<라벨>.<스키마>.<이름>` 이 될 수 있다)다. 예전엔 각자 제가 든 것에
+    정규식을 그대로 걸어서, 같은 규칙이 자리마다 다르게 걸렸다 — `ERD_EXCLUDE='^tmp_'`
+    는 introspect 에서 `tmp_x` 를 잡지만 `ERD_LABEL=shop` 을 쓰면 키가 `shop.tmp_x` 라
+    `^` 가 라벨에 막혀 그리는 쪽에서는 안 잡혔다. DDL 경로(parse_ddl)는 아예 거르지
+    않으므로 그쪽은 키 판정만 남는다. 한 실행 안에서 걸린 것과 안 걸린 것이 갈렸다.
+
+    그래서 **점으로 앞을 벗겨 가며** 물어본다: `shop.public.orders` 는 그 자신과
+    `public.orders`·`orders` 로 한 번씩. 문서(SKILL.md·SKILL.ko.md)가 약속하는 것은
+    '제외할 테이블 정규식' 이므로 사용자가 적은 `^tmp_` 는 **테이블 이름**에 걸려야
+    하고, 라벨·스키마까지 적은 `^shop\\.` 같은 것도 예전처럼 그대로 걸린다.
+
+    **넘치게 잡는 쪽을 골랐다.** 이 규칙은 키 판정보다 더 잡을 수는 있어도 덜 잡지는
+    않는다. 근거는 '어느 쪽이 시끄러운가' 가 **아니다** — 둘 다 조용하다. 일부만 더
+    빠지면 아무 줄도 안 나가고(빠진 테이블 이름을 댈 카탈로그 키가 없다), 일부가 덜
+    빠지면 원치 않는 테이블이 문서에 실릴 뿐 역시 아무 말이 없다. 시끄러움으로는
+    고를 수 없으니 **약속한 것**으로 고른다. 근거 둘이다.
+
+    ① 문서가 약속한 것이 테이블 이름이다(위). 키 판정만 하던 예전 쪽이 약속과
+       어긋나 있었지, 이름까지 보는 것이 덤으로 얹는 제외가 아니다.
+    ② DB 경로에서는 이미 introspect 가 **테이블 이름**으로 걸러 schema.json 을 쓴다 —
+       이름에 걸리는 것은 뒤 단계가 보기도 전에 없다. 그래서 이 규칙이 실제로 더
+       잡게 되는 자리는 introspect 의 그물을 안 지난 경우뿐이다: 라벨을 붙여 합친
+       schema.json(merge_schemas), 그리고 아예 거르지 않는 DDL 경로(parse_ddl).
+       바로 거기가 사용자가 적은 `^tmp_` 가 안 듣던 자리다.
+
+    반대로 키 쪽으로 통일하면(introspect 도 키로 판정) `ERD_LABEL` 을 쓰는 사람의
+    `^tmp_` 는 **지금 되던 것까지 안 되게** 된다. 그것도 조용하다. 고를 값어치가 없다.
+
+    빠진 테이블을 이름 대어 알리는 것이 옳지만 그 말을 할 키가 카탈로그에 없다
+    (`log.exclude_rule` 은 규칙만 찍는다). 지금은 **규칙이 실제로 걷어낸 것이 있으면
+    규칙이라도 밝히는 것**까지 한다 — erd.py 가 SCHEMA 를 만드는 자리. 이름까지 대려면
+    카탈로그에 키가 하나 필요하다.
+
+    이름 안에 점이 든 테이블(따옴표로 만든 `"a.b"`)은 `b` 로도 한 번 물어보게 된다.
+    그 이름은 애초에 키에서도 스키마 구분과 섞이는 자리라, 넘치는 쪽으로 둔다.
+    """
+    if _EXCLUDE_RE is None:
+        return False
+    parts = str(name).split('.')
+    return any(_EXCLUDE_RE.search('.'.join(parts[i:])) is not None
+               for i in range(len(parts)))
 
 
 # ── 그림 뼈대 (spec) ────────────────────────────────────────────────────────
@@ -553,11 +665,23 @@ def load_spec(schema):
       roles    {테이블: 한글 역할명}
       derives  [[원천, 대상, 라벨], …]                  ETL 흐름 (FK 아님)
     """
+    spec_json = _get('SPEC_JSON')
+    # 인코딩을 안 주면 로케일이 정한다 — ascii 로케일(LC_ALL=C)이나 cp949 에서는
+    # 한글이 든 spec 이 읽는 자리에서 죽었다. 이 파일들은 언제나 utf-8 로 쓰므로
+    # (merge_schemas·introspect·parse_ddl) 읽기도 utf-8 로 못 박는다.
+    #
+    # 그리고 여기서 날 수 있는 실패는 JSONDecodeError 만이 아니다. utf-8 이 아닌
+    # 파일이면 UnicodeDecodeError 가, 권한이 없거나 읽는 도중 사라지면 OSError 가
+    # **raw 트레이스백**으로 나갔다 — 사용자는 제 변수 이름 대신 파이썬의 말을 봤다.
+    # as_dir·as_file·_psql_words·_max_areas 가 줄곧 없애 온 그 모양이다. 같은 대우를
+    # 한다: 변수 이름을 대고 멈춘다. (spec 경로는 기본값일 수도 있지만, 그때도 이
+    # 자리를 옮길 수 있는 손잡이는 ERD_SPEC 하나뿐이다 — as_file 이 쓰는 방식과 같다.)
     try:
-        spec_json = _get('SPEC_JSON')
-        spec = json.loads(spec_json.read_text()) if spec_json.exists() else {}
+        spec = json.loads(spec_json.read_text(encoding='utf-8')) if spec_json.exists() else {}
     except json.JSONDecodeError as e:
         raise SystemExit(T('err.spec_json', path=spec_json, err=e))
+    except (UnicodeDecodeError, OSError) as e:
+        raise SystemExit(T('err.env_bad', env='ERD_SPEC', value=spec_json, why=e))
     if not isinstance(spec, dict):
         raise SystemExit(T('err.spec_root', path=spec_json, got=_jtype(spec)))
     # 아는 키 목록에 없는 최상위 키는 오타로 본다. 예전엔 `areas` 를 `area` 로 적으면

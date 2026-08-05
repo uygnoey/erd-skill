@@ -27,6 +27,59 @@ CASES = []
 FAILED = []
 NOTES = []                  # 결과 앞에 덧붙일 한 줄들 (안 돌린 것이 있으면 그것)
 
+
+# ── 러너 자신의 콘솔 ─────────────────────────────────────────────────────────
+# `LC_ALL=C python3 selftest.py` 는 **첫 결과 한 줄에서** 죽었다:
+#   print(f'  \033[32m✓\033[0m {name}')
+#   UnicodeEncodeError: 'ascii' codec can't encode character '✓'
+# 그리고 그 예외를 잡아 빨강으로 찍으려던 줄이 '✗' 로 또 죽어, 181개 중 **한 건도**
+# 판정이 안 나온 채 트레이스백 둘로 끝났다. 재는 쪽이 재는 대상보다 먼저 죽으면
+# 그날은 아무것도 재지 못한다.
+#
+# 무엇을 바꾸는가 — `errors` 하나뿐이고, 지금 처리기가 '터질 수 있는' 것일 때만이다.
+# 규칙도 값도 `i18n._keep_console_alive` 와 **같다**(`backslashreplace`). 이유도 같다:
+# `encoding` 을 덮으면 선언한 것과 다른 바이트가 파이프로 나가고, `replace` 의 `?` 는
+# 진짜 `?` 와 구별되지 않아 조용히 틀린 것이 된다.
+#
+# 왜 `import i18n` 으로 그 혜택을 받지 않는가. 근거 셋이다.
+#  ① **러너는 제가 재는 모듈에 제 목숨을 걸면 안 된다.** i18n 은 이 시험이 재는
+#     대상이다. 그것을 import 해서 콘솔이 사는 구조면, i18n 이 import 에서 터지는
+#     날 러너는 '181개 중 N개 빨강' 대신 트레이스백 하나로 끝난다 — 무엇이 깨졌는지
+#     말해야 할 자리에서 말을 잃는다.
+#  ② i18n 쪽 처방은 **import 부작용**이다(모듈 바닥의 `_keep_console_alive(...)`
+#     두 줄). 남의 import 부작용에 기대는 것은 이 문서가 여섯 라운드째 적고 있는
+#     '조용히 죽는' 모양 그대로다 — 누가 그 두 줄을 함수 안으로 옮기면 러너는 다시
+#     ascii 콘솔에서 죽고, 그날까지 아무 데서도 빨강이 안 뜬다.
+#  ③ 러너가 찍는 '✓'·'✗' 와 표 줄은 **카탈로그의 말이 아니다.** i18n 이 사는 이유
+#     (사람에게 나가는 줄은 카탈로그를 거친다)가 여기엔 걸리지 않는다.
+# 대가는 규칙이 두 벌이 된다는 것이고, 그것은 감수한다 — 재는 쪽의 독립이 더 비싸다.
+_RAISING = ('strict', 'surrogateescape', 'surrogatepass')
+
+
+def _keep_console_alive(stream):
+    """터질 수 있는 오류 처리기를 `backslashreplace` 로 무르게 한다. 바꿨으면 True.
+
+    `PYTHONIOENCODING` 이 처리기를 **직접** 골랐으면(`utf-8:strict` 처럼) 그 뜻대로
+    둔다. `io.StringIO` 로 갈아 끼운 스트림·`None` 인 스트림은 `errors` 도
+    `reconfigure` 도 없어 저절로 빠진다.
+    """
+    if (os.environ.get('PYTHONIOENCODING') or '').partition(':')[2].strip():
+        return False
+    if getattr(stream, 'errors', None) not in _RAISING:
+        return False
+    reconfigure = getattr(stream, 'reconfigure', None)
+    if reconfigure is None:
+        return False
+    try:
+        reconfigure(errors='backslashreplace')
+    except Exception:                                            # noqa: BLE001
+        return False
+    return True
+
+
+_keep_console_alive(sys.stdout)
+_keep_console_alive(sys.stderr)
+
 # ── 입구 파일의 바닥 ─────────────────────────────────────────────────────────
 # `selftest.py` 의 `CASE_FLOOR` 는 **글로브로 올라오는 파일들**에만 걸린다. 입구
 # 파일(직접 돌린 그 파일) 자신은 `want` 에서 명시적으로 빠지고, 제가 올린 수가 0 보다
@@ -48,7 +101,7 @@ NOTES = []                  # 결과 앞에 덧붙일 한 줄들 (안 돌린 것
 # 아예 안 올라온다 — 그러니 `'selftest_history'` 행은 **오늘은 안 걸린다.** 지워도
 # 오늘의 동작은 같지만, 입구가 바뀌었을 때 바닥이 조용히 1 로 떨어지는 쪽보다
 # 적혀 있는 쪽이 낫다고 보고 남겨 둔다.
-ENTRY_FLOOR = {'selftest': 70, 'selftest_history': 40}
+ENTRY_FLOOR = {'selftest': 83, 'selftest_history': 40}
 
 # ── 한 케이스가 그린 것과 남긴 것 ────────────────────────────────────────────
 # erd.py 는 `ERD_VERIFY_LOG` 를 **프로세스마다** 처음부터 다시 쓴다(_LOG_STARTED 가
@@ -166,7 +219,7 @@ def run(script, work, proj=None, env=None, sql_dir=None, expect_ok=True):
     if env:
         e.update({k: str(v) for k, v in env.items()})
     r = subprocess.run([sys.executable, str(HERE / script)], capture_output=True,
-                       text=True, env=e, cwd=str(HERE))
+                       text=True, encoding='utf-8', env=e, cwd=str(HERE))
     if expect_ok and r.returncode != 0:
         raise Fail(f'{script} exited {r.returncode}\n{r.stdout}\n{r.stderr}')
     if e['ERD_VERIFY_LOG'] == str(log):
@@ -183,12 +236,12 @@ def ddl(work, text, sql_dir=None):
     d.mkdir(parents=True, exist_ok=True)
     (d / 'a.sql').write_text(text, encoding='utf-8')
     run('parse_ddl.py', work, sql_dir=d)
-    return json.loads((work / 'schema.json').read_text())
+    return json.loads((work / 'schema.json').read_text(encoding='utf-8'))
 
 
 def write_schema(work, tables):
     work.mkdir(parents=True, exist_ok=True)
-    (work / 'schema.json').write_text(json.dumps(tables, ensure_ascii=False))
+    (work / 'schema.json').write_text(json.dumps(tables, ensure_ascii=False), encoding='utf-8')
 
 
 def col(name, typ='bigint', **kw):

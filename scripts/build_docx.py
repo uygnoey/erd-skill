@@ -23,7 +23,8 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 import erd
-from build_erd import doc_counts, doc_tables, doc_text, meta_cells, require_fresh
+from build_erd import (doc_counts, doc_tables, doc_text, fig_caption, meta_cells,
+                       require_fresh)
 from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, ROLE, SCHEMA, layer
 
 # 경로 값(OUT·PROJ)은 `config` 를 통해 **쓰는 자리에서** 묻는다 — 그 이름들은 PEP 562
@@ -296,20 +297,23 @@ def build():
     heading(doc, T('docx.ch2'))
     para(doc, T('docx.ch2_intro'))
     picture(doc, config.OUT / 'erd_overview.png', 26.0,
-            T('word.fig_no', n=1) + ' ' + T('docx.fig_overview', title=TITLE))
+            fig_caption('erd_overview', T('docx.fig_overview', title=TITLE)))
 
     heading(doc, T('docx.ch2_1'), 2)
     para(doc, T('docx.ch2_1_intro', n=len(SCHEMA)))
     picture(doc, config.OUT / 'erd_full.png', 26.0,
-            T('word.fig_no', n=2) + ' ' + T('docx.fig_full', title=TITLE))
+            fig_caption('erd_full', T('docx.fig_full', title=TITLE)))
 
     heading(doc, T('docx.ch3'))
     para(doc, T('docx.ch3_intro'))
-    for i, (code, name, schema, tables) in enumerate(AREAS, start=3):
-        heading(doc, T('docx.ch3_area', no=i - 2, code=code, name=name,
+    # 절 번호와 그림 번호가 한 카운터에 얽혀 있어서 `start=3` 에 `no=i-2` 였다.
+    # 그림 번호는 이제 build_erd 의 한 벌에서 오므로 여기 남는 것은 절 번호뿐이다.
+    for no, (code, name, schema, tables) in enumerate(AREAS, start=1):
+        heading(doc, T('docx.ch3_area', no=no, code=code, name=name,
                         schema=schema, n=len(tables)), 2)
         picture(doc, config.OUT / f'erd_area_{code}.png', 26.0,
-                T('word.fig_no', n=i) + ' ' + T('docx.fig_area', code=code, name=name))
+                fig_caption(f'erd_area_{code}',
+                            T('docx.fig_area', code=code, name=name)))
 
     # ── 4. 테이블별 역할 및 컬럼 설명 ──
     portrait(doc)
@@ -347,7 +351,6 @@ def build():
                 mark = erd.col_role(t_, c) or (
                     'UQ' if any(c['name'] in u for u in t_.get('uniques', [])) else '')
                 desc = (T('word.added') + ' ' if c['added'] else '') + c['comment']
-                ct.rows  # noqa
                 row(ct, (mark, c['name'], c['type'] + (' NN' if c['not_null'] else ''), desc),
                     [1.3, 4.2, 3.0, 8.5], font_size=8, mono_cols=(1, 2), bold_cols=(1,),
                     aligns=[WD_ALIGN_PARAGRAPH.CENTER, None, None, None],

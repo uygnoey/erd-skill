@@ -162,6 +162,50 @@ def doc_counts(tables=None):
             sum(len(SCHEMA[t]['fks']) for t in ts if t in SCHEMA))
 
 
+# ── 그림 번호 ────────────────────────────────────────────────────────────────
+# 번호는 캡션에만 있는 것이 아니다 — `draw_erd` 의 제목 줄로 **그림 안에도 그려 넣는다**
+# (ERD_SVG_TITLE=0 인 SVG 에서는 안 보이지만 PNG 에는 늘 박힌다). 그래서 캡션을 다는
+# 쪽이 번호를 따로 세면 두 번호가 갈린다: `ERD_HTML_SVG=0` 으로 PNG 를 박으면
+# "Figure 2 · 전체 상세 ERD" 라고 **그려진** 그림이 "Figure 5" 캡션 아래로 실렸다.
+# HTML 만 실은 순서대로 다시 셌기 때문이다(부록으로 미룬 전체 상세도가 마지막 번호).
+#
+# 번호는 실린 차례가 아니라 **그림의 이름표**다. 그리는 쪽과 캡션을 다는 두 쪽이 같은
+# 표를 본다 — 위의 doc_tables·doc_counts·meta_cells·doc_text 와 같은 자리, 같은 이유다.
+# HTML 의 본문 순서(개요→영역→부록)는 그대로 두므로 번호는 1,3,4,…,2 로 튀지만,
+# 그림 안의 번호와는 어긋나지 않는다.
+def fig_numbers():
+    """그림 stem → 그림 번호. 개요=1, 전체 상세=2, 영역은 AREAS 순서로 3부터."""
+    n = {'erd_overview': 1, 'erd_full': 2}
+    for i, a in enumerate(AREAS, start=3):
+        n[f'erd_area_{a[0]}'] = i
+    return n
+
+
+FIG_NO = fig_numbers()
+
+
+def fig_caption(stem, caption):
+    """`Figure N 제목` 한 줄 — 그림 안에 그리는 줄과 문서 캡션이 여기서 함께 나온다.
+
+    등록 안 된 stem 은 **사람 말로** 멈춘다. 예전엔 `FIG_NO[stem]` 의 날 KeyError
+    역추적이었다 — 이 저장소가 `as_file`·`as_dir`·`picture()` 에서 걷어내 온 바로 그
+    모양이라 자랑할 것이 없었고, 그때는 그 뜻의 카탈로그 키가 없어 사실대로 적어
+    뒀다. 이제 `err.fig_unregistered` 가 있으니 예고대로 바꿨다: 위의 `require_fresh`
+    와 같은 `raise SystemExit(T('err.…'))` 다.
+
+    **사용자 입력으로는 못 밟는 자리**인 것은 그대로다. 세 곳 다 stem 을 `AREAS` 에서
+    뽑고 그 `AREAS` 가 곧 `fig_numbers()` 의 재료라, 어떤 스키마·spec 을 줘도 키가
+    빠지지 않는다. 밟히는 경우는 그림 한 벌을 여기 등록하지 않고 늘렸을 때뿐이라
+    읽는 이는 이 파일을 고치는 사람이고, 그래서 문구가 `fig_numbers()` 를 이름으로
+    가리키고 등록된 이름을 함께 보여 준다. 번호가 조용히 어긋난 채 문서가 나가는 것
+    보다 멈추는 편이 낫다는 판단도 그대로다.
+    """
+    if stem not in FIG_NO:
+        raise SystemExit(T('err.fig_unregistered', stem=stem,
+                           known=', '.join(sorted(FIG_NO))))
+    return T('word.fig_no', n=FIG_NO[stem]) + ' ' + caption
+
+
 def main():
     # 1) GraphML — 전체 22테이블 · 컬럼 설명 포함
     pos, boxes, groups = erd.layout_global()
@@ -172,7 +216,7 @@ def main():
     # 2) PNG 전체 개요도 — 스키마 그룹 + ETL 흐름
     opos, oboxes, ogroups = erd.layout_overview()
     p = erd.draw_erd(OUT / 'erd_overview.png', list(SCHEMA), opos, oboxes,
-                     T('word.fig_no', n=1) + ' ' + T('docx.fig_overview', title=TITLE),
+                     fig_caption('erd_overview', T('docx.fig_overview', title=TITLE)),
                      subtitle=T('erd.sub_overview'),
                      with_desc=False, scale=2, legend=True, edge_labels=False,
                      groups=ogroups, derives=True, tolerate=('h_overlap',))
@@ -180,7 +224,7 @@ def main():
 
     # 3) PNG 전체 상세 ERD — 모든 테이블의 전 컬럼 + 설명
     p = erd.draw_erd(OUT / 'erd_full.png', list(SCHEMA), pos, boxes,
-                     T('word.fig_no', n=2) + ' ' + T('docx.fig_full', title=TITLE),
+                     fig_caption('erd_full', T('docx.fig_full', title=TITLE)),
                      subtitle=(T('erd.sub_full',
                                  tables=len(SCHEMA),
                                  columns=sum(len(x['columns']) for x in SCHEMA.values()),
@@ -192,11 +236,11 @@ def main():
     print(T('log.png_full', name=Path(p).name, size='%d×%d' % Image.open(p).size))
 
     # 4) PNG 영역별 상세도
-    for i, (code, name, schema, tables) in enumerate(AREAS, start=3):
+    for code, name, schema, tables in AREAS:
         apos, aboxes, ext = erd.layout_area(tables, with_desc=True)
         p = erd.draw_erd(OUT / f'erd_area_{code}.png', tables + ext, apos, aboxes,
-                         T('word.fig_no', n=i) + ' '
-                         + T('docx.fig_area', code=code, name=name),
+                         fig_caption(f'erd_area_{code}',
+                                     T('docx.fig_area', code=code, name=name)),
                          subtitle=T('erd.sub_area', schema=schema, n=len(tables))
                                   + (T('erd.sub_ext', n=len(ext)) if ext else ''),
                          with_desc=True, scale=2, stubs=set(ext), legend=True)

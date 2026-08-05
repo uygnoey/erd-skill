@@ -295,7 +295,11 @@ def main():
 
     out_path = (config.SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL
                 else config.SCHEMA_JSON)
-    out_path.write_text(json.dumps(tables, ensure_ascii=False, indent=2))
+    # `ensure_ascii=False` 라 한글 코멘트가 그대로 들어간다 — 인코딩을 안 주면 무엇으로
+    # 쓸지는 로케일이 정하고, ascii 로케일(LC_ALL=C)에서는 UnicodeEncodeError 로
+    # **조회를 다 마친 왕복이 마지막 한 줄에서 통째로 버려졌다**(cp949 는 죽는 대신
+    # 읽는 쪽에서 깨진다). 읽는 쪽은 전부 utf-8 로 못 박혀 있다 — 쓰는 쪽도 맞춘다.
+    out_path.write_text(json.dumps(tables, ensure_ascii=False, indent=2), encoding='utf-8')
     n_col = sum(len(t['columns']) for t in tables.values())
     n_fk = sum(len(t['fks']) for t in tables.values())  # noqa: E501  (dropped 반영 후)
     n_desc = sum(1 for t in tables.values() for c in t['columns'] if c['comment'])

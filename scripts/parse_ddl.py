@@ -28,7 +28,7 @@ from i18n import t as T
 # 부르는 사람의 cwd 에 `erd-build/out` 을 남겼다 (config.py 의 '늦춰 두는 값' 참고).
 # 여기서도 이름을 당겨오지 않아야 그 사슬이 끊긴다.
 import config
-from config import RS, SEP, has_db as config_has_db, psql, safe_name
+from config import QueryFailed, has_db as config_has_db, psql_rows, safe_name
 
 # ERD_LABEL — SKILL.md·SKILL.ko.md 는 이것을 **범용 표**에 넣고 "여러 DB 를 합칠 때
 # 붙일 라벨(schema.<라벨>.json)" 이라 적는데, 16라운드 전에는 introspect.py 만 보고
@@ -98,13 +98,55 @@ def mask(sql):
     컬럼이 사라졌다. 함수 본문($$…$$) 안의 CREATE TABLE 이 유령 테이블로 잡히기도 했다.
 
     가린 자리는 같은 길이의 공백이라 위치가 원본과 그대로 맞는다.
+
+    큰따옴표 식별자는 **가리지 않되 건너뛴다.** 가리지 않는 것은 `_IDC` 가 거기서
+    이름을 읽어야 하기 때문이고(그래서 구분자를 셀 때만 `blank_quoted` 로 따로 덮는다),
+    건너뛰는 것은 이름 **안**의 `'`·`--`·`/*`·`$$` 가 코드가 아니기 때문이다. 안 건너뛰던
+    때는 `"a'b"` 라는 이름 하나가 그 자리부터 문자열이 시작한 것으로 읽혀 뒤가 전부
+    어긋났고, `CREATE TABLE` 이 **통째로, 경고 한 줄 없이** 사라졌다 — `COLLATE "it's ok"`
+    하나면 됐다. `"a--b"`·`"a/*b"` 도 같은 모양이었다. 세 사본 모두 그 구간을 원본
+    그대로 두므로 ms·mc·msc 의 그 자리는 서로 같고, 예전과도 같다(예전에도 안 가렸다).
+    바뀌는 것은 **그 구간을 지난 뒤 어디서부터 다시 읽느냐** 뿐이다.
+
+    닫는 `"` 가 없으면 덮지도 건너뛰지도 않고 그 글자 하나만 지나간다 —
+    `blank_quoted` 와 같은 선택이다. 여기서는 걸리는 것이 파일 **전체**라 더 그렇다:
+    짝 없는 `"` 하나에 나머지 DDL 이 통째로 안 가려지는 것보다, 그 글자를 평범한
+    글자로 두어 예전과 똑같이 읽히게 두는 편이 잃는 것이 적다.
+    """
+    ms, mc, msc, ran_off = _scan(sql, True)
+    if ran_off:
+        # 큰따옴표를 넘다가 **끝나지 않는 문자열 리터럴**이 생겼다. 이런 일은 코드
+        # 자리의 `"` 가 진짜 식별자 시작이 아닐 때 벌어진다: `t (a "b text DEFAULT
+        # 'has " quote', z int)` 에서 짝으로 집힌 `"` 가 리터럴 **안**의 것이라,
+        # 건너뛴 뒤 남은 `'` 하나가 파일 끝까지 리터럴이 된다. 그러면 그 뒤의
+        # `CREATE TABLE` 들까지 통째로 사라진다 — 손으로 쓰다 만 DDL 에서 뒤따르는
+        # 문을 다 잃는 것은 이 저장소가 가장 싫어하는 모양이고, 큰따옴표를 알아본
+        # 대가로 치를 것이 못 된다.
+        #
+        # 그래서 그때만 `"` 를 모르던 방식으로 한 번 더 읽어 보고, 그쪽이 성하면
+        # 그것을 쓴다. 성한 입력에서는 첫 판이 이미 성하므로 이 길로 오지 않는다
+        # (측정: 큰따옴표가 제대로 짝을 이루는 문서 6000건에서 결과가 달라진 칸 0).
+        alt = _scan(sql, False)
+        if not alt[3]:
+            return alt[:3]
+    return ms, mc, msc
+
+
+def _scan(sql, skip_quoted):
+    """mask() 의 훑기 한 판 → (ms, mc, msc, 끝나지 않은 리터럴이 있었나).
+
+    `skip_quoted` 가 거짓이면 `"` 를 평범한 글자로 본다 — mask() 의 되돌림 판이다.
     """
     ms, mc, msc = list(sql), list(sql), list(sql)
+    ran_off = False
     i, n = 0, len(sql)
     dollar = re.compile(r'\$([A-Za-z_]\w*)?\$')
     while i < n:
         c = sql[i]
-        if c == "'":                                  # 문자열 리터럴
+        if c == '"' and skip_quoted:                  # 큰따옴표 식별자 — 남기되 건너뛴다
+            j = sql.find('"', i + 1)
+            i = (j + 1) if j >= 0 else i + 1          # 짝이 없으면 한 글자만
+        elif c == "'":                                # 문자열 리터럴
             # 바로 앞이 E 면 백슬래시 이스케이프가 산다 — E'it\'s' 를 여기서 끊으면
             # 그 뒤가 전부 어긋나 테이블 하나가 통째로 사라졌다.
             esc = i and sql[i - 1] in 'eE' and (i < 2 or not sql[i - 2].isalnum())
@@ -119,6 +161,8 @@ def mask(sql):
                         continue
                     break
                 j += 1
+            if j >= n:                                # 닫는 `'` 를 못 찾고 끝났다
+                ran_off = True
             j = min(j, n - 1)
             for k in range(i, j + 1):
                 ms[k] = msc[k] = ' '
@@ -156,7 +200,82 @@ def mask(sql):
             i = j
         else:
             i += 1
-    return ''.join(ms), ''.join(mc), ''.join(msc)
+    return ''.join(ms), ''.join(mc), ''.join(msc), ran_off
+
+
+def blank_quoted(s):
+    """큰따옴표 식별자를 같은 길이의 공백으로 덮은 사본 — **구분자를 셀 때만** 쓴다.
+
+    `mask` 는 큰따옴표를 일부러 남긴다: 지우면 `_IDC` 가 이름을 못 읽는다. 그런데
+    이름 안에는 무엇이든 들어갈 수 있어서, 가린 사본에서 괄호·대괄호·콤마를 세는
+    자리마다 이름 안의 그 글자가 함께 세어졌다. 이름 안에는 **구분자가 있을 수 없으니**
+    세는 사본에서만 덮는다. 길이가 같아 원본·다른 사본과 위치가 그대로 맞는다.
+
+    같은 규칙을 쓰는 자리가 셋이 됐다 — `split_top_level` 의 자를 자리, `_default_end`
+    의 깊이, `parse_create` 의 본문 괄호 짝. 세 벌로 적어 두면 다음 사람은 또 한쪽만
+    고친다. 실제로 그렇게 됐었다: 앞의 둘은 이미 막고 있는데 `parse_create` 만 규율
+    밖이라, `CREATE TABLE t (id int, c text COLLATE "a(b")` 하나가 그 문의 테이블을
+    **통째로, 경고 한 줄 없이** 사라지게 했다(짝이 안 맞아 `if depth: continue`).
+
+    닫는 `"` 가 없으면 덮지 않고 그 글자 하나만 지나간다. 짝 없는 `"` 하나에 나머지
+    파일 전체가 안 세어지는 것보다, 그 글자를 평범한 글자로 두는 편이 덜 위험하다.
+    (`"` 가 문자열·주석 안에 있는 경우는 여기까지 오지 않는다 — `mask` 가 이미 그
+     구간을 공백으로 바꿔 놓았다.)
+    """
+    out, i, n = [], 0, len(s)
+    while i < n:
+        if s[i] == '"':
+            j = s.find('"', i + 1)
+            if j >= 0:
+                out.append(' ' * (j - i + 1))
+                i = j + 1
+                continue
+        out.append(s[i])
+        i += 1
+    return ''.join(out)
+
+
+_PAIR = {'(': ')', '[': ']'}
+
+
+def paren_depth(s):
+    """자리마다의 괄호·대괄호 깊이 → 길이가 s 와 같은 목록.
+
+    **짝이 맞는 기호만 센다.** 짝 없는 것은 아예 없는 셈 친다. 이것이 요점이다.
+
+    그냥 세면서 지나가는 방식(`+1`/`-1`)은 짝이 안 맞는 입력에서 무너진다. 실제로
+    무너졌다: `[`·`]` 를 세기 시작하면서 `a int DEFAULT 1], b text, c text` 의 depth
+    가 `]` 에서 음수가 되고, 그러면 `depth == 0` 이 뒤로 영영 거짓이라 **b·c 가 통째로
+    앞 컬럼의 기본값 속으로 사라졌다.** 예전엔 `]` 를 안 세서 안 밟혔을 뿐, `)` 로도
+    같은 성질이었다.
+
+    누르는 것(`max(0, depth - 1)`)으로는 반만 고쳐진다. 그것은 **닫는 쪽이 남는**
+    경우만 막고 **여는 쪽이 남는** 경우 — `DEFAULT [1, b text, c text` — 는 depth 가
+    1 에서 안 내려와 똑같이 뒤를 삼킨다. 그래서 누르지 않고 **짝을 먼저 맞춘다**:
+    스택으로 짝을 찾고, 짝지어진 쌍만 깊이에 넣는다. 짝 없는 `[`·`]`·`(`·`)` 는
+    구분자를 가리지 못하므로 그 뒤가 예전(그 기호를 안 세던 때)처럼 읽힌다.
+
+    깊이는 **쌍 안쪽에만** 걸린다: `a(b)c` → `[0, 0, 1, 0, 0]`. 여는 기호와 닫는
+    기호 자신은 바깥 깊이다. 구분자(콤마)나 제약 낱말은 기호가 아니므로 이 규칙에
+    걸릴 일이 없고, 경계 판정은 '내가 어떤 쌍 **안**에 있는가' 만 물으면 된다.
+
+    쓰는 곳은 둘 — `split_top_level` 의 자를 자리와 `_default_end` 의 값 경계. 두
+    자리가 같은 성질로 무너지므로 규칙도 한 벌이다.
+    """
+    stack, inc = [], [0] * (len(s) + 1)
+    for i, c in enumerate(s):
+        if c in _PAIR:
+            stack.append((i, _PAIR[c]))
+        elif c in (')', ']') and stack and stack[-1][1] == c:
+            j, _ = stack.pop()
+            inc[j + 1] += 1                 # 여는 기호 **다음** 자리부터 한 겹 안
+            inc[i] -= 1                     # 닫는 기호 자신은 다시 바깥
+    # 스택에 남은 것은 짝 없는 여는 기호다 — inc 에 넣지 않았으므로 저절로 안 세어진다.
+    out, d = [], 0
+    for i in range(len(s)):
+        d += inc[i]
+        out.append(d)
+    return out
 
 
 def split_top_level(body_mc: str, body_ms: str, body_sc: str):
@@ -164,13 +283,27 @@ def split_top_level(body_mc: str, body_ms: str, body_sc: str):
 
     줄 단위가 아니라 콤마 단위다. 한 줄에 다 적은 정의도 제대로 나뉜다.
     """
-    cuts, depth = [0], 0
-    for i, c in enumerate(body_sc):
-        if c == '(':
-            depth += 1
-        elif c == ')':
-            depth -= 1
-        elif c == ',' and depth == 0:
+    # ── 경계를 어디서 재는가 ────────────────────────────────────────────────
+    # 자를 자리는 body_sc 가 아니라 **따옴표 친 이름까지 지운 사본** 에서 잰다
+    # (`blank_quoted` 참고 — 같은 규칙을 쓰는 세 자리 중 하나다). 안 덮던 때는 이름
+    # **안** 의 구분자가 그대로 세어졌다: `"a,b" int, x text` 는 이름 한가운데서
+    # 쪼개졌고, `"a(b"`·`"a)b"` 는 depth 를 망가뜨려 뒤따르는 컬럼이 통째로 사라졌다.
+    # 길이가 같아 body_mc·body_ms 와 위치가 맞고, 아래의 주석 소유 판정은 body_sc 를
+    # 그대로 쓴다 — 거기서는 이름도 '코드가 있다' 는 증거라, 지우면 컬럼 위 주석의
+    # 임자가 바뀐다.
+    #
+    # 괄호와 함께 **대괄호** 도 센다. 안 세던 때는 배열 리터럴 안의 콤마가 최상위로
+    # 보여 `tags text[] DEFAULT ARRAY['a','b'] NOT NULL` 이 두 토막이 났다 — 기본값은
+    # `ARRAY['a'` 로 잘리고 `NOT NULL` 은 뒷토막에 실려 사라졌다. 타입 표기의
+    # `int[]`·`int[3][4]` 는 짝이 맞아 깊이가 제자리로 돌아오므로 무해하다.
+    #
+    # 깊이는 `paren_depth` 가 잰다 — **짝이 맞는 기호만** 센다. 그냥 세면서 지나가던
+    # 때는 짝 없는 `]` 하나에 깊이가 음수가 되어 그 뒤 컬럼이 통째로 사라졌다.
+    cut_src = blank_quoted(body_sc)
+    depth = paren_depth(cut_src)
+    cuts = [0]
+    for i, c in enumerate(cut_src):
+        if c == ',' and not depth[i]:
             cuts.append(i + 1)          # 경계는 언제나 콤마다
     cuts.append(len(body_sc) + 1)
 
@@ -198,7 +331,12 @@ def split_top_level(body_mc: str, body_ms: str, body_sc: str):
         # 밀려 첫 설명이 사라지고 마지막이 비고, 경계를 줄 끝까지 늘리면 한 줄에
         # 여러 컬럼을 적은 정의가 통째로 한 덩어리가 된다. 줄로 재면 둘 다 산다.
         prev, own = [], []
-        for mm in re.finditer(r'--[^\n]*', seg_ms):
+        # `--` 를 **찾는** 것은 이름을 덮은 사본에서 한다. `"a--b"` 라는 컬럼 이름
+        # 안의 두 글자가 줄 주석의 시작으로 잡혀, 이름의 뒤쪽(`b" text`)까지 설명에
+        # 딸려 들어갔다. 길이가 같아 자리가 그대로 맞으므로 **내용은 seg_ms 에서**
+        # 원문대로 꺼낸다. 아래 소유 판정이 `code`(=body_sc)를 그대로 쓰는 것은
+        # 일부러다 — 거기서는 이름도 '이 줄에 코드가 있다' 는 증거다.
+        for mm in re.finditer(r'--[^\n]*', blank_quoted(seg_ms)):
             text = seg_ms[mm.start() + 2:mm.end()].strip()
             bol = code.rfind('\n', 0, mm.start()) + 1
             if code[bol:mm.start()].strip():
@@ -240,8 +378,13 @@ def unq(s):
 
 
 def _names(text):
-    """콤마로 갈라 이름 목록을 만든다 (PK·FK·UNIQUE 의 괄호 안)."""
-    return [unq(c) for c in text.split(',') if c.strip()]
+    """콤마로 갈라 이름 목록을 만든다 (PK·FK·UNIQUE 의 괄호 안).
+
+    콤마는 **따옴표 밖의 것만** 구분자다. `text.split(',')` 이던 때는
+    `PRIMARY KEY ("a,b")` 가 `a`·`b"` 두 컬럼으로 갈려, 있지도 않은 컬럼 이름이
+    PK 칸에 실렸다 — `blank_quoted` 가 막는 것과 같은 부류다. 여기서는 잘라 낸
+    조각을 **그대로 써야** 하므로 덮는 대신 따옴표 친 토막을 통째로 집는다."""
+    return [unq(c) for c in re.findall(r'(?:"[^"]*"|[^,])+', text) if c.strip()]
 
 
 # 컬럼이 아니라 테이블 전체에 걸리는 것들. 예전엔 CHECK·UNIQUE·LIKE 가 이름이
@@ -250,6 +393,17 @@ _TABLE_LEVEL = re.compile(
     r'(?:CONSTRAINT|PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|EXCLUDE|LIKE|INHERITS|'
     r'PARTITION)\b', re.I)
 _ON_DELETE = r'ON\s+DELETE\s+(CASCADE|RESTRICT|SET\s+NULL|SET\s+DEFAULT|NO\s+ACTION)'
+
+# `PRIMARY KEY (…)`·`FOREIGN KEY (…)`·`UNIQUE (…)`·`REFERENCES t (…)` 의 **이름 목록**.
+# 닫는 괄호는 따옴표 **밖**의 것만 끝이다 — `[^)]+` 이던 때는 `PRIMARY KEY ("a)b")` 가
+# 이름 한가운데서 끊겨 `"a` 라는 있지도 않은 컬럼이 PK 칸에 실렸다. 짝이 되는 `_names`
+# 가 콤마를 같은 규칙으로 보므로 둘을 함께 고쳐야 한다(한쪽만 고치면 여전히 틀린다).
+#
+# **따옴표가 없는 입력에서는 `[^)]+` 과 글자 하나까지 같은 것을 문다** — 첫 갈래가
+# `"` 로 시작할 때만 켜지기 때문이다. 그래서 pg_dump 가 내놓는 흔한 DDL 의 결과는
+# 안 바뀐다. 타입 표기(`numeric(10,2)`)와 `_decl` 의 REFERENCES 걷어내기는 이름
+# 목록이 아니므로 여기 규칙을 대지 않는다.
+_INPAREN = r'((?:"[^"]*"|[^)])+)'
 
 
 def _refs(code):
@@ -262,7 +416,7 @@ def _refs(code):
     `ON DELETE CASCADE ON UPDATE CASCADE` 를 'CASCADE ON' 으로 만들어 문서에 실었다.
     """
     m = re.search(r'\bREFERENCES\s+(?:' + _IDC + r'\s*\.\s*)?' + _IDC +
-                  r'\s*(?:\(([^)]*)\))?', code, re.I)
+                  r'\s*(?:\(' + _INPAREN + r'\))?', code, re.I)
     if not m:
         return None
     cols = _names(m.group(3) or '')
@@ -329,18 +483,128 @@ def _ref_key(ref, own_schema, dup):
     return f'{rsch}.{rname}' if rname in dup else rname
 
 
+# DEFAULT 값을 끊는 낱말들 — 컬럼 제약이 시작될 수 있는 자리.
+#
+# 앞의 lookbehind 가 이 식의 전부다. 여기서 두 번 넘어졌으므로 무엇을 지키는지 적어 둔다.
+#   · `\s+(?:NOT\s+NULL|…)` — 매치가 **공백에서** 시작한다. 그런데 경계를 재는 것은
+#     가린 사본이고 거기서 문자열 리터럴은 **같은 길이의 공백**이다. 그래서
+#     `DEFAULT 'x, y' NOT NULL` 의 사본 `DEFAULT        NOT NULL` 에서는 그 `\s+` 가
+#     리터럴이 있던 자리부터 물어, 기본값이 통째로 빈 값이 됐다 — 따옴표 친 기본값
+#     뒤에 한 마디라도 더 붙으면 전부.
+#   · `\b(?:NOT\s+NULL|…)` — 매치가 낱말에서 시작하지만 **앞에 무엇이 오는지 안 본다**.
+#     그래서 `ARRAY[NULL]`·`(NULL)`·`coalesce(a,NULL)` 의 `NULL` 에도 걸려
+#     `ARRAY[`·`(`·`coalesce(a` 로 잘렸다.
+# 필요한 것은 '앞이 무엇인지 보되 매치는 낱말에서 시작' 이다. lookbehind 는 폭을
+# 소비하지 않으므로 `.start()` 가 낱말 자리가 된다 — 리터럴이 있던 공백은 그 앞에 남는다.
+# 뒤의 `\b` 는 낱말이 더 길어지는 경우를 지킨다: `NULLIF(a,b)` 의 `NULL` 은 경계가 아니다.
+#
+# 앞자리로 공백만이 아니라 `)`·`]` 도 받는다. Postgres 렉서는 그 뒤에 공백을 요구하지
+# 않아 `DEFAULT now()NOT NULL` 은 멀쩡한 DDL 인데, 공백만 보던 HEAD 는 기본값을
+# `now()NOT` 으로 읽었다. 여는 쪽(`(`·`[`)과 `,` 를 안 받는 것이 이 식의 요점이므로
+# 닫는 쪽을 받아도 `ARRAY[NULL]`·`(NULL)`·`coalesce(a,NULL)` 은 그대로 안 걸린다.
+_DFLT_STOP = re.compile(r'(?<=[\s)\]])(?:NOT\s+NULL|NULL|PRIMARY|UNIQUE|REFERENCES|'
+                        r'CHECK|GENERATED|COLLATE)\b', re.I)
+
+
+def _default_end(tail):
+    """가린 사본 `tail` 에서 DEFAULT 값이 끝나는 자리 (끝까지면 None).
+
+    공백 앞뒤만으로는 모자란다. 컬럼 제약은 **괄호 밖**에만 올 수 있는데 같은 낱말이
+    식 **안**에도 공백을 앞세우고 나타난다 — `DEFAULT coalesce(a, NULL)`,
+    `DEFAULT (CASE WHEN x THEN 1 ELSE NULL END)`. 그래서 깊이 0 인 매치만 경계로 센다.
+    (`ELSE NULL END` 처럼 괄호 없이 쓴 식은 여전히 못 가린다 — 정규식으로 식을 끝까지
+     읽는 일은 하지 않는다. 그건 파서가 할 일이고, 여기서는 HEAD 와 같게 둔다.)
+
+    큰따옴표 식별자는 깊이를 셀 때만 덮는다 — 이름 안의 `(` 하나가 뒤따르는 제약을
+    통째로 안 보이게 만들기 때문이다 (`blank_quoted` 참고).
+
+    깊이는 `split_top_level` 과 **같은 함수**로 잰다. 예전엔 여기서 세면서 지나가되
+    음수를 `depth <= 0` 으로 눌렀는데, 그러면 닫는 쪽이 남는 경우만 막고 **여는 쪽이
+    남는** 경우는 못 막는다 — `DEFAULT [1 NOT NULL` 의 `NOT NULL` 이 깊이 1 로 보여
+    경계가 아니게 되고, 기본값이 `[1 NOT NULL` 통째가 됐다. 짝을 먼저 맞추면 짝 없는
+    `[` 는 아예 안 세어져 `[1` 로 끊긴다(그 기호를 안 세던 HEAD 와 같다).
+    """
+    scan = blank_quoted(tail)
+    depth = paren_depth(scan)
+    for m in _DFLT_STOP.finditer(scan):
+        if not depth[m.start()]:
+            return m.start()
+    return None
+
+
+def _column(cname, rest, comment, added):
+    """컬럼 선언 하나 → (컬럼, 인라인PK 인가, 인라인UNIQUE 인가, REFERENCES 또는 None)
+
+    `CREATE TABLE (…)` 의 컬럼과 `ALTER TABLE … ADD COLUMN` 뒤에 오는 것은 **같은
+    문법** 이다. 그런데 판정은 두 벌로 갈라져 있었고, ADD COLUMN 쪽만 규율 밖이었다:
+    구조를 원본 문자열에서 봤다(`'NOT NULL' in rest.upper()`). 그래서
+    `ADD COLUMN memo text DEFAULT 'NOT NULL 아님'` 은 NOT NULL 컬럼이 되고 기본값은
+    `'NOT` 으로 잘렸으며, `DEFAULT 'IDENTITY 아님'` 은 identity 가 됐다. REFERENCES
+    는 아예 읽지 않아 `ADD COLUMN user_id bigint REFERENCES users(id)` 의 관계가
+    경고 한 줄 없이 사라졌다. 규칙을 복사해 두 벌로 두면 다음 사람은 또 한쪽만 고친다
+    — 판정을 여기 한 자리로 모으고 양쪽이 이것만 부른다.
+
+    규율은 parse_create 가 쓰던 것 그대로다:
+      · 구조 판정(NOT NULL·PRIMARY KEY·UNIQUE·REFERENCES)은 반드시 **가린 사본** 에서
+        한다. 원본에서 보면 DEFAULT 'PRIMARY KEY 설명' 같은 값이 진짜 제약이 된다.
+      · 값의 **경계** 는 가린 사본에서 찾고 **값** 은 원본에서 꺼낸다. 가린 사본에서
+        값까지 읽으면 문자열이 공백이라 빈 값이 되고, 원본에서 경계를 찾으면
+        DEFAULT 'see REFERENCES users' 가 `'see` 로 잘린다.
+      · not_null·identity 는 `_decl()` 로 REFERENCES 절을 걷어낸 뒤에 본다. 안 그러면
+        `REFERENCES serial_numbers(id)` 의 부모 이름이 그 컬럼을 identity 로 만든다.
+    """
+    # 앞서 만든 사본은 공백을 접으면서 원본과 길이가 어긋났으므로, 이 선언부 하나만
+    # 다시 가린다 — 같은 길이라야 값을 위치로 꺼낼 수 있다.
+    rest_sc = mask(rest)[2]
+    decl = _decl(rest_sc)
+
+    dflt = None
+    dm = re.search(r'\bDEFAULT\b', rest_sc, re.I)
+    if dm:
+        tail = rest_sc[dm.end():]
+        # 경계는 **뒤에 오는 낱말이 시작하는 자리** 로 잰다 (`_DFLT_STOP` 참고).
+        # 자른 뒤 남는 앞뒤 공백은 아래 strip 이 걷는다.
+        stop = _default_end(tail)
+        dflt = rest[dm.end():dm.end() + (len(tail) if stop is None else stop)]
+
+    col = {
+        'name': cname,
+        'type': _type(rest),
+        # IDENTITY·serial 은 NOT NULL 을 적지 않아도 NOT NULL 이다.
+        # 낱말로 본다. 부분 문자열로 재면 REFERENCES serial_numbers(id) 가
+        # 그 컬럼을 identity·NOT NULL 로 만든다.
+        'not_null': bool(re.search(r'\bNOT\s+NULL\b|\bIDENTITY\b|\w*SERIAL\b(?!\s*_)',
+                                   decl, re.I)),
+        'default': dflt.strip().rstrip(',') if dflt else '',
+        'identity': bool(re.search(r'\bIDENTITY\b|\b(?:BIG|SMALL)?SERIAL\b', decl, re.I)),
+        'comment': comment,
+        'added': added,
+    }
+    return (col,
+            bool(re.search(r'\bPRIMARY\s+KEY\b', rest_sc, re.I)),
+            bool(re.search(r'\bUNIQUE\b', rest_sc, re.I)),
+            _refs(rest_sc))
+
+
 def parse_create(sql: str, src: str, tables: dict, dup: set):
     ms, mc, msc = mask(sql)
     head_pat = re.compile(r'CREATE\s+(?:UNLOGGED\s+|TEMP(?:ORARY)?\s+)?TABLE\s+'
                           r'(?:IF\s+NOT\s+EXISTS\s+)?'
                           r'(?:' + _IDC + r'\s*\.\s*)?' + _IDC + r'\s*\(', re.I)
+    # 짝을 세는 사본은 **이름까지 덮은 것** 이다 (`blank_quoted` 참고). msc 를 그대로
+    # 세던 때는 이름 안의 괄호 하나가 그 `CREATE TABLE` 문을 통째로 삼켰다 —
+    # `c text COLLATE "a(b"` 는 depth 가 안 닫혀 `if depth: continue` 로 빠지고,
+    # `"a)b"` 는 본문이 거기서 끊겨 뒤 컬럼이 사라졌다. 둘 다 **경고 한 줄 없이** 다.
+    # 이름을 읽는 head_pat 와 본문 슬라이스는 msc 를 그대로 쓴다 — 덮은 사본에서
+    # 이름을 읽으면 `_IDC` 가 빈 자리를 보게 된다.
+    msc_q = blank_quoted(msc)
     for m in head_pat.finditer(msc):
         sch, name = unq(m.group(1)) or 'public', unq(m.group(2))
         i, depth = m.end(), 1                     # 괄호 짝으로 본문을 자른다
-        while i < len(msc) and depth:
-            if msc[i] == '(':
+        while i < len(msc_q) and depth:
+            if msc_q[i] == '(':
                 depth += 1
-            elif msc[i] == ')':
+            elif msc_q[i] == ')':
                 depth -= 1
                 if not depth:
                     break
@@ -377,12 +641,11 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
                 body_ms = body_ms[:hm.start()] + ' ' * len(hm.group(0)) + body_ms[hm.end():]
 
         for raw_code, code, comment in split_top_level(body_mc, body_ms, body_sc):
-            up = code.upper()
             if _TABLE_LEVEL.match(code):
-                pk = re.search(r'PRIMARY\s+KEY\s*\(([^)]+)\)', code, re.I)
+                pk = re.search(r'PRIMARY\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
                 if pk:
                     t['pk'] = _names(pk.group(1))
-                fk = re.search(r'FOREIGN\s+KEY\s*\(([^)]+)\)', code, re.I)
+                fk = re.search(r'FOREIGN\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
                 ref = _refs(code)
                 if fk and ref:
                     rt = _ref_key(ref, sch, dup)
@@ -392,7 +655,7 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
                             'column': c, 'ref_table': rt,
                             'ref_column': ref[2][idx] if idx < len(ref[2]) else ref[2][-1],
                             'on_delete': ref[3]})
-                uq = re.match(r'(?:CONSTRAINT\s+' + _ID + r'\s+)?UNIQUE\s*\(([^)]+)\)',
+                uq = re.match(r'(?:CONSTRAINT\s+' + _ID + r'\s+)?UNIQUE\s*\(' + _INPAREN + r'\)',
                               code, re.I)
                 if uq:
                     t['uniques'].append(_names(uq.group(1)))
@@ -402,42 +665,12 @@ def parse_create(sql: str, src: str, tables: dict, dup: set):
             if not col:
                 continue
             cname, rest = unq(col.group(1)), col.group(2).strip()
-            # 구조 판정(NOT NULL·PRIMARY KEY·REFERENCES)은 반드시 가린 사본에서 한다.
-            # 원본에서 보면 DEFAULT 'PRIMARY KEY 설명' 같은 값이 진짜 제약이 된다.
-            # 앞서 만든 사본은 공백을 접으면서 원본과 길이가 어긋났으므로, 이 선언부
-            # 하나만 다시 가린다 — 같은 길이라야 값을 위치로 꺼낼 수 있다.
-            rest_sc = mask(rest)[2]
-
-            up_rest = rest_sc.upper()
-            # 값의 **경계** 는 가린 사본에서 찾고 **값** 은 원본에서 꺼낸다.
-            # 가린 사본에서 값까지 읽으면 문자열이 공백이라 빈 값이 되고,
-            # 원본에서 경계를 찾으면 DEFAULT 'see REFERENCES users' 가 `'see` 로 잘린다.
-            dflt = None
-            dm = re.search(r'\bDEFAULT\b', rest_sc, re.I)
-            if dm:
-                tail = rest_sc[dm.end():]
-                stop = re.search(r'\s+(?:NOT\s+NULL|NULL|PRIMARY|UNIQUE|REFERENCES|'
-                                 r'CHECK|GENERATED|COLLATE)\b', tail, re.I)
-                dflt = rest[dm.end():dm.end() + (stop.start() if stop else len(tail))]
-            t['columns'].append({
-                'name': cname,
-                'type': _type(rest),
-                # IDENTITY·serial 은 NOT NULL 을 적지 않아도 NOT NULL 이다
-                # 낱말로 본다. 부분 문자열로 재면 REFERENCES serial_numbers(id) 가
-                # 그 컬럼을 identity·NOT NULL 로 만든다.
-                'not_null': bool(re.search(r'\bNOT\s+NULL\b|\bIDENTITY\b|\w*SERIAL\b(?!\s*_)',
-                                           _decl(rest_sc), re.I)),
-                'default': dflt.strip().rstrip(',') if dflt else '',
-                'identity': bool(re.search(r'\bIDENTITY\b|\b(?:BIG|SMALL)?SERIAL\b',
-                                           _decl(rest_sc), re.I)),
-                'comment': comment,
-                'added': False,
-            })
-            if re.search(r'\bPRIMARY\s+KEY\b', rest_sc, re.I):
+            c, is_pk, is_uq, ref = _column(cname, rest, comment, False)
+            t['columns'].append(c)
+            if is_pk:
                 t['pk'].append(cname)
-            if re.search(r'\bUNIQUE\b', rest_sc, re.I):
+            if is_uq:
                 t['uniques'].append([cname])
-            ref = _refs(rest_sc)
             if ref:
                 t['fks'].append({'column': cname, 'ref_table': _ref_key(ref, sch, dup),
                                  'ref_column': ref[2][0], 'on_delete': ref[3]})
@@ -451,7 +684,13 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
     DDL 에서는 PK 와 FK 가 하나도 잡히지 않았다.
     """
     ms, mc, msc = mask(sql)
-    head = (r'ALTER\s+TABLE\s+(?:ONLY\s+)?(?:' + _IDC + r'\s*\.\s*)?' + _IDC + r'\s+')
+    # `IF EXISTS` 는 손으로 쓰는 마이그레이션에 흔한데, 이 자리에서 넘지 못하면
+    # 문 전체가 **아무 말 없이** 버려졌다 — `ALTER TABLE IF EXISTS t ADD COLUMN …`
+    # 뒤에 `ADD` 가 바로 오지 않아 어느 루프에도 안 걸린다. 문법 순서는 Postgres 그대로
+    # `ALTER TABLE [IF EXISTS] [ONLY] 이름` 이다. 네 루프가 이 조각을 함께 쓰므로
+    # ADD COLUMN·ADD CONSTRAINT·ALTER COLUMN 이 한 자리에서 같이 산다.
+    head = (r'ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?'
+            r'(?:' + _IDC + r'\s*\.\s*)?' + _IDC + r'\s+')
 
     def find(sch, name):
         return _find(tables, sch, name)
@@ -472,21 +711,55 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
         for raw_code, code, comment in split_top_level(mc[m.start(3):m.end(3)],
                                                        ms[m.start(3):m.end(3)],
                                                        msc[m.start(3):m.end(3)]):
-            am = re.match(r'ADD\s+COLUMN\s+' + _IDC + r'\s+(.+)$', raw_code, re.I)
+            # `IF NOT EXISTS` 를 안 넘던 때는 그 세 낱말의 첫 마디가 컬럼 이름이 됐다 —
+            # `ADD COLUMN IF NOT EXISTS memo text` 가 이름 `IF`, 타입 `NOT` 인 컬럼으로
+            # 정의서에 실리고 memo 는 사라졌다. 경고는 없었다. `IF` 뒤에 반드시 공백을
+            # 요구하므로 `if_flag` 같은 진짜 컬럼 이름은 그대로 이름으로 남는다.
+            am = re.match(r'ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?' + _IDC + r'\s+(.+)$',
+                          raw_code, re.I)
             if not am:
                 continue
-            rest = am.group(2).strip()
-            t['columns'].append({
-                'name': unq(am.group(1)),
-                'type': _type(rest),
-                'not_null': 'NOT NULL' in rest.upper(),
-                'default': (re.search(r'DEFAULT\s+(.+?)(?=\s+(?:NOT\s+NULL|NULL)\b|$)',
-                                      rest, re.I).group(1).strip().rstrip(',')
-                            if re.search(r'DEFAULT\s+', rest, re.I) else ''),
-                'identity': 'IDENTITY' in rest.upper(),
-                'comment': comment,
-                'added': True,
-            })
+            cname, rest = unq(am.group(1)), am.group(2).strip()
+            # ── 이미 있는 컬럼이면 이 문은 통째로 없는 셈 친다 ──────────────────
+            # 한 테이블에 같은 이름의 컬럼이 둘일 수 있는 최종 상태는 **없다**. 그런데
+            # 그냥 append 하던 동안 정의서에는 같은 컬럼이 두 줄로 실렸고, 인라인
+            # UNIQUE·REFERENCES 도 두 벌이 됐다 (PK 만 아래에서 막고 있었다 — 같은
+            # 버그를 반만 고친 자리였다).
+            #
+            # 어느 쪽을 남기는가: **먼저 적힌 것**이다. `IF NOT EXISTS` 가 붙었으면
+            # Postgres 는 이미 있는 컬럼을 그대로 두고 그 문 전체를 건너뛴다(NOTICE
+            # 한 줄). 뒤 문의 UNIQUE·REFERENCES 도 **안 붙는다.** 그러니 컬럼만 빼고
+            # 제약은 받는 식으로 반만 건너뛰면 DB 와 어긋난다 — 문 하나를 통째로 건너뛴다.
+            #
+            # `IF NOT EXISTS` 가 없으면 Postgres 는 에러다. 그 DDL 로 도달할 수 있는
+            # 상태가 아예 없으므로 '옳은 그림' 도 없는데, 그렇다고 같은 컬럼을 두 줄로
+            # 싣는 것은 어느 쪽으로도 답이 아니다. 두 경우를 갈라 두면 갈래마다 다른
+            # 실수가 생기므로 규칙은 하나로 둔다: **먼저 적힌 것이 이긴다.** 이러면
+            # 컬럼 차례도 안 흔들린다(뒤 문이 순서를 바꾸지 못한다).
+            # 말없이 건너뛰는 것이 마음에 걸리지만, 이 뜻의 카탈로그 키가 아직 없다.
+            if any(c['name'] == cname for c in t['columns']):
+                continue
+            # 판정은 parse_create 와 **같은 함수** 로 한다 (_column 의 주석 참고).
+            c, is_pk, is_uq, ref = _column(cname, rest, comment, True)
+            t['columns'].append(c)
+            # 인라인 PK·UNIQUE·REFERENCES 도 CREATE 쪽과 같게 읽는다. 같은 문법을
+            # 어느 문에 적었느냐로 결과가 달라지면, 컬럼을 나중에 붙인 테이블만
+            # 정의서의 PK·UNIQUE 칸과 관계선이 조용히 빈다.
+            if is_pk and cname not in t['pk']:
+                # CREATE 가 이미 적어 둔 PK 를 두 번 세지 않는다 — 정의서의 PK 칸이
+                # 같은 컬럼을 두 번 가리키고, 아래 not_null 채우기가 헛돈다.
+                t['pk'].append(cname)
+            if is_uq and [cname] not in t['uniques']:
+                # PK 와 **같은 규칙**이다. 위 컬럼 중복 막기가 걸리는 길은 이미 막지만,
+                # `CREATE TABLE t (code text UNIQUE)` 에 `ALTER … ADD COLUMN` 이 아니라
+                # 다른 경로로 같은 한 컬럼 UNIQUE 가 또 들어오는 길이 남는다. 한쪽만
+                # 막아 두면 다음 사람이 또 반만 고친다.
+                t['uniques'].append([cname])
+            if ref:
+                t['fks'].append({
+                    'column': cname,
+                    'ref_table': _ref_key(ref, t.get('schema') or 'public', dup),
+                    'ref_column': ref[2][0], 'on_delete': ref[3]})
 
     for m in re.finditer(head + r'ADD\s+CONSTRAINT\s+' + _ID + r'\s+(.*?);',
                          msc, re.S | re.I):
@@ -494,10 +767,10 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
         if t is None:
             continue
         code = ' '.join(sql[m.start(3):m.end(3)].split())
-        pk = re.search(r'PRIMARY\s+KEY\s*\(([^)]+)\)', code, re.I)
+        pk = re.search(r'PRIMARY\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
         if pk:
             t['pk'] = _names(pk.group(1))
-        fk = re.search(r'FOREIGN\s+KEY\s*\(([^)]+)\)', code, re.I)
+        fk = re.search(r'FOREIGN\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
         ref = _refs(code)
         if fk and ref:
             rt = _ref_key(ref, t.get('schema', 'public'), dup)
@@ -507,7 +780,7 @@ def parse_alter(sql: str, src: str, tables: dict, dup: set):
                     'column': c, 'ref_table': rt,
                     'ref_column': ref[2][idx] if idx < len(ref[2]) else ref[2][-1],
                     'on_delete': ref[3]})
-        uq = re.match(r'UNIQUE\s*\(([^)]+)\)', code, re.I)
+        uq = re.match(r'UNIQUE\s*\(' + _INPAREN + r'\)', code, re.I)
         if uq:
             t['uniques'].append(_names(uq.group(1)))
 
@@ -583,24 +856,40 @@ def parse_unique(sql: str, tables: dict):
     for m in re.finditer(r'CREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?'
                          r'(?:IF\s+NOT\s+EXISTS\s+)?' + _ID + r'\s+ON\s+(?:ONLY\s+)?'
                          r'(?:' + _IDC + r'\s*\.\s*)?' + _IDC +
-                         r'(?:\s+USING\s+\w+)?\s*\(([^)]+)\)', msc, re.I):
+                         # 이름 목록은 `_INPAREN` 한 벌로 읽는다. `lower(email)` 같은
+                         # 함수 인덱스는 예전처럼 여는 괄호가 남아 아래 판정이 걸러 낸다.
+                         r'(?:\s+USING\s+\w+)?\s*\(' + _INPAREN + r'\)', msc, re.I):
         t = _find(tables, unq(m.group(1)), unq(m.group(2)))
         cols = _names(m.group(3))
         if t is not None and not any('(' in c for c in cols):
             t['uniques'].append(cols)      # 함수 인덱스(lower(email))는 컬럼 목록이 아니다
 
 
-def _rows(query, n):
-    """조회 결과를 n개 필드로 맞춰 돌려준다 (introspect.rows() 와 같은 규칙).
+def _rows(what, query, n, core=True):
+    """조회 하나를 읽어 n개 필드짜리 행 목록으로 (introspect.rows() 와 같은 규칙).
 
-    행은 개행이 아니라 RS 로 가른다. 개행으로 가르면 개행이 든 값 하나가 — 컬럼
-    이름에도 들어갈 수 있다 — 행을 둘로 쪼개고, 4-튜플 풀기가 ValueError 로 죽었다.
-    필드도 모자라면 채운다. 파서가 DB 값 하나에 통째로 멈춰서는 안 된다.
+    예전엔 `config.psql()` 로 받아 구분자로 행을 갈랐다. 두 가지가 함께 틀렸다.
+      ① psql() 은 returncode 를 버리고 stdout 만 준다. 조회가 중간에 죽어도(문
+         타임아웃·서버 재기동) 파서는 **반쯤 읽은 결과** 로 정의서를 만들었다 —
+         컬럼 몇 개가 통째로 빠진 문서가 완성본처럼, exit 0 으로 나왔다.
+         introspect 는 같은 자리를 psql_rows() → QueryFailed 로 이미 막고 있었다.
+      ② 어떤 바이트를 행 구분자로 골라도 값이 그 바이트를 품을 수 있다. 개행을
+         피해 RS 로 옮겼지만, 값 하나에 \\x1e 가 들어 있으면 그 행이 둘로 쪼개져
+         유령 컬럼이 생기는 것은 그대로였다. psql_rows 는 행마다 JSON 한 줄로 받아
+         (제어문자는 \\uXXXX 로 적힌다) 구분자 문제 자체를 없앤다.
+
+    core 는 introspect.rows() 와 같은 뜻이다. 기존 테이블의 실제 컬럼은 문서의
+    본문이라 못 읽으면 멈춘다 — 반쯤 읽은 DB 로 만든 정의서는 완성본처럼 보이고
+    완성본이 아니다. 선택 기능인 읽기 전용 원천(ERD_REF_SCHEMA)은 없어도 나머지
+    그림이 나오므로, 무엇을 못 읽었는지 이름을 대고 넘어간다.
     """
-    for line in psql(query, rs=RS).removesuffix('\n').split(RS):
-        if not line.strip():
-            continue
-        yield (line.split(SEP) + [''] * n)[:n]
+    try:
+        return psql_rows(query, n)
+    except QueryFailed as e:
+        if core:
+            raise SystemExit(T('err.query_failed', what=what, err=e))
+        print(T('log.query_incomplete', list=what))
+        return []
 
 
 REF_SCHEMA = os.environ.get('ERD_REF_SCHEMA', '').strip()
@@ -638,7 +927,10 @@ def fetch_ref(tables):
     where c.table_schema={_lit(REF_SCHEMA)} and c.table_name in ({','.join(_lit(t) for t in tables)})
     order by c.table_name, c.ordinal_position"""
     out = {}
-    for tn, cn, ty, nul in _rows(q, 4):
+    # 선택 기능이다 — 못 읽었다고 DDL 파싱 전체를 버리지 않는다. 대신 이름을 댄다.
+    # 대는 이름은 **그 테이블들** 이다. log.query_incomplete 의 {list} 는 '문서에서
+    # 딱 그만큼이 빠진다' 는 문장의 목적어라, 변수 이름이 아니라 빠진 것이 와야 한다.
+    for tn, cn, ty, nul in _rows(', '.join(tables[:6]), q, 4, core=False):
         out.setdefault(tn, {
             'name': tn, 'origin': 'ref', 'schema': REF_SCHEMA, 'src_file': T('erd.readonly_src', schema=REF_SCHEMA),
             'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
@@ -647,10 +939,35 @@ def fetch_ref(tables):
     return out
 
 
-def fetch_existing(names):
-    """이미 DB 에 존재하는 테이블의 실제 컬럼을 가져온다."""
+def fetch_existing(tables, names):
+    """이미 DB 에 존재하는 테이블의 실제 컬럼을 가져온다 → {테이블 **키**: [컬럼…]}.
+
+    두 가지가 겹쳐 이 조회는 조용히 빗나가고 있었다.
+
+    ① `where c.table_schema='public'` 이 박혀 있어 ERD_SCHEMAS(config.SCHEMAS)를
+       무시했다. `ERD_SCHEMAS=shop` 으로 돌려도 public 만 물으니 shop 의 기존
+       테이블은 **영영** 컬럼을 못 채우는데, 화면에는 한 글자도 안 나왔다 — 이름만
+       있는 빈 상자가 '컬럼이 없는 테이블' 인 양 정의서에 실렸다.
+    ② `names` 는 `tables` 의 **키** 다. 이름이 두 스키마에 걸치면 키가 `shop.orders`
+       인데(_ref_key·parse_create 의 규칙) 그것을 그대로 `c.table_name in (…)` 에
+       넣었다. 그런 이름의 테이블은 DB 에 없으므로 그 테이블은 언제나 0 건이었다.
+       조회는 **실제 이름** 으로 하고, 결과를 다시 키에 맞춰 돌려준다.
+
+    스키마 후보는 '그 테이블이 스스로 적은 스키마' 를 먼저, 그다음 ERD_SCHEMAS 순으로
+    본다. DDL 이 스키마를 안 적으면 parse_create 가 'public' 으로 채우는데, 그것은
+    사용자가 고른 스키마가 아니라 파서의 기본값일 뿐이라 그 하나만 믿으면 ① 이 그대로
+    돌아온다. 끝내 못 찾은 테이블은 이름을 대고 말한다.
+    """
+    if not names:
+        return {}
+    cand = {}                       # 키 → [후보 스키마…] (제 것 먼저, 그다음 ERD_SCHEMAS)
+    for k in names:
+        sch = tables[k].get('schema') or 'public'
+        cand[k] = [sch] + [s for s in config.SCHEMAS if s != sch]
+    schemas = sorted({s for v in cand.values() for s in v})
+    real = sorted({tables[k]['name'] for k in names})
     q = f"""
-    select c.table_name, c.column_name,
+    select c.table_schema, c.table_name, c.column_name,
       case when c.character_maximum_length is not null
              then replace(c.data_type,'character varying','varchar')||'('||c.character_maximum_length||')'
            when c.data_type='numeric' and c.numeric_precision is not null
@@ -659,18 +976,39 @@ def fetch_existing(names):
            else c.data_type end,
       c.is_nullable
     from information_schema.columns c
-    where c.table_schema='public' and c.table_name in ({','.join(_lit(n) for n in names)})
-    order by c.table_name, c.ordinal_position"""
-    out = {}
-    for tn, cn, ty, nul in _rows(q, 4):
-        out.setdefault(tn, []).append(
+    where c.table_schema in ({','.join(_lit(s) for s in schemas)})
+      and c.table_name in ({','.join(_lit(n) for n in real)})
+    order by c.table_schema, c.table_name, c.ordinal_position"""
+    got = {}
+    for sn, tn, cn, ty, nul in _rows('columns', q, 5):
+        got.setdefault((sn, tn), []).append(
             {'name': cn, 'type': ty, 'not_null': nul == 'NO', 'default': '',
              'identity': False, 'comment': '', 'added': False})
+    out, miss = {}, []
+    for k in names:
+        name = tables[k]['name']
+        for s in cand[k]:
+            if (s, name) in got:
+                out[k] = got[(s, name)]
+                break
+        else:
+            miss.append(k)
+    if miss:
+        # log.query_incomplete 이 아니다 — 그 문구의 앞문장('읽지 못했다')이 여기서는
+        # **거짓**이다. 조회는 rc 0 으로 끝났고, 그 테이블이 우리가 뒤진 스키마에
+        # 없었을 뿐이다. 없는 DB 오류를 쫓게 만드느니 일어난 일을 그대로 적는다:
+        # 어느 스키마를 뒤졌는지 대고, 그 테이블이 이름만 있는 상자가 된다고 말한다.
+        # (_rows() 의 non-core 실패는 정말로 '읽지 못한' 것이라 그쪽은 그대로 둔다.)
+        print(T('log.ddl_not_in_db', n=len(miss), schemas=', '.join(schemas),
+                list=', '.join(miss[:6]) + (' …' if len(miss) > 6 else '')))
     return out
 
 
 def main():
-    files = [(f, (config.SQL_DIR / f).read_text()) for f in sql_files()]
+    # encoding 을 안 주면 로케일을 따른다. ascii 로케일(LC_ALL=C)에서 한글이 든 DDL
+    # 하나에 UnicodeDecodeError 로 죽었다 — 같은 저장소의 build_html.py·svg_canvas.py
+    # 는 이미 utf-8 을 못박아 준다. 파일 형식이 로케일에 따라 달라질 리 없다.
+    files = [(f, (config.SQL_DIR / f).read_text(encoding='utf-8')) for f in sql_files()]
 
     # 이름이 두 스키마에 걸치면 키에 스키마를 붙인다 (introspect 와 같은 규칙).
     # 예전엔 shop.orders 와 mart.orders 가 한 테이블로 합쳐져 컬럼이 뒤섞였다.
@@ -700,7 +1038,17 @@ def main():
         for fk in t['fks']:
             rt = fk['ref_table']
             if rt not in tables:
-                tables[rt] = {'name': rt, 'origin': 'existing', 'src_file': '',
+                # 키(rt)는 _ref_key 가 만든 것이라 이름이 여러 스키마에 걸릴 때만
+                # `<스키마>.<이름>` 이다. 그것을 'name' 에 그대로 넣던 탓에
+                # `shop.orders` 라는 이름의 테이블이 그림에 실렸고, DB 에서 컬럼을
+                # 채울 때도 그 이름으로 물어 언제나 0 건이었다. 키와 이름은 다르다.
+                rsch, rname = 'public', rt
+                for n in dup:
+                    if rt.endswith('.' + n):
+                        rsch, rname = rt[:-len(n) - 1], n
+                        break
+                tables[rt] = {'name': rname, 'origin': 'existing', 'src_file': '',
+                              'schema': rsch,
                               'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': ''}
                 existing_names.append(rt)
     # DDL 만으로 그리는 프로젝트도 있다. 채울 것이 없으면 DB 를 찾지 않는다 —
@@ -719,7 +1067,7 @@ def main():
     has_db = config_has_db() if names else False
     if names and not has_db:
         print(T('log.ddl_no_db', n=len(names), list=', '.join(names[:6])))
-    db = fetch_existing(names) if has_db else {}
+    db = fetch_existing(tables, names) if has_db else {}
     for n in existing_names:
         if n not in db:
             continue
@@ -770,7 +1118,10 @@ def main():
 
     out = (config.SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL
            else config.SCHEMA_JSON)
-    Path(out).write_text(json.dumps(tables, ensure_ascii=False, indent=2))
+    # ensure_ascii=False 라 한글이 그대로 나간다 — encoding 을 안 주면 ascii 로케일
+    # (LC_ALL=C)에서 UnicodeEncodeError 로 죽는다. 읽는 쪽도 utf-8 로 못박혀 있다.
+    Path(out).write_text(json.dumps(tables, ensure_ascii=False, indent=2),
+                         encoding='utf-8')
     print(T('log.ddl_parsed', n=len(tables), path=out))
     for n, t in sorted(tables.items(), key=lambda x: (x[1]['origin'], x[0])):
         added = sum(1 for c in t['columns'] if c['added'])

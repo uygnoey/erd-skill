@@ -56,7 +56,10 @@ def parse_orm():
         return out
     for path in config.MODEL_DIR.glob('*.py'):
         table, pending = None, []
-        for raw in path.read_text().split('\n'):
+        # 인코딩을 안 주면 로케일이 정한다 — ascii 로케일(LC_ALL=C)에서 한글 주석이
+        # 든 모델 파일이 UnicodeDecodeError 로 죽는다. 주석을 읽으러 온 자리가
+        # 주석 때문에 죽는 셈이다.
+        for raw in path.read_text(encoding='utf-8').split('\n'):
             line = raw.strip()
             tm = re.match(r'__tablename__\s*=\s*["\'](\w+)["\']', line)
             if tm:
@@ -100,9 +103,23 @@ def parse_doc_html():
         as_file(path, 'ERD_DOC_HTML')
         html = path.read_text(encoding='utf-8', errors='replace')
         n0 = len(out)
-        # <h4 …>테이블명<span …> … <table>…</table>
-        for m in re.finditer(r'<h4[^>]*>(.*?)</h4>(.*?)</table>', html, re.S):
-            head, block = m.group(1), m.group(2)
+        # <h4 …>테이블명<span …></h4> … <table>…</table>  (다음 제목 전까지가 한 몫)
+        #
+        # 예전 정규식은 끝을 `</table>` 로 잡았다(`<h4…>(.*?)</h4>(.*?)</table>`).
+        # 그래서 표가 없는 h4 를 만나면 그 매치가 **다음 h4 의 표까지** 한 덩어리로
+        # 먹고, finditer 는 먹은 자리를 건너뛰므로 그 다음 h4 는 아예 매치되지
+        # 않았다 — 그 테이블의 설명이 통째로, 아무 말 없이 유실됐다. 사람이 다듬어
+        # 둔 설명을 지키자는 기능이 바로 그 설명을 잃는 셈이었다.
+        # 그래서 경계를 **다음 제목(h1~h4) 앞**으로 잡아 h4 단위로 자르고, 그 몫
+        # 안에서 첫 표만 읽는다. 이 스킬이 내는 HTML(h4 → div 몇 개 → table)도
+        # 흔한 스키마 정의서도 그대로 걸린다.
+        for m in re.finditer(r'<h4[^>]*>(.*?)</h4>(.*?)(?=<h[1-4][^>]*>|\Z)',
+                             html, re.S):
+            head, sect = m.group(1), m.group(2)
+            tbl = re.search(r'<table[^>]*>(.*?)</table>', sect, re.S)
+            if tbl is None:          # 표가 없는 h4 는 여기서만 넘어간다 — 다음 h4 는 산다
+                continue
+            block = tbl.group(1)
             tname = re.sub(r'<[^>]+>.*', '', head)          # 배지 앞의 순수 텍스트
             tname = re.sub(r'<[^>]+>', '', tname).strip()
             if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]*', tname):
@@ -133,10 +150,16 @@ def ambiguous_names(schema):
 
 
 def main():
-    schema = json.loads(config.SCHEMA_JSON.read_text())
+    # 인코딩을 안 주면 로케일이 정한다 — ascii 로케일에서 한글 설명이 든 schema.json
+    # 을 읽다 UnicodeDecodeError 로 죽는다. 아래 write_text 와 짝을 맞춘다.
+    schema = json.loads(config.SCHEMA_JSON.read_text(encoding='utf-8'))
     orm = parse_orm()
     doc = parse_doc_html()
-    filled = {'ddl': 0, 'doc': 0, 'orm': 0, 'manual': 0, 'common': 0, 'none': 0}
+    # 'edit' 는 사람이 schema.json 을 손으로 고쳐 채운 설명이다 — DB 코멘트도(ddl),
+    # 수기 사전도(manual) 아니라 둘 중 어디에 세도 통계가 거짓말이 된다. 이 이름은
+    # 카탈로그를 안 거치는 내부 이름이라 여기서 하나 늘리는 것으로 끝난다.
+    filled = {'ddl': 0, 'doc': 0, 'orm': 0, 'manual': 0, 'edit': 0, 'common': 0,
+              'none': 0}
     dup = ambiguous_names(schema)
     has_col = {k: {c['name'] for c in t['columns']} for k, t in schema.items()}
     vague = {}          # 이름이 겹쳐 못 쓴 홑이름 키 {키: [정식 키…]}
@@ -179,6 +202,12 @@ def main():
                 # 그걸 전부 'DB 코멘트' 로 세면 통계가 거짓말이 된다 — 앞서 적어 둔
                 # 출처가 있으면 그대로 물려받는다.
                 src = c.get('desc_src') or 'ddl'
+                # 앞선 실행이 '설명 없음'(none)이라 적어 둔 자리에 설명이 있으면,
+                # 그 사이에 사람이 schema.json 을 손으로 채운 것이다. `or` 로는 안
+                # 걸러진다 — 'none' 은 빈 문자열이 아니라 truthy 다. 그대로 물려받으면
+                # 설명이 **있는** 컬럼이 계속 '아직 설명 없는 컬럼' 목록에 오른다.
+                if src == 'none':
+                    src = 'edit'
                 filled[src if src in filled else 'ddl'] += 1
             elif (prev := find(doc, tname, base, c['name'])) is not None:
                 c['comment'], src = clean(prev), 'doc'   # 이전 판 문서에서 물려받음
@@ -196,9 +225,14 @@ def main():
 
     # 내용이 그대로면 파일을 다시 쓰지 않는다. 시각만 새로 찍히면 멀쩡한 ERD 가
     # 낡은 것으로 보여(문서 빌더가 시각으로 판별한다) 헛되이 다시 그리게 된다.
+    # 읽기와 쓰기가 **같은** 인코딩이어야 이 비교가 뜻을 갖는다 — 한쪽만 로케일에
+    # 맡기면 같은 내용을 다르다고 읽어 파일을 헛되이 다시 쓰고, mtime 이 새로 찍혀
+    # 멀쩡한 ERD 가 낡은 것이 된다(build_erd.require_fresh 는 mtime 으로 판정한다).
+    # 위 read_text 와 함께 utf-8 로 못 박아 그 짝을 로케일에서 떼어 놓는다.
     text = json.dumps(schema, ensure_ascii=False, indent=2)
-    if not config.SCHEMA_JSON.exists() or config.SCHEMA_JSON.read_text() != text:
-        config.SCHEMA_JSON.write_text(text)
+    if (not config.SCHEMA_JSON.exists()
+            or config.SCHEMA_JSON.read_text(encoding='utf-8') != text):
+        config.SCHEMA_JSON.write_text(text, encoding='utf-8')
     print(T('log.by_source'), filled)
     # 조용히 버리면 '왜 안 들어가지' 로 끝난다 — 대신 쓸 정식 키를 그대로 보여 준다.
     if vague:

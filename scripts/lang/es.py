@@ -209,6 +209,12 @@ M = {
     'err.spec_layer': 'la capa {key} está mal formada: {value}\n'
                       '  se espera [relleno, cabecera, borde, etiqueta] con colores #rrggbb',
     'err.spec_json': '{path} no es JSON válido: {err}',
+    'err.fig_unregistered': 'el diagrama {stem} no tiene número de figura — fig_numbers() de '
+                            'build_erd.py no lo incluye.\n'
+                            '  Cada diagrama que dibuja este script toma su número de esa lista, y ese '
+                            'número se dibuja dentro de la propia imagen, no solo en el pie — un '
+                            'diagrama sin registrar saldría con un número distinto al de su pie.\n'
+                            '  Registrados: {known}',
     'err.stale_figs': '{n} diagramas son más antiguos que {path}: {list}\n'
                       '  Representan un esquema anterior — el documento diría una cosa '
                       'en las tablas y otra en las figuras.\n'
@@ -238,6 +244,15 @@ M = {
     'log.query_fail': '  [aviso] falló la consulta a la base de datos: {err}',
     'log.query_incomplete': '  [aviso] no se pudo leer: {list} — al documento le faltan '
                             'exactamente esas partes',
+    'log.psql_undecodable': '  [aviso] la respuesta de la base de datos no era UTF-8 válido — '
+                            'esos caracteres quedan como � en el documento.\n'
+                            '          PGCLIENTENCODING={enc} se define para el psql que lanzamos, '
+                            'pero un envoltorio (docker, ssh) no lo cruza.\n'
+                            '          Póngalo dentro del propio comando ERD_PSQL: '
+                            'docker exec -e PGCLIENTENCODING={enc} … / '
+                            'ssh host PGCLIENTENCODING={enc} psql …',
+    'log.ddl_not_in_db': '  [aviso] {n} tablas no se encontraron en los esquemas consultados '
+                         '({schemas}) — se dibujan como cajas con solo el nombre: {list}',
     'log.spec_empty': '  [aviso] áreas sin ninguna tabla utilizable, omitidas: {list}',
     'log.spec_dup': '  [aviso] {n} tablas aparecen en más de un área — se quedan en la primera: {list}',
     'log.spec_missing': '  [aviso] el spec nombra {n} tablas que no están en el esquema: {list}',
@@ -261,6 +276,7 @@ M = {
     'log.desc_rest': '  → complete el resto con merge_desc.py',
     'log.dup_names': '  {n} nombres de tabla existen en más de un esquema — la clave pasa a ser esquema.tabla: {list}',
     'log.exclude_rule': '  regla de exclusión: {rule}',
+    'log.exclude_dropped': '  la regla de exclusión quitó {n} tablas: {list}',
     'log.fk_dropped': '  FK descartadas por apuntar fuera del objetivo: {n}',
     'log.per_schema': '  [{schema}] {n}',
     'log.doc_missing': '  [aviso] no se encontró el documento ERD_DOC_HTML: {path}',

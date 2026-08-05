@@ -22,7 +22,8 @@ import re
 from html import escape
 from pathlib import Path
 
-from build_erd import doc_tables, doc_text, meta_cells, meta_pairs, require_fresh
+from build_erd import (doc_tables, doc_text, fig_caption, meta_cells,
+                       meta_pairs, require_fresh)
 # 경로를 받는 환경변수는 전부 한 규칙을 쓴다 — 디렉토리를 가리키면 그 변수의 이름을
 # 대고 멈춘다. 규칙은 config 에 **한 벌만** 둔다.
 #
@@ -41,6 +42,10 @@ import config
 from config import DOCNAME, as_file, env_flag
 from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, SCHEMA, SPEC, layer
 from i18n import LANG, t as T
+# 폰트 폴백 체인도 한 벌만 둔다. 예전엔 여기와 `svg_canvas.py` 가 같은 두 갈래
+# (`ja` 냐 아니냐)를 따로 적고 있었다 — 한쪽만 고치면 같은 문서의 그림과 본문이
+# 다른 폰트를 첫 후보로 삼는다. 규칙은 둘 중 얕은 쪽(i18n 만 의존한다)에 둔다.
+from svg_canvas import FONT_STACK
 
 DOC = SPEC.get('doc', {})
 TITLE = DOC.get('title', DOCNAME)
@@ -52,14 +57,6 @@ OPEN_ITEMS = [list(r) for r in DOC.get('open_items', [])]
 USE_SVG = env_flag('ERD_HTML_SVG', True)
 WANT_FULL = env_flag('ERD_HTML_FULL', True)
 SHOW_STATS = env_flag('ERD_HTML_STATS', False)
-
-# 한자를 쓰는 말이면 그 글리프를 가진 폰트를 앞에 세운다. 반대로 한국어 문서에서
-# 일본어 폰트가 앞서면 한자가 일본식 자형으로 나온다 — 언어에 따라 순서를 바꾼다.
-FONT_STACK = ("'Hiragino Sans','Yu Gothic','Noto Sans JP','Meiryo',"
-              "'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif"
-              if LANG == 'ja' else
-              "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',"
-              "'Helvetica Neue',sans-serif")
 
 CSS = """
 *{box-sizing:border-box}
@@ -141,11 +138,24 @@ JS = """
 
 
 # ── 도판 ────────────────────────────────────────────────────────────────────
+# **실은 그림의 수**다 — 번호가 아니다. 번호는 build_erd 의 한 벌(FIG_NO)에서 온다.
 _FIG_N = [0]
 
 
 def figure(stem, caption):
-    """out/<stem>.svg 를 본문에 인라인으로 박는다. 없으면 PNG, 그것도 없으면 건너뛴다."""
+    """out/<stem>.svg 를 본문에 인라인으로 박는다. 없으면 PNG, 그것도 없으면 건너뛴다.
+
+    번호는 여기서 세지 않는다. 그 번호는 그림 **안에도** 그려져 있고(build_erd 가
+    제목 줄에 박는다), 이 문서는 전체 상세도를 부록으로 미루므로 실은 차례대로 세면
+    두 번호가 갈렸다 — `ERD_HTML_SVG=0` 으로 PNG 를 박으면 "Figure 2" 라고 그려진
+    그림이 "Figure 5" 캡션 아래에 실렸다. 순서는 그대로 두고 번호만 한 벌에서 받는다.
+
+    받는 것도 `FIG_NO[stem]` 이 아니라 `fig_caption()` 이다. 표를 직접 인덱싱하던
+    동안, 등록 안 된 stem 은 build_erd 쪽에서는 `err.fig_unregistered` 로 사람 말에
+    걸리고 여기서는 날 KeyError 역추적으로 떨어졌다 — 같은 잘못에 두 가지 답이었다.
+    판정을 두 벌로 두면 다음 사람은 또 한쪽만 고친다. 이 저장소가 `doc_tables`·
+    `meta_cells` 를 한 자리에 둔 것과 같은 이유로, 그 판정도 한 자리에서만 산다.
+    """
     out = config.OUT
     svg, png = out / f'{stem}.svg', out / f'{stem}.png'
     if USE_SVG and svg.exists():
@@ -159,8 +169,12 @@ def figure(stem, caption):
     else:
         return ''
     _FIG_N[0] += 1
+    # 캡션을 빈 문자열로 주면 돌아오는 것은 `<번호 라벨> + ' ' + ''` 이다. 그 한 칸만
+    # 떼면 라벨이고, 등록 판정은 이미 그 안에서 지나갔다. 여기서 제목까지 함께
+    # 넘기지 않는 것은 HTML 은 라벨만 굵게 하고 제목은 따로 escape 하기 때문이다.
+    label = fig_caption(stem, '').removesuffix(' ')
     return (f'<div class="fig">{body}</div>'
-            f'<p class="figcap"><b>{escape(T("word.fig_no", n=_FIG_N[0]))}</b> {escape(caption)}'
+            f'<p class="figcap"><b>{escape(label)}</b> {escape(caption)}'
             f' <span class="small">{escape(T("html.fig_zoom"))}</span></p>')
 
 
@@ -267,12 +281,7 @@ def table_block(tkey):
              "<th style='width:32px'>#</th>"
              f"<th style='width:190px'>{escape(T('col.name'))}</th>"
              f"<th style='width:150px'>{escape(T('col.type'))}</th>"
-             # 이 칸만 카탈로그를 못 거친다 — 카탈로그에 `col.null` 이 없다.
-             # (16라운드 수정자 C 에게 넘긴 키다. 나머지 여섯 칸은 전부 `col.*` 을
-             #  쓴다.) 그때까지는 네 언어에서 같은 낱말이 나오고, 그 사실을
-             #  `html: every label … goes through the catalog` 케이스가 **이름을
-             #  대고** 봐준다 — 다른 낱말로 바뀌면 그 케이스가 빨강이다.
-             "<th style='width:64px'>Null</th>"
+             f"<th style='width:64px'>{escape(T('col.null'))}</th>"
              f"<th style='width:120px'>{escape(T('col.default'))}</th>"
              f"<th style='width:200px'>{escape(T('col.key'))}</th>"
              f"<th>{escape(T('col.desc'))}</th></tr></thead><tbody>")

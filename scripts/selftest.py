@@ -390,7 +390,7 @@ def db_fake(work, **env):
 def _(work):
     # hidden.owners 는 목록 밖 — 같은 이름의 s2.owners 로 갈아타면 없는 관계가 그려진다
     r = run('introspect.py', work, env=db_fake(work))
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     eq(s['claims']['fks'], [], 'an FK to hidden.owners must not become s2.owners')
     has(r.stdout, 'outside the target: 1', 'the dropped FK is counted, not silent')
 
@@ -398,7 +398,7 @@ def _(work):
 @case('introspect: a newline inside a default does not forge a row')
 def _(work):
     run('introspect.py', work, env=db_fake(work))
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     eq(sorted(s), ['claims', 'owners', 'tricky'], 'no ghost table from a split row')
     eq([c['default'] for c in s['tricky']['columns'] if c['name'] == 'note'],
        ["'line1\nline2'::text"], 'the default keeps both of its lines')
@@ -496,21 +496,33 @@ CREATE TABLE u (
        'and the same after a trailing comma')
 
 
-# 4개 필드로 풀던 자리들 — 값에 개행이 들어오면 그대로 ValueError 였다.
+# 구분자로 풀던 자리들 — 값에 개행이 들어오면 그대로 ValueError 였다.
 # 컬럼 이름에도 개행이 들어갈 수 있다: create table t ("a<개행>b" int) 는 합법이다.
+#
+# 17R. parse_ddl 이 config.psql()(구분자) → config.psql_rows()(행마다 JSON 한 줄)로
+# 옮겨서 이 가짜도 같이 옮긴다. selftest_history.py 의 _FAKE_PSQL_JSON 과 같은
+# 방식이다: psql_rows() 가 씌우는 `_r(c0, c1, …)` 별칭을 읽어 그 이름으로 JSON 한
+# 줄씩 낸다. **재는 것은 그대로다** — 값에 개행이 들어 있어도 파서가 안 죽는가.
+# JSON 이 개행을 \\n 으로 적으므로 한 행은 한 줄이고, 파서가 그것을 풀어 다시
+# 개행이 든 컬럼 이름으로 만들어야 아래 eq() 가 통과한다.
 _FAKE_PSQL_DDL = '''\
+import json
+import re
 import sys
 a = sys.argv
-sep = a[a.index('-F') + 1]
-rs = a[a.index('-R') + 1] if '-R' in a else chr(10)
 q = a[a.index('-c') + 1]
 NL = chr(10)
 if "'src'" in q:
+    # fetch_ref — 4필드 (table_name, column_name, type, is_nullable)
     rows = [['lookup', 'co' + NL + 'de', 'text', 'NO']]
 else:
-    rows = [['merchants', 'id', 'bigint', 'NO'],
-            ['merchants', 'me' + NL + 'mo', 'text', 'YES']]
-sys.stdout.write(rs.join(sep.join(r) for r in rows) + NL)
+    # fetch_existing — 5필드. 17R 에 맨 앞에 table_schema 가 붙었다: 조회가
+    # ERD_SCHEMAS 를 보게 되면서 어느 스키마에서 온 행인지 스스로 말해야 한다.
+    rows = [['public', 'merchants', 'id', 'bigint', 'NO'],
+            ['public', 'merchants', 'me' + NL + 'mo', 'text', 'YES']]
+m = re.search(r'_r\\(([^()]*)\\)\\s*$', q)
+names = [c.strip() for c in m.group(1).split(',')] if m else []
+sys.stdout.write(''.join(json.dumps(dict(zip(names, r))) + NL for r in rows))
 '''
 
 
@@ -528,11 +540,220 @@ def _(work):
         'CREATE TABLE orders (id bigint PRIMARY KEY, m bigint REFERENCES merchants(id));\n',
         encoding='utf-8')
     run('parse_ddl.py', work, env=env, sql_dir=d)      # 예전엔 여기서 ValueError 였다
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     eq([c['name'] for c in s['merchants']['columns']], ['id', 'me\nmo'],
        'fetch_existing keeps a column name that contains a newline')
     eq([c['name'] for c in s['lookup']['columns']], ['co\nde'],
        'and so does fetch_ref')
+
+
+# 17R. 위 가짜가 '값이 험한 서버' 라면, 아래 둘은 **죽는 서버** 와 **public 이 아닌
+# 스키마** 다. 둘 다 흉내 내는 것은 프로토콜(행마다 row_to_json 한 줄)과 where 절뿐이다
+# — 조회문의 낱말을 베껴 적으면 그 문장을 다듬을 때마다 거짓 빨강이 난다.
+_FAKE_PSQL_DIES = '''\
+import json
+import sys
+a = sys.argv
+q = a[a.index('-c') + 1]
+NL = chr(10)
+# 한 행을 흘리고 죽는다 — 문 타임아웃·서버 재기동이 실제로 남기는 모양이다.
+sys.stdout.write(json.dumps({'c0': 'public', 'c1': 'merchants', 'c2': 'id',
+                             'c3': 'bigint', 'c4': 'NO'}) + NL)
+sys.stderr.write('server closed the connection unexpectedly' + NL)
+sys.exit(1)
+'''
+
+_FAKE_PSQL_SCHEMAS = '''\
+import json
+import re
+import sys
+a = sys.argv
+q = a[a.index('-c') + 1]
+NL = chr(10)
+# 진짜 서버가 하는 것만 한다: where 절이 물은 스키마에 있는 행만 돌려준다.
+m = re.search(r"c[.]table_schema in [(]([^)]*)[)]", q)
+asked = re.findall(r"'([^']*)'", m.group(1)) if m else []
+rows = [r for r in [['shop', 'merchants', 'id', 'bigint', 'NO']] if r[0] in asked]
+cols = re.search(r'_r[(]([^()]*)[)]\\s*$', q)
+names = [c.strip() for c in cols.group(1).split(',')] if cols else []
+sys.stdout.write(''.join(json.dumps(dict(zip(names, r))) + NL for r in rows))
+'''
+
+
+def _ddl_with_db(work, fake_src, sql, env=None):
+    """가짜 psql 하나를 걸고 parse_ddl 을 돌린다 → 그 판의 결과."""
+    import shlex
+    work.mkdir(parents=True, exist_ok=True)
+    fake = work / 'fake_psql.py'
+    fake.write_text(fake_src, encoding='utf-8')
+    e = {'ERD_PSQL': f'{shlex.quote(sys.executable)} {shlex.quote(str(fake))}'}
+    e.update(env or {})
+    d = work / 'sql'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'a.sql').write_text(sql, encoding='utf-8')
+    return e, d
+
+
+@case('parse: a column query that dies halfway is refused, not written into schema.json')
+def _(work):
+    # `introspect: a half-read database is refused, not documented` 와 같은 규율을
+    # DDL 경로에도 건다. 여기가 `psql()`(returncode 를 버린다) 로 읽던 동안, 몇 행
+    # 흘리고 죽은 조회는 **컬럼 몇 개가 통째로 빠진 정의서**를 exit 0 으로 냈다.
+    e, d = _ddl_with_db(
+        work, _FAKE_PSQL_DIES,
+        'CREATE TABLE orders (id bigint PRIMARY KEY, m bigint REFERENCES merchants(id));\n')
+    r = run('parse_ddl.py', work, env=e, sql_dir=d, expect_ok=False)
+    if r.returncode == 0:
+        raise Fail(f'a column query that died partway must not end in exit 0\n{r.stdout}')
+    if (work / 'schema.json').exists():
+        raise Fail('a half-read column query left a schema.json behind — the next '
+                   'step cannot tell it from a complete one:\n'
+                   + (work / 'schema.json').read_text(encoding='utf-8')[:400])
+
+
+@case('parse: an existing table outside public still gets its real columns')
+def _(work):
+    # ERD_SCHEMAS 를 무시하고 public 만 묻던 동안, 다른 스키마의 기존 테이블은
+    # **영영** 컬럼을 못 채우면서 화면에는 한 글자도 안 나왔다 — 이름만 있는 빈
+    # 상자가 '컬럼이 없는 테이블' 인 양 정의서에 실렸다.
+    e, d = _ddl_with_db(
+        work, _FAKE_PSQL_SCHEMAS,
+        'CREATE TABLE orders (id bigint PRIMARY KEY, m bigint REFERENCES merchants(id));\n',
+        env={'ERD_SCHEMAS': 'shop'})
+    run('parse_ddl.py', work, env=e, sql_dir=d)
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    eq([c['name'] for c in s['merchants']['columns']], ['id'],
+       'a table that lives in a schema the user named must not stay an empty box')
+
+
+_FAKE_PSQL_UTF8 = '''\
+import json
+import re
+import sys
+a = sys.argv
+q = a[a.index('-c') + 1]
+NL = chr(10)
+# 서버는 제 로케일과 무관하게 PGCLIENTENCODING(=UTF8) 으로 내보낸다 — 진짜 psql 이
+# 하는 것이 그것이다. 그러니 바이트로 쓴다.
+rows = [['public', 'merchants', 'id', 'bigint', 'NO'],
+        ['public', 'merchants', chr(47700) + chr(47784), 'text', 'YES']]
+m = re.search(r'_r[(]([^()]*)[)]\\s*$', q)
+names = [c.strip() for c in m.group(1).split(',')] if m else []
+out = ''.join(json.dumps(dict(zip(names, r)), ensure_ascii=False) + NL for r in rows)
+sys.stdout.buffer.write(out.encode('utf-8'))
+'''
+
+ASCII_LOCALE = {'LC_ALL': 'C', 'LANG': 'C', 'PYTHONUTF8': '0',
+                'PYTHONCOERCECLOCALE': '0'}
+
+
+@case('parse: a value only utf-8 can carry comes back whole in an ascii locale')
+def _(work):
+    # 17R 뮤테이션. psql 파이프를 `text=True` 만으로 읽으면 파이썬은 **로케일 인코딩**
+    # 으로 푼다 — ascii 로케일(LC_ALL=C)에서는 한글 코멘트가 든 DB 가 그 자리에서
+    # `UnicodeDecodeError` 로 죽어, utf-8 로 못 박아 둔 schema.json 쓰기에 닿지도
+    # 못했다. 보내는 값(PGCLIENTENCODING)과 읽는 값은 같은 것이어야 한다.
+    e, d = _ddl_with_db(
+        work, _FAKE_PSQL_UTF8,
+        'CREATE TABLE orders (id bigint PRIMARY KEY, m bigint REFERENCES merchants(id));\n')
+    e.update(ASCII_LOCALE)
+    r = run('parse_ddl.py', work, env=e, sql_dir=d, expect_ok=False)
+    if r.returncode != 0:
+        raise Fail('the locale of the shell decided whether the database could be '
+                   f'read at all:\n{(r.stdout + r.stderr)[-500:]}')
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    eq([c['name'] for c in s['merchants']['columns']], ['id', '\uba54\ubaa8'],
+       'the value comes back the way the server sent it, whatever the shell speaks')
+
+
+@case('errors: a run in an ascii locale is not killed by its own output')
+def _(work):
+    # 17R 뮤테이션. 카탈로그의 문구 자체가 `→`·`·` 를 쓴다. ascii 콘솔에서 그 한
+    # 글자에 `UnicodeEncodeError` 가 나면 **일이 다 끝난 뒤 찍는 줄**에서 죽는다 —
+    # 파일은 나갔는데 종료코드는 1 이라, 사용자는 무엇이 실패한 것인지 알 수 없다.
+    # 재는 대상은 i18n 이 import 시점에 무르게 해 두는 콘솔이다.
+    d = work / 'sql'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'a.sql').write_text('CREATE TABLE t (id bigint PRIMARY KEY);\n',
+                             encoding='utf-8')
+    r = run('parse_ddl.py', work, env=dict(ASCII_LOCALE), sql_dir=d, expect_ok=False)
+    if r.returncode != 0:
+        raise Fail('a run in an ascii locale died printing its own summary:\n'
+                   + (r.stdout + r.stderr)[-500:])
+    if not (work / 'schema.json').exists():
+        raise Fail('nothing was written — this case would measure nothing')
+
+
+@case('parse: ADD COLUMN carries its inline UNIQUE the same way CREATE TABLE does')
+def _(work):
+    s = ddl(work, 'CREATE TABLE orders (id bigint PRIMARY KEY);\n'
+                  'ALTER TABLE orders ADD COLUMN code text UNIQUE;\n')
+    eq(s['orders']['uniques'], [['code']],
+       'a column added later keeps the UNIQUE written beside it')
+
+
+@case('parse: ADD COLUMN carries its inline REFERENCES the same way CREATE TABLE does')
+def _(work):
+    s = ddl(work, 'CREATE TABLE users (id bigint PRIMARY KEY);\n'
+                  'CREATE TABLE orders (id bigint PRIMARY KEY);\n'
+                  'ALTER TABLE orders ADD COLUMN owner_id bigint REFERENCES users(id);\n')
+    eq([(f['column'], f['ref_table']) for f in s['orders']['fks']],
+       [('owner_id', 'users')],
+       'a relationship written on a later-added column is still a relationship')
+
+
+@case('parse: ALTER TABLE IF EXISTS still adds its column')
+def _(work):
+    # 손으로 쓰는 마이그레이션에 흔한 형태다. 이 조각을 넘지 못하던 동안 문 전체가
+    # **아무 말 없이** 버려졌다 — 그 컬럼은 정의서에서 그냥 없었다.
+    s = ddl(work, 'CREATE TABLE orders (id bigint PRIMARY KEY);\n'
+                  'ALTER TABLE IF EXISTS orders ADD COLUMN memo text;\n')
+    eq([c['name'] for c in s['orders']['columns']], ['id', 'memo'],
+       'ALTER TABLE IF EXISTS is the same statement as ALTER TABLE')
+
+
+@case('parse: ADD COLUMN IF NOT EXISTS names the column, not "IF"')
+def _(work):
+    # 세 낱말을 안 넘던 때는 그 첫 마디가 컬럼 이름이 됐다 — 이름 `IF`, 타입 `NOT` 인
+    # 가짜 컬럼이 실리고 진짜 컬럼은 사라졌다. 경고는 없었다.
+    s = ddl(work, 'CREATE TABLE orders (id bigint PRIMARY KEY);\n'
+                  'ALTER TABLE orders ADD COLUMN IF NOT EXISTS memo text;\n')
+    eq([(c['name'], c['type']) for c in s['orders']['columns']],
+       [('id', 'bigint'), ('memo', 'text')],
+       'IF NOT EXISTS is not a column name')
+
+
+@case('parse: an array default keeps its commas and the constraint written after it')
+def _(work):
+    # 대괄호를 안 세던 때는 배열 리터럴 안의 콤마가 최상위로 보여 항목이 두 토막이
+    # 났다 — 기본값은 `ARRAY['a'` 로 잘리고 `NOT NULL` 은 뒷토막에 실려 사라졌다.
+    s = ddl(work, "CREATE TABLE t (\n"
+                  "  id bigint PRIMARY KEY,\n"
+                  "  tags text[] DEFAULT ARRAY['a','b'] NOT NULL\n"
+                  ");\n")
+    got = [(c['name'], c['default'], c['not_null']) for c in s['t']['columns']]
+    eq(got, [('id', '', True), ('tags', "ARRAY['a','b']", True)],
+       'an array literal is one value, and what follows it is still a constraint')
+
+
+@case('parse: a comma inside a quoted column name does not split the definition')
+def _(work):
+    # 자를 자리를 이름까지 덮은 사본에서 재지 않으면 이름 **안** 의 콤마가 구분자로
+    # 세어져 정의가 이름 한가운데서 쪼개진다.
+    s = ddl(work, 'CREATE TABLE t ("a,b" int, x text);\n')
+    eq([(c['name'], c['type']) for c in s['t']['columns']],
+       [('a,b', 'int'), ('x', 'text')],
+       'a quoted name is one name however many commas it holds')
+
+
+@case('parse: a quoted default that spells out NOT NULL keeps the whole value')
+def _(work):
+    # 경계를 원본에서 재면 `DEFAULT 'x, NOT NULL y'` 가 `'x,` 로 잘리고, 값을 가린
+    # 사본에서 꺼내면 통째로 빈 값이 된다. 값은 원본에서, 경계는 가린 사본에서다.
+    s = ddl(work, "CREATE TABLE t (id bigint, note text DEFAULT 'x, NOT NULL y');\n")
+    got = [(c['name'], c['default'], c['not_null']) for c in s['t']['columns']]
+    eq(got, [('id', '', False), ('note', "'x, NOT NULL y'", False)],
+       'a constraint spelled inside a string literal is part of the value')
 
 
 # ── 설명 ─────────────────────────────────────────────────────────────────────
@@ -540,7 +761,7 @@ def _(work):
 def _(work):
     write_schema(work, {'t': table('t', [col('id'), col('created_at', 'timestamptz')])})
     run('merge_desc.py', work, env={'ERD_LANG': 'ko'})
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     got = [c['comment'] for c in s['t']['columns'] if c['name'] == 'created_at']
     eq(got, ['생성 일시'], 'COMMON dictionary is localized')
 
@@ -565,9 +786,50 @@ def _(work):
         '<td></td></tr>', '<td>polished by hand</td></tr>', 1), encoding='utf-8')
     write_schema(work, {'t': table('t', [col('id'), col('x', 'text')])})
     run('merge_desc.py', work, env={'ERD_DOC_HTML': str(doc)})
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     joined = ' '.join(c['comment'] for c in s['t']['columns'])
     has(joined, 'polished by hand', 'a hand-edited description survives regeneration')
+
+
+@case('merge_desc: a heading with no table does not swallow the next table descriptions')
+def _(work):
+    # 한 몫의 끝을 `</table>` 로 잡던 동안, 표가 없는 h4 는 **다음 h4 의 표까지**
+    # 한 덩어리로 먹었고 finditer 는 먹은 자리를 건너뛰었다 — 그 테이블의 설명이
+    # 통째로, 아무 말 없이 유실됐다. 설명을 지키자는 기능이 설명을 잃는 셈이었다.
+    # 흔한 스키마 정의서에는 표 없는 제목(개요·변경 이력)이 실제로 섞여 있다.
+    work.mkdir(parents=True, exist_ok=True)
+    doc = work / 'prev.html'
+    doc.write_text(
+        '<html><body>\n'
+        '<h4>overview</h4><p>this heading carries no table at all</p>\n'
+        '<h4>beta</h4><table><tr><td>1</td><td>x</td><td>kept by hand</td></tr></table>\n'
+        '</body></html>\n', encoding='utf-8')
+    write_schema(work, {'beta': table('beta', [col('id'), col('x', 'text')])})
+    run('merge_desc.py', work, env={'ERD_DOC_HTML': str(doc)})
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    got = [c['comment'] for c in s['beta']['columns'] if c['name'] == 'x']
+    eq(got, ['kept by hand'],
+       'a table listed after a table-less heading keeps its descriptions')
+
+
+@case('merge_desc: a description filled in by hand leaves the "no description" list')
+def _(work):
+    # 앞선 실행이 'none' 이라 적어 둔 자리에 설명이 생기면 그 사이에 사람이
+    # schema.json 을 손으로 채운 것이다. 그것을 그대로 물려받으면 설명이 **있는**
+    # 컬럼이 몇 번을 돌려도 '아직 설명 없는 컬럼' 목록에 오른다.
+    write_schema(work, {'t': table('t', [col('id'), col('x', 'text')])})
+    first = run('merge_desc.py', work).stdout
+    has(first, 't.x', 'a column with no description is listed as one to fill in')
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    for c in s['t']['columns']:
+        if c['name'] == 'x':
+            c['comment'] = 'typed in by a person'
+    (work / 'schema.json').write_text(json.dumps(s, ensure_ascii=False),
+                                      encoding='utf-8')
+    second = run('merge_desc.py', work).stdout
+    if re.search(r'^\s+t\.x\b', second, re.M):
+        raise Fail('a column a person has already described is still listed as '
+                   f'having none:\n{second}')
 
 
 # ── 서버가 다르고, 값이 험하고, 조회가 죽는 날 ────────────────────────────────
@@ -576,7 +838,7 @@ def _(work):
     # conparentid 는 PG 11 부터다. 10 이하에 그대로 물으면 FK 조회가 통째로 실패하는데
     # 요약은 그것을 'FK 0' 이라고 참인 양 찍었다 — 관계가 하나도 없는 문서가 exit 0.
     r = run('introspect.py', work, env=db_fake(work, FAKE_PG_VER='100021'))
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     eq([(f['ref_table'], f['on_delete']) for f in s['tricky']['fks']],
        [('owners', 'CASCADE')], 'an old server must still report its foreign keys')
     if 'query failed' in r.stdout:
@@ -593,7 +855,7 @@ def _(work):
     # 값 하나에 든 \x1e 가 행을 쪼개 테이블 1개짜리 DB 를 4개로 읽혔다. 구분자를 무엇으로
     # 골라도 값이 그 바이트를 담을 수 있다 — 전송이 구분자를 쓰지 않아야 끝나는 이야기다.
     run('introspect.py', work, env=db_fake(work))
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     eq(sorted(s), ['claims', 'owners', 'tricky'], 'no ghost table from \x1e in a value')
     got = {c['name']: (c['default'], c['comment']) for c in s['tricky']['columns']}
     eq(got['ctrl'], ("'has\x1erecord\x1esep'::text",
@@ -628,10 +890,10 @@ def _(work):
 def _(work):
     write_schema(work, {'t': table('t', [col('id')])})
     (work / 'erd.spec.json').write_text(json.dumps(
-        {'areas': [['A', 'ok', 'public', ['t', 'ghost']], ['B', 'empty', 'public', []]]}))
+        {'areas': [['A', 'ok', 'public', ['t', 'ghost']], ['B', 'empty', 'public', []]]}), encoding='utf-8')
     out = run('build_erd.py', work).stdout
     has(out, 'ghost', 'the missing table is named')
-    (work / 'erd.spec.json').write_text('{ "areas": [')
+    (work / 'erd.spec.json').write_text('{ "areas": [', encoding='utf-8')
     r = run('build_erd.py', work, expect_ok=False)
     if 'Traceback' in r.stderr:
         raise Fail(f'broken spec should not traceback:\n{r.stderr[-400:]}')
@@ -642,7 +904,7 @@ def _(work):
     write_schema(work, {'t': table('t', [col('id')])})
     (work / 'erd.spec.json').write_text(json.dumps(
         {'areas': [['A', 'ok', 'public', ['t']]],
-         'layers': {'A': ['#12345', '#35507D', '#4A80C0', 'x']}}))
+         'layers': {'A': ['#12345', '#35507D', '#4A80C0', 'x']}}), encoding='utf-8')
     r = run('build_erd.py', work, expect_ok=False)
     if 'Traceback' in r.stderr:
         raise Fail('bad colour should be a message, not a traceback')
@@ -899,7 +1161,7 @@ print(json.dumps({
     'apart_0': laps(100.0, 100.0),
 }))
 '''
-    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True,
+    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True, encoding='utf-8',
                        env=e, cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'the label geometry probe died:\n{r.stdout}\n{r.stderr}')
@@ -1730,9 +1992,11 @@ def _(work):
 # 목록에 없는 새 파일은 1 이 바닥이다 — 새 파일에 손으로 적을 것을 늘리지 않는다.
 # 값은 15라운드가 끝나는 자리(2026-08-04)의 실측이다.
 # 값은 16라운드가 끝나는 자리(2026-08-04)의 실측이다.
-CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 23,
-              'selftest_r14_config': 25, 'selftest_r14_install': 13,
-              'selftest_r14_render': 10}
+# 값은 17라운드 회귀 보강 자리(2026-08-05)의 실측이다 — 그 라운드가 더한 만큼 올린다.
+# 바닥을 올리지 않으면 이번에 더한 케이스는 다음 라운드가 조용히 뺄 수 있다.
+CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 26,
+              'selftest_r14_config': 29, 'selftest_r14_install': 13,
+              'selftest_r14_render': 11}
 
 # 그런데 이 표는 **파일 이름으로** 걸려 있다. 15라운드 수정자가 스스로 신고하고
 # 16라운드 검증자가 확정한 우회가 그래서 있다: `selftest_r14_render.py` 를
@@ -1744,12 +2008,12 @@ CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 23,
 # **이 벌 전체가 몇 개인가**는 개명으로 바뀌지 않는다. 개명만 하는 것은 이 바닥을
 # 통과하고(그래도 좋다 — 개명 자체는 아무것도 안 잃는다), 개명에 삭제를 섞는 순간
 # 총계가 내려가 여기서 붉어진다. 도커 케이스는 서버가 있어야만 등록되므로 뺀다.
-TOTAL_FLOOR = 181
+TOTAL_FLOOR = 202
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 70
+EXPECT_CASES = 83
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -2122,7 +2386,7 @@ def _(work):
        'the list names each column by its own table key')
     out = with_manual(work, {k: f'desc of {k}' for k in keys}).stdout
     eq(undescribed(out), [], 'pasting those keys into MANUAL describes every column')
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     eq({k: t['columns'][0]['comment'] for k, t in s.items()},
        {k.rsplit('.', 1)[0]: f'desc of {k}' for k in keys},
        'and each key lands on the table it names')
@@ -2137,7 +2401,7 @@ def _(work):
     out = with_manual(work, {'users.grade': 'shop grade',
                              'shop.users.grade': 'only shop',
                              'orders.channel': 'inbound channel'}).stdout
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     eq({k: t['columns'][0]['comment'] for k, t in s.items()},
        {'shop.users': 'only shop', 'mart.users': '', 'shop.orders': 'inbound channel'},
        'the qualified key wins, the ambiguous bare key is dropped, '
@@ -2233,7 +2497,7 @@ def _(work):
     (work / 'schema.json').write_text(json.dumps(
         {'t': {'name': 't', 'columns': [{'name': 'id', 'type': 'bigint', 'comment': ''}],
                'fks': [{'column': 'p', 'ref_table': 'u', 'ref_column': 'id'}]},
-         'u': {'name': 'u', 'columns': [{'name': 'id', 'type': 'bigint', 'comment': ''}]}}))
+         'u': {'name': 'u', 'columns': [{'name': 'id', 'type': 'bigint', 'comment': ''}]}}), encoding='utf-8')
     run('build_erd.py', work)
     from PIL import Image
     for stem in ('erd_overview', 'erd_full'):

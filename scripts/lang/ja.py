@@ -198,6 +198,12 @@ M = {
     'err.spec_layer': 'レイヤー {key} の形式が不正だ: {value}\n'
                       '  [塗り, ヘッダ, 枠, ラベル] で、色は #rrggbb でなければならない',
     'err.spec_json': '{path} が正しい JSON ではない: {err}',
+    'err.fig_unregistered': '図 {stem} に図番号がない — build_erd.py の fig_numbers() が'
+                            'その名前を持っていない。\n'
+                            '  このスクリプトが描く図は全てその一覧から番号を受け取り、その番号は'
+                            'キャプションだけでなく図の中にも描かれる — 登録のない図は'
+                            'キャプションと違う番号を持って出ていく。\n'
+                            '  登録済み: {known}',
     'err.stale_figs': '図 {n}枚が {path} より古い: {list}\n'
                       '  以前のスキーマを描いた図である — 表と図が別のスキーマを語る'
                       '文書になる。\n'
@@ -221,6 +227,15 @@ M = {
     # ── 進行状況の出力 ────────────────────────────────────────────────────
     'log.query_fail': '  [警告] DB クエリ失敗: {err}',
     'log.query_incomplete': '  [警告] 読めなかったもの: {list} — 文書からちょうどその分が欠ける',
+    'log.psql_undecodable': '  [警告] DB の応答が UTF-8 ではなかった — その文字は文書に '
+                            '� として残る。\n'
+                            '          こちらが起動する psql には PGCLIENTENCODING={enc} を'
+                            '渡しているが、docker・ssh で包むとその境界を越えない。\n'
+                            '          ERD_PSQL のコマンドの中に直接書くこと: '
+                            'docker exec -e PGCLIENTENCODING={enc} … / '
+                            'ssh host PGCLIENTENCODING={enc} psql …',
+    'log.ddl_not_in_db': '  [警告] 探したスキーマ ({schemas}) にないテーブル {n}件 — '
+                         '名前だけの箱として描く: {list}',
     'log.spec_empty': '  [警告] 使えるテーブルがない領域を飛ばす: {list}',
     'log.spec_dup': '  [警告] テーブル {n}件が複数の領域に重複 — 最初の領域だけに置く: {list}',
     'log.spec_missing': '  [警告] spec が指すテーブル {n}件がスキーマにない: {list}',
@@ -243,6 +258,7 @@ M = {
     'log.desc_rest': '  → 残りは merge_desc.py で補完すること',
     'log.dup_names': '  複数のスキーマにまたがる名前のテーブル {n}件 — キーは スキーマ.テーブル とする: {list}',
     'log.exclude_rule': '  除外規則: {rule}',
+    'log.exclude_dropped': '  除外規則が取り除いたテーブル {n}件: {list}',
     'log.fk_dropped': '  対象外テーブルを指す FK {n}件を除外',
     'log.per_schema': '  [{schema}] {n}件',
     'log.doc_missing': '  [警告] ERD_DOC_HTML 文書が見つからない: {path}',

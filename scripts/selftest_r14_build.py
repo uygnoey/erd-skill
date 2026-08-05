@@ -21,9 +21,10 @@ import re
 import sys
 from html import escape
 
-from selftest_kit import HERE, Fail, case, col, eq, has, run, table, write_schema
+from selftest_kit import (HERE, Fail, case, col, drawn_names, eq, has, run, table,
+                          write_schema)
 
-EXPECT_CASES = 23       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
+EXPECT_CASES = 26       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
 
 EXAMPLES = HERE.parent / 'examples'
 
@@ -921,7 +922,7 @@ def _(work):
         d.mkdir(parents=True, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith('ERD_')}
         r = subprocess.run([sys.executable, '-c', probe.format(mod=mod, stub=stub)],
-                           capture_output=True, text=True, cwd=str(d), env=env)
+                           capture_output=True, text=True, encoding='utf-8', cwd=str(d), env=env)
         if r.returncode != 0:
             raise Fail(f'importing {mod} (stub erd={stub}) failed — this case cannot '
                        f'measure anything until the stub carries what {mod} imports '
@@ -1055,10 +1056,17 @@ def _(work):
     eq(len(ko_th), len(en_th), 'the same document in another language, cell for cell')
     eq(len(ko_badge), len(en_badge), 'and badge for badge')
 
-    # 말이 바뀌지 않아도 되는 것: 표기·SQL 낱말, 그리고 **카탈로그에 아직 낱말이 없는
-    # 자리**. 뒤엣것은 이름을 대어 적는다 — 16R 수정자 C 에게 `col.null` 을 넘겼고,
-    # 그 키가 들어오면 이 목록에서 'Null' 을 지우면 된다. 다른 낱말로 바뀌면(뮤턴트
-    # X-htmlnull 처럼) 목록에 없으므로 여기가 빨강이다.
+    # 말이 바뀌지 않아도 되는 것: 표기·SQL 낱말, 그리고 **네 언어가 같은 낱말을 고른
+    # 자리**. 이 목록은 '카탈로그를 안 거친 것' 이 아니라 '거쳤는데도 같은 것' 까지
+    # 함께 봐준다는 뜻이다 — 이 케이스가 재는 것은 en↔ko 차이지 T() 호출 여부가
+    # 아니므로 둘을 여기서 갈라낼 수는 없다.
+    #
+    # 'Null' 이 그 경우다. 16R 주석은 "`col.null` 키가 들어오면 여기서 'Null' 을
+    # 지우면 된다" 고 적었는데 **그것은 틀렸다.** 17R 에 키가 들어왔지만
+    # (build_html.py:274 가 `T('col.null')` 을 부른다) ko 카탈로그의 값이 en 과
+    # 같은 'Null' 이라(lang/ko.py:51) 지우면 이 케이스가 빨개진다. 키가 생겼다고
+    # 지우는 것이 아니라 **ko 값이 다른 낱말이 됐을 때** 지운다.
+    # 다른 낱말로 바뀌면(뮤턴트 X-htmlnull 처럼) 목록에 없으므로 여기가 빨강이다.
     SAME_OK = {'#', 'DB', 'FK', 'Null'}
     for a, b in zip(en_th, ko_th):
         if a == b and a not in SAME_OK:
@@ -1230,3 +1238,82 @@ def _(work):
     if r.returncode == 0:
         raise Fail('a schema newer than every diagram no longer stops the document — '
                    'the first half of this case would then measure nothing')
+
+
+# ── 17R. 라벨을 붙인 두 DB 가 문서에서 다시 한 덩어리가 되는가 ───────────────
+
+@case('merge_schemas: two labelled databases do not collapse into one area')
+def _(work):
+    # 17R 뮤테이션. `label_part` 가 키와 `db` 는 갈라 놓으면서 `schema` 칸은 그대로
+    # 두던 동안, 두 DB 의 테이블이 모두 `public` 하나가 되어 **영역 자동 분류가 두
+    # DB 를 한 덩어리로 다시 묶었다** — 키에서 막은 합쳐짐이 그림에서 다시 일어났다.
+    # 재는 자리를 파일 칸이 아니라 **그려진 도판**에 둔다: 영역 상세도가 DB 마다
+    # 하나씩 나와야 한다.
+    work.mkdir(parents=True, exist_ok=True)
+    (work / 'schema.shop.json').write_text(json.dumps({
+        'orders': table('orders', [col('id')], pk=['id']),
+        'items': table('items', [col('id')], pk=['id'])}), encoding='utf-8')
+    (work / 'schema.mart.json').write_text(json.dumps({
+        'orders': table('orders', [col('id'), col('n')]),
+        'facts': table('facts', [col('id')])}), encoding='utf-8')
+    merge_run(work, ['shop', 'mart'])
+    r = run('build_erd.py', work)
+    areas = [n for n in drawn_names(r.stdout) if n.startswith('erd_area_')]
+    if len(areas) != 2:
+        raise Fail(f'two databases were drawn as {len(areas)} area diagram(s) — '
+                   f'{areas}\n{r.stdout}')
+    for label in ('shop', 'mart'):
+        has(r.stdout, label, f'the area diagrams must still name {label}')
+
+
+@case('html: the number in a figure caption is the number drawn inside that figure')
+def _(work):
+    # 17R 뮤테이션. 캡션을 다는 쪽이 번호를 **실린 차례대로** 다시 세면, 부록으로
+    # 미룬 전체 상세도에서 두 번호가 갈린다: 그림 안에 "2" 라고 그려진 도판이 "4"
+    # 라는 캡션 아래에 실렸다. 어느 쪽이 옳은지는 재지 않는다 — 한 그림이 제 번호를
+    # 두 개 갖지 않는 것만 잰다. 번호를 그리는 쪽과 캡션을 다는 쪽이 서로 남이라,
+    # 이 대조는 어느 한쪽을 베껴 적지 않는다.
+    write_schema(work, {n: table(n, [col('id')], schema=s, pk=['id'])
+                        for s, n in (('shop', 'orders'), ('shop', 'items'),
+                                     ('mart', 'facts'), ('mart', 'visits'))})
+    run('merge_desc.py', work)
+    run('build_erd.py', work)
+    run('build_html.py', work)
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    figs = re.findall(r'<div class="fig">(.*?)</div>\s*<p class="figcap"><b>([^<]*)</b>',
+                      html, re.S)
+    if len(figs) < 3:
+        raise Fail(f'the document carries {len(figs)} inline figures — this case needs '
+                   f'the appendix figure to be there to measure anything')
+    seen = 0
+    for body, cap in figs:
+        want = re.findall(r'\d+', cap)
+        # 그림 안의 제목 줄은 캡션 라벨과 **같은 문자열**이라야 한다. SVG 를 인라인으로
+        # 박으므로 그 줄이 본문 안에 그대로 들어 있다.
+        inside = re.search(re.escape(cap.strip().lstrip('[')), body)
+        if not want:
+            raise Fail(f'a figure caption carries no number: {cap!r}')
+        if inside is None:
+            raise Fail(f'the figure captioned {cap!r} is drawn with a different number '
+                       f'inside it: {re.findall(r"[^<>]*Fig[^<>]*", body)[:2]}')
+        seen += 1
+    eq(seen, len(figs), 'every figure was checked')
+
+@case('artifacts: the GraphML is written in the encoding its first line declares')
+def _(work):
+    # 17R 뮤테이션. GraphML 의 첫 줄은 스스로를 `encoding="UTF-8"` 이라고 **선언한다**.
+    # 쓰는 자리에 인코딩을 안 주면 실제로 쓰이는 것은 로케일이 정하므로 선언과
+    # 알맹이가 어긋난다 — cp949 로케일이면 yEd 가 한글을 깨서 열고, ascii 로케일이면
+    # 그 전에 UnicodeEncodeError 로 죽어 그림은 다 그려 놓고 GraphML 만 0바이트였다.
+    write_schema(work, {'memo': table(
+        'memo', [col('id'), col('body', 'text', comment='본문 설명')],
+        pk=['id'], note='주문 메모')})
+    r = run('build_erd.py', work,
+            env={'LC_ALL': 'C', 'LANG': 'C', 'PYTHONUTF8': '0',
+                 'PYTHONCOERCECLOCALE': '0'}, expect_ok=False)
+    if r.returncode != 0:
+        raise Fail('the locale of the shell decided whether the GraphML could be '
+                   f'written:\n{(r.stdout + r.stderr)[-500:]}')
+    got = (work / 'T.graphml').read_text(encoding='utf-8')
+    has(got, 'encoding="UTF-8"', 'the file still says what it is written in')
+    has(got, '본문 설명', 'and the text it declares it can hold is really in it')

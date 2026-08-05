@@ -53,15 +53,16 @@ R1·R2·R3·R6·R7·R8 은 **카운터를 믿지 않는다.** `d.line()`·`d.tex
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-from selftest_kit import Fail, case, col, has, run, table, write_schema
+from selftest_kit import Fail, case, col, eq, has, run, table, write_schema
 
 HERE = Path(__file__).resolve().parent
 
-EXPECT_CASES = 10        # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
+EXPECT_CASES = 11        # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
 
 
 # ── 실제로 칠한 선을 받아 적는 자리 ──────────────────────────────────────────
@@ -83,6 +84,7 @@ EXPECT_CASES = 10        # 등록 개수를 파일이 스스로 못박는다 (se
 _PROBE = '''\
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -437,7 +439,7 @@ def _probe(work, mode, verify_log=None, trace=False):
     if verify_log:
         e['ERD_VERIFY_LOG'] = str(verify_log)
     argv = [sys.executable, '-c', _PROBE, mode] + (['trace'] if trace else [])
-    r = subprocess.run(argv, capture_output=True, text=True, env=e, cwd=str(HERE))
+    r = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', env=e, cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'the line probe died ({mode}):\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -864,7 +866,7 @@ def _(work):
         [sys.executable, '-c',
          'import sys; sys.path.insert(0, sys.argv[1]); import erd; print("ok")',
          str(HERE)],
-        capture_output=True, text=True, cwd=str(cwd), env=env)
+        capture_output=True, text=True, encoding='utf-8', cwd=str(cwd), env=env)
     if r.returncode != 0:
         raise Fail(f'erd must still import when the schema is there:\n'
                    f'{r.stdout[-300:]}\n{r.stderr[-500:]}')
@@ -885,7 +887,7 @@ def _(work):
         [sys.executable, '-c',
          'import sys; sys.path.insert(0, sys.argv[1]); import erd; print(erd.OUT)',
          str(HERE)],
-        capture_output=True, text=True, cwd=str(cwd), env=env)
+        capture_output=True, text=True, encoding='utf-8', cwd=str(cwd), env=env)
     if r.returncode != 0:
         raise Fail(f'asking erd.OUT must still answer:\n{r.stderr[-500:]}')
     # macOS 의 /tmp 는 /private/tmp 의 심볼릭 링크라 글자로 견주면 어긋난다.
@@ -950,7 +952,7 @@ def _resolved_font(work, env):
     e = _clean_env(work)
     var = {'ERD_FONT': 'FONT_PATH', 'ERD_MONO': 'MONO_PATH'}[env]
     r = subprocess.run([sys.executable, '-c', f'import erd; print(erd.{var})'],
-                       capture_output=True, text=True, env=e, cwd=str(HERE))
+                       capture_output=True, text=True, encoding='utf-8', env=e, cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'could not ask erd.py which font it uses:\n{r.stderr[-800:]}')
     return r.stdout.strip().splitlines()[-1]
@@ -1004,7 +1006,7 @@ def _(work):
     not_a_font = str(HERE / 'erd.py')
     missing = str(work / 'no-such-font.ttf')
     r = subprocess.run([sys.executable, '-c', _FONT_PROBE, not_a_font, missing],
-                       capture_output=True, text=True, env=_clean_env(work),
+                       capture_output=True, text=True, encoding='utf-8', env=_clean_env(work),
                        cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'the font probe died:\n{r.stdout[-800:]}\n{r.stderr[-1500:]}')
@@ -1048,6 +1050,41 @@ def _(work):
 #
 # 판 모양은 15라운드 퍼저(scratchpad/r15-render/fuzz_counters.py)의 것을 그대로
 # 옮겼다. 모양이 같아야 라운드 사이 수치를 견줄 수 있다.
+# ── 17R. 문서가 제 말의 폰트를 앞에 세우는가 ─────────────────────────────────
+
+@case('render: a document leads with a font for its own script, not another one')
+def _(work):
+    """17R 뮤테이션. 폰트 폴백 체인은 언어마다 **제 말의 글자를 가진 폰트가 먼저**
+    와야 한다 — 한국어 문서에서 일본어 폰트가 앞서면 한자가 일본식 자형으로 나오고,
+    영어·스페인어 문서가 한글 폰트를 첫 후보로 삼으면 라틴 글자의 자형이 그 폰트
+    것이 된다. 이 규칙이 en·es 쪽에서만 조용히 빠져 있어도 아무 데서도 안 붉었다.
+
+    폰트 **이름**은 한 자도 적지 않는다 — 적으면 목록을 손볼 때마다 거짓 빨강이
+    난다. 재는 것은 관계다: 세 문자 체계가 서로 다른 것을 맨 앞에 세우는가.
+    """
+    # 도판은 한 장도 그리지 않는다 — 재는 것은 문서가 **선언하는** 폰트 체인이고,
+    # 네 언어로 그림까지 그리면 ascii 로케일에서 찍힌 줄이 escape 되어 도판 셈만
+    # 어긋난다(그 셈은 다른 케이스들이 잰다).
+    write_schema(work, {'t': table('t', [col('id')], pk=['id'])})
+    first = {}
+    for lang in ('en', 'es', 'ko', 'ja'):
+        run('build_html.py', work, env={'ERD_LANG': lang})
+        css = (work / 'T.html').read_text(encoding='utf-8')
+        stacks = [m for m in re.findall(r'font-family:\s*([^;}]*)', css)
+                  if 'sans-serif' in m and 'monospace' not in m]
+        if not stacks:
+            raise Fail(f'the {lang} document declares no sans-serif font stack — '
+                       f'this case would measure nothing')
+        first[lang] = stacks[0].split(',')[0].strip().strip("\'\"")
+        if not first[lang]:
+            raise Fail(f'the {lang} font stack begins with nothing: {stacks[0]!r}')
+    if len({first['en'], first['ko'], first['ja']}) != 3:
+        raise Fail(f'two of the three scripts lead with the same font — a document '
+                   f'is asking for someone else\'s letterforms first: {first}')
+    eq(first['es'], first['en'],
+       'two latin-script languages lead with the same font')
+
+
 # ── 뮤턴트 목록 (16라운드가 실제로 돌린 것) ───────────────────────────────────
 # 뮤턴트를 넣는 하네스 자체는 여기 못 넣는다 — 그것은 시험 벌 **바깥**에서 사본
 # 트리를 만들어 돌려야 하고, 시험이 제 사본을 만들어 제 뮤턴트를 채점하면 15라운드가
@@ -1205,7 +1242,7 @@ def _board_big(rnd, dense=False):
 def _fuzz_one(scripts, work, tabs):
     """판 하나를 그리고 `ERD_VERIFY_LOG` 의 기록을 돌려준다."""
     work.mkdir(parents=True, exist_ok=True)
-    (work / 'schema.json').write_text(json.dumps(tabs, ensure_ascii=False))
+    (work / 'schema.json').write_text(json.dumps(tabs, ensure_ascii=False), encoding='utf-8')
     log = work.parent / 'verify.jsonl'
     if log.exists():
         log.unlink()
@@ -1213,12 +1250,12 @@ def _fuzz_one(scripts, work, tabs):
     e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(work), 'ERD_LANG': 'en',
               'ERD_DOCNAME': 'T', 'ERD_SVG': '0', 'ERD_VERIFY_LOG': str(log)})
     r = subprocess.run([sys.executable, '-c', _DRIVE], capture_output=True,
-                       text=True, env=e, cwd=str(scripts))
+                       text=True, encoding='utf-8', env=e, cwd=str(scripts))
     if r.returncode != 0:
         return None, (r.stdout + r.stderr)[-1500:]
     if not log.exists():
         return None, 'no verify log'
-    return [json.loads(x) for x in log.read_text().splitlines() if x.strip()], None
+    return [json.loads(x) for x in log.read_text(encoding='utf-8').splitlines() if x.strip()], None
 
 
 def _fuzz(argv):
@@ -1281,7 +1318,7 @@ def _board_file(argv):
     out = Path(opt('--out', './fuzz-board')).resolve()
     out.mkdir(parents=True, exist_ok=True)
     tabs = board(random.Random(int(opt('--seed', '1'))), opt('--mode', 'mix'))
-    (out / 'schema.json').write_text(json.dumps(tabs, ensure_ascii=False, indent=1))
+    (out / 'schema.json').write_text(json.dumps(tabs, ensure_ascii=False, indent=1), encoding='utf-8')
     print(out / 'schema.json', f'({len(tabs)} tables)')
 
 

@@ -197,6 +197,12 @@ M = {
     'err.spec_layer': '레이어 {key} 의 형식이 잘못됐다: {value}\n'
                       '  [채움, 헤더, 테두리, 라벨] 이어야 하고 색은 #rrggbb 다',
     'err.spec_json': '{path} 가 올바른 JSON 이 아니다: {err}',
+    'err.fig_unregistered': '그림 {stem} 에 도판 번호가 없다 — build_erd.py 의 fig_numbers() 가 '
+                            '그 이름을 적어 두지 않았다.\n'
+                            '  이 스크립트가 그리는 그림은 모두 그 목록에서 번호를 받고, 그 번호는 '
+                            '캡션만이 아니라 그림 안에도 그려진다 — 등록 안 된 그림은 캡션과 다른 '
+                            '번호를 달고 나간다.\n'
+                            '  등록된 이름: {known}',
     'err.stale_figs': '그림 {n}장이 {path} 보다 오래됐다: {list}\n'
                       '  옛 스키마를 그린 그림이다 — 표와 그림이 서로 다른 스키마를 '
                       '말하는 문서가 된다.\n'
@@ -219,6 +225,15 @@ M = {
     # ── 진행 출력 ─────────────────────────────────────────────────────────
     'log.query_fail': '  [경고] DB 조회 실패: {err}',
     'log.query_incomplete': '  [경고] 읽지 못한 것: {list} — 문서에서 딱 그만큼이 빠진다',
+    'log.psql_undecodable': '  [경고] DB 가 보낸 답이 UTF-8 이 아니다 — 그 글자들은 문서에 '
+                            '� 로 남는다.\n'
+                            '          우리가 띄우는 psql 에는 PGCLIENTENCODING={enc} 를 주지만, '
+                            'docker·ssh 로 감싸면 그 경계를 넘지 못한다.\n'
+                            '          ERD_PSQL 명령 안에 직접 넣을 것: '
+                            'docker exec -e PGCLIENTENCODING={enc} … / '
+                            'ssh host PGCLIENTENCODING={enc} psql …',
+    'log.ddl_not_in_db': '  [경고] 찾은 스키마 ({schemas})에 없는 테이블 {n}개 — 이름만 있는 '
+                         '상자로 그린다: {list}',
     'log.spec_empty': '  [경고] 쓸 테이블이 없는 영역을 건너뛴다: {list}',
     'log.spec_dup': '  [경고] 테이블 {n}개가 여러 영역에 겹친다 — 처음 영역에만 둔다: {list}',
     'log.spec_missing': '  [경고] spec 이 가리키는 테이블 {n}개가 스키마에 없다: {list}',
@@ -240,6 +255,7 @@ M = {
     'log.desc_rest': '  → merge_desc.py 로 나머지를 채울 것',
     'log.dup_names': '  이름이 여러 스키마에 걸친 테이블 {n}개 — 키를 스키마.테이블 로 둔다: {list}',
     'log.exclude_rule': '  제외 규칙: {rule}',
+    'log.exclude_dropped': '  제외 규칙이 걷어낸 테이블 {n}개: {list}',
     'log.fk_dropped': '  대상 밖 테이블을 가리키는 FK {n}건 제외',
     'log.per_schema': '  [{schema}] {n}개',
     'log.doc_missing': '  [경고] ERD_DOC_HTML 문서가 없다: {path}',

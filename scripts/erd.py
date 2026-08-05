@@ -46,7 +46,43 @@ def __getattr__(name):
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
-SCHEMA = {k: v for k, v in json.loads(SCHEMA_JSON.read_text()).items() if not excluded(k)}
+# schema.json 은 쓰는 쪽이 전부 utf-8 로 못 박혀 있다(introspect·parse_ddl·
+# merge_schemas·merge_desc). 읽기만 로케일에 맡기면 ascii 로케일(LC_ALL=C)이나
+# cp949 에서 한글 코멘트 한 줄에 UnicodeDecodeError 로 죽는다 — 같은 값으로 읽는다.
+# 못 읽는 schema.json 은 **이름을 대고** 멈춘다 — config.load_spec 이 spec 에 하는 것과
+# 같은 대우다. 예전엔 셋 다 raw 트레이스백이었다: 옛 판이 cp949 로 써 둔 파일은
+# UnicodeDecodeError(읽기를 utf-8 로 못 박은 뒤로는 로케일과 무관하게 그렇다), 손으로
+# 고치다 만 파일은 JSONDecodeError, 권한이 없으면 OSError. 셋 다 `import erd` 한 줄에서
+# 났으므로 사용자는 제 파일 이야기 대신 파이썬의 말을 봤다.
+# 손잡이 이름은 ERD_WORK 다 — SCHEMA_JSON 은 WORK/schema.json 이고, 이 파일을 다른
+# 자리에서 찾게 만들 수 있는 변수가 그것이다(config 가 OUT 을 'ERD_WORK' 로 부르는 것과
+# 같은 방식). 파일 이름 자체는 사용자가 못 고른다.
+try:
+    _RAW = json.loads(SCHEMA_JSON.read_text(encoding='utf-8'))
+except json.JSONDecodeError as e:
+    raise SystemExit(T('err.spec_json', path=SCHEMA_JSON, err=e))
+except (UnicodeDecodeError, OSError) as e:
+    raise SystemExit(T('err.env_bad', env='ERD_WORK', value=SCHEMA_JSON, why=e))
+SCHEMA = {k: v for k, v in _RAW.items() if not excluded(k)}
+# 그리는 쪽의 제외는 화면에 **한 글자도** 안 나왔다 — 규칙을 밝히는 것은 introspect
+# 뿐이라, 이미 뽑아 둔 schema.json 으로 문서만 다시 만드는 실행(그리고 라벨을 붙여
+# 합친 schema.json)에서는 테이블이 조용히 줄었다. 실제로 걷어낸 것이 있을 때만 찍는다.
+# **규칙만 찍는 것으로는 모자란다.** `excluded()` 는 점으로 앞을 벗겨 가며 묻기 때문에
+# (config.excluded 의 설명) 사용자가 적은 정규식 하나가 예상보다 넓게 걸릴 수 있는데,
+# 전부 사라져야만 err.no_schema_tables 로 멈추고 **일부만** 사라지면 규칙 한 줄이
+# 전부였다 — 어느 테이블이 없어졌는지는 아무도 말하지 않았다. 이름을 댄다.
+# 이름은 clean() 을 지나 나간다 — 키에 개행이 들어 있으면(아래에서 씻는 바로 그
+# 경우다) 경고 한 줄이 여러 줄로 흩어져 목록이 목록으로 안 보인다.
+# **이 줄은 문서 한 벌에 세 번 나온다.** erd 를 import 하는 프로세스마다(build_erd·
+# build_html·build_docx) 한 번씩이다 — 놀랄 일이 아니라 그 셋이 저마다 제가 그린
+# 것을 말하는 것이다. 한 번만 내려면 세 스크립트가 이 줄을 나눠 갖게 해야 하는데,
+# 그 자리(build_erd)는 이 파일 몫이 아니다.
+_DROPPED = [k for k in _RAW if k not in SCHEMA]
+if _DROPPED:
+    print(T('log.exclude_rule', rule=config.EXCLUDE))
+    print(T('log.exclude_dropped', n=len(_DROPPED),
+            list=', '.join(clean(k) or k for k in _DROPPED[:6])
+                 + (' …' if len(_DROPPED) > 6 else '')))
 # 제외 규칙은 spec 쪽에서만 걸러지고 있어서, 그리는 쪽은 없는 테이블을 찾다 죽었다.
 # 여기서 한 번에 걷어내고, 사라진 테이블을 가리키던 FK 도 같이 떨군다.
 if not SCHEMA:
@@ -894,8 +930,15 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                                 return v
                         return base
             cy = (y1 + y2) / 2           # 개요도·축약 박스 — 한 점에 몰리지 않게 분산
+            # 여기서는 **노드별로만** 자리를 나눈다. 이 자리에 `used + exit_all` 로
+            # 다른 노드의 진출입 y 까지 피해 보려던 줄이 `if False` 가 붙은 채 남아
+            # 있었다 — 조건이 상수라 언제나 `used` 였으니 하는 일이 없었고, 되살릴
+            # 수도 없는 모양이었다: `used + exit_all` 은 **새 리스트**라 아래
+            # `used.append(v)` 가 그 임시 리스트에 적힌다. 이 노드가 쓴 y 가 기록되지
+            # 않아 다음 선이 같은 y 를 도로 고른다 — 분산이 통째로 꺼진다.
+            # 되살릴 값어치도 크지 않다. 노드마다 x 가 다르니 y 가 같다고 선이 겹치는
+            # 것이 아니고, 선끼리 겹치는 것은 통로 쪽(slot·used_hy)이 맡는다.
             used = exit_used.setdefault(n, [])
-            used = used + exit_all if False else used
             for k in range(1, 14):
                 v = cy + (k // 2) * 13 * (1 if k % 2 else -1)
                 if y1 + 7 <= v <= y2 - 7 and all(abs(v - u) >= 12 for u in used):
@@ -1812,5 +1855,9 @@ def build_graphml(path, pos, boxes):
                                        'on_delete': 'ETL'}, derive=True))
             e += 1
     parts.append('  </graph>\n</graphml>\n')
-    Path(path).write_text(''.join(parts))
+    # 첫 줄이 스스로를 `encoding="UTF-8"` 이라고 **선언한다**(GRAPHML_HEAD). 인코딩을
+    # 안 주면 실제로 쓰이는 것은 로케일이 정하므로 선언과 알맹이가 어긋난다 — cp949
+    # 로케일이면 yEd 가 한글을 깨서 열고, ascii 로케일이면 그 전에 UnicodeEncodeError
+    # 로 죽어 그림은 다 그려 놓고 GraphML 만 0바이트로 남았다. 선언한 대로 쓴다.
+    Path(path).write_text(''.join(parts), encoding='utf-8')
     return len(ids), e

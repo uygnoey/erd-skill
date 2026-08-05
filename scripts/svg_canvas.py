@@ -16,6 +16,53 @@ from i18n import LANG
 
 _ANCHOR = {'l': 'start', 'm': 'middle', 'r': 'end'}
 
+# ── 폰트 폴백 체인 ──────────────────────────────────────────────────────────
+# 보는 PC 에 그 폰트가 없을 때를 대비한 목록이다. SVG 도판(이 파일)과 HTML 본문
+# (`build_html.py` 의 CSS)이 **같은 규칙을 한 벌로** 쓴다 — 두 벌이면 한쪽만 고쳐서
+# 같은 문서의 그림과 본문이 다른 폰트로 나온다.
+#
+# 예전엔 `ja` 냐 아니냐 둘로만 갈려서, 영어·스페인어 문서도 한글 폰트를 첫 후보로
+# 삼았다. 브라우저·뷰어는 이 목록을 **글자마다** 훑으므로(앞엣것에 그 글리프가
+# 없으면 다음으로 넘어간다) 문서의 말에 맞는 폰트를 앞에 세우면 된다. 다만 다른
+# 문자 체계를 **빼지는** 않는다 — 문서의 말이 영어여도 컬럼 설명은 그 DB 를 쓰는
+# 사람의 말로 적혀 있다. 앞뒤 순서만 바꾼다.
+#
+# (`erd.py` 의 `_SANS_CANDIDATES` 는 같은 것을 반대로 정한다: PIL 은 그림 하나를
+#  **폰트 하나**로 그리므로 라틴 전용 폰트가 앞서면 한글·한자가 통째로 □ 가 된다.
+#  그래서 거기서는 라틴 후보를 맨 뒤에만 붙이고, ko·ja 에는 아예 안 붙인다. 고르는
+#  방식이 다르니 순서도 다르다 — 두 판단이 지키는 것은 같다. '그 문서의 글자가 다
+#  보이게'.)
+_JA_FONTS = "'Hiragino Sans','Yu Gothic','Noto Sans JP','Meiryo'"
+_KO_FONTS = "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR'"
+_LATIN_FONTS = "'Helvetica Neue','Segoe UI',Arial"
+
+# 한자를 쓰는 말이면 그 글리프를 가진 폰트를 앞에 세운다. 한국어 문서에서 일본어
+# 폰트가 **앞서면** 한자가 일본식 자형으로 나오므로(骨·直 등이 다르게 보인다) ko 는
+# 그것을 맨 뒤에 둔다.
+#
+# 빼지 않고 맨 뒤에라도 두는 것은 **동작 변경**이다 — 예전 ko 체인에는 일본어 폰트가
+# 하나도 없었다. 근거는 `erd.py` 의 `_JA_CANDIDATES` 마지막 줄이 이미 내린 판단과 같다:
+# 자형이 남의 나라 것이어도 **□ 보다는 읽을 수 있다.** 이 자리가 실제로 쓰이는 때는 앞의
+# 넷(Pretendard·Apple SD Gothic Neo·Malgun Gothic·Noto Sans KR)이 하나도 없거나 그 넷이
+# 다 그 한자를 못 덮을 때뿐이고, 그때 예전 판이 하던 일은 generic sans-serif 로 떨어지는
+# 것 — 곧 두부다. '제 말 먼저, 나머지 문자 체계는 뒤에 남긴다' 는 **한 규칙**을 세 갈래에
+# 똑같이 대는 것이기도 하다 (en·es 가 KO·JA 를 뒤에 남기는 것과 같은 이유).
+_STACKS = {
+    'ja': (_JA_FONTS, _KO_FONTS, _LATIN_FONTS),
+    'ko': (_KO_FONTS, _LATIN_FONTS, _JA_FONTS),
+}
+_LATIN_STACK = (_LATIN_FONTS, _KO_FONTS, _JA_FONTS)
+
+
+def font_stack(lang=None):
+    """그 언어 문서가 쓸 폰트 폴백 체인. 모르는 말은 라틴 우선으로 친다."""
+    code = LANG if lang is None else lang
+    return ','.join(_STACKS.get(code, _LATIN_STACK)) + ',sans-serif'
+
+
+FONT_STACK = font_stack()
+MONO_STACK = "'Menlo','D2Coding','DejaVu Sans Mono','Consolas',monospace"
+
 
 def _pairs(xy):
     """[(x,y),(x,y)] · [x0,y0,x1,y1] 둘 다 받는다 — PIL 이 둘 다 허용한다."""
@@ -43,15 +90,8 @@ class SvgCanvas:
         self.w, self.h = int(width), int(height)
         self.bg = bg
         self.parts = []
-        # 보는 PC 에 그 폰트가 없을 때를 대비한 폴백 체인.
-        # 한자를 쓰는 말이면 그 글리프를 가진 폰트를 앞에 세운다.
-        self.fallback = font_fallback or (
-            "'Hiragino Sans','Yu Gothic','Noto Sans JP','Meiryo',"
-            "'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif"
-            if LANG == 'ja' else
-            "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',"
-            "'Helvetica Neue',sans-serif")
-        self.mono_fallback = "'Menlo','D2Coding','DejaVu Sans Mono','Consolas',monospace"
+        self.fallback = font_fallback or FONT_STACK
+        self.mono_fallback = MONO_STACK
 
     # ── 도형 ────────────────────────────────────────────────────────────────
     def _shape(self, tag, attrs, fill=None, outline=None, width=1):

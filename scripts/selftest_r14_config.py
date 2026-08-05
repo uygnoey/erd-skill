@@ -29,7 +29,7 @@ from selftest_kit import (Fail, HERE, case, col, ddl, eq, has, main, run, table,
                           write_schema)
 
 
-EXPECT_CASES = 25       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
+EXPECT_CASES = 29       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
 
 
 def env_without_erd(**extra):
@@ -43,7 +43,7 @@ def env_without_erd(**extra):
 def py(code, args=(), env=None, cwd=None):
     """파이썬 조각 하나를 별도 프로세스로 돌린다 (cwd 를 내가 정해야 하는 케이스용)."""
     return subprocess.run([sys.executable, '-c', code, *[str(a) for a in args]],
-                          capture_output=True, text=True,
+                          capture_output=True, text=True, encoding='utf-8',
                           env=env or env_without_erd(), cwd=str(cwd or HERE))
 
 
@@ -76,7 +76,7 @@ def run_argv(script, work, args, env=None, expect_ok=True):
     if env:
         e.update({k: str(v) for k, v in env.items()})
     r = subprocess.run([sys.executable, str(HERE / script), *[str(a) for a in args]],
-                       capture_output=True, text=True, env=e, cwd=str(HERE))
+                       capture_output=True, text=True, encoding='utf-8', env=e, cwd=str(HERE))
     if expect_ok and r.returncode != 0:
         raise Fail(f'{script} {args} exited {r.returncode}\n{r.stdout}\n{r.stderr}')
     return r
@@ -747,7 +747,7 @@ def _(work):
         no_traceback(r, 'an empty ERD_SCHEMAS must be a message')
         has(r.stdout + r.stderr, 'ERD_SCHEMAS', f'the message names the variable ({raw!r})')
         if qlog.exists():
-            raise Fail(f'nothing may be asked of the server first: {qlog.read_text()[:200]}')
+            raise Fail(f'nothing may be asked of the server first: {qlog.read_text(encoding='utf-8')[:200]}')
 
     run('introspect.py', work, expect_ok=False,
         env={'ERD_SCHEMAS': "s1','s2", 'ERD_PSQL': psql, 'QLOG': str(qlog)})
@@ -846,21 +846,28 @@ def _(work):
     d.mkdir(parents=True, exist_ok=True)
     (d / 'a.sql').write_text(sql, encoding='utf-8')
     r = run('parse_ddl.py', work, sql_dir=d, env={'ERD_DEFAULT_PK': 'id'})
-    s = json.loads((work / 'schema.json').read_text())
+    s = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
     has(r.stdout, 'ERD_DEFAULT_PK', 'with no database it says the switch did nothing')
     has(r.stdout, 'merchants', 'and which table kept no primary key')
     eq(s['merchants']['pk'], [],
        'a column the table does not have must not be written down as its PK')
 
     # 접속이 있으면 예전처럼 채운다 — 말만 하고 안 채우면 그것도 고친 것이 아니다.
+    # 17R: parse_ddl 이 config.psql_rows() 로 옮겨 **행마다 JSON 한 줄**을 받고,
+    # 기존 테이블 컬럼 조회는 맨 앞에 table_schema 가 붙어 5필드가 됐다.
+    # (selftest_history.py 의 _FAKE_PSQL_JSON 과 같은 프로토콜이다.)
     fake = work / 'fake_psql.py'
     fake.write_text(
+        "import json\n"
+        "import re\n"
         "import sys\n"
         "a = sys.argv\n"
         "q = a[a.index('-c') + 1]\n"
-        "sep, rs = a[a.index('-F') + 1], a[a.index('-R') + 1]\n"
         "if 'information_schema.columns' in q:\n"
-        "    sys.stdout.write(sep.join(['merchants', 'id', 'bigint', 'NO']) + rs)\n",
+        "    m = re.search(r'_r\\(([^()]*)\\)\\s*$', q)\n"
+        "    names = [c.strip() for c in m.group(1).split(',')] if m else []\n"
+        "    row = ['public', 'merchants', 'id', 'bigint', 'NO']\n"
+        "    sys.stdout.write(json.dumps(dict(zip(names, row))) + chr(10))\n",
         encoding='utf-8')
     w2 = work / 'withdb'
     d2 = w2 / 'sql'
@@ -869,7 +876,7 @@ def _(work):
     run('parse_ddl.py', w2, sql_dir=d2, env={
         'ERD_DEFAULT_PK': 'id',
         'ERD_PSQL': f'{shlex.quote(sys.executable)} {shlex.quote(str(fake))}'})
-    s2 = json.loads((w2 / 'schema.json').read_text())
+    s2 = json.loads((w2 / 'schema.json').read_text(encoding='utf-8'))
     eq([c['name'] for c in s2['merchants']['columns']], ['id'],
        'the database filled the column in')
     eq(s2['merchants']['pk'], ['id'], 'and ERD_DEFAULT_PK still names it the PK')
@@ -899,7 +906,7 @@ def _(work):
     if (work / 'schema.json').exists():
         raise Fail('ERD_LABEL means schema.<label>.json — merge_schemas.py looks for '
                    'exactly that name and nothing else')
-    s = json.loads((work / 'schema.shop.json').read_text())
+    s = json.loads((work / 'schema.shop.json').read_text(encoding='utf-8'))
     eq(sorted(s), ['shop.user_profiles', 'shop.users'], 'the keys carry the label')
     eq(s['shop.user_profiles']['fks'][0]['ref_table'], 'shop.users',
        'and so does every FK parent — a relationship that misses the rename disappears')
@@ -914,7 +921,7 @@ def _(work):
         dd = ddl_at(w, 'CREATE TABLE users (id bigint PRIMARY KEY);\n')
         run('parse_ddl.py', work, sql_dir=dd, env={'ERD_LABEL': label})
     merged = run_argv('merge_schemas.py', work, ['shop', 'mart'])
-    got = sorted(json.loads((work / 'schema.json').read_text()))
+    got = sorted(json.loads((work / 'schema.json').read_text(encoding='utf-8')))
     eq(got, ['mart.users', 'shop.users'],
        f'two DDL trees with the same table name merge without eating each other: '
        f'{merged.stdout}')
@@ -923,7 +930,7 @@ def _(work):
     w = work / 'plain'
     dd = ddl_at(w, 'CREATE TABLE users (id bigint PRIMARY KEY);\n')
     run('parse_ddl.py', w, sql_dir=dd)
-    eq(sorted(json.loads((w / 'schema.json').read_text())), ['users'],
+    eq(sorted(json.loads((w / 'schema.json').read_text(encoding='utf-8'))), ['users'],
        'no label means the plain schema.json with plain keys, as before')
 
     # 파일 이름이 될 수 없는 라벨은 introspect.py 와 같은 자리에서 같은 말로 멈춘다 —
@@ -953,7 +960,7 @@ def _(work):
     d.mkdir(parents=True, exist_ok=True)
     (d / 'a.sql').write_text('CREATE TABLE t (id bigint PRIMARY KEY);\n', encoding='utf-8')
     r = run('parse_ddl.py', work, sql_dir=d, env={'ERD_PSQL': 'psql "unclosed'})
-    eq(sorted(json.loads((work / 'schema.json').read_text())), ['t'],
+    eq(sorted(json.loads((work / 'schema.json').read_text(encoding='utf-8'))), ['t'],
        'the DDL alone still produced the schema')
     if 'ERD_PSQL' in r.stdout + r.stderr:
         raise Fail(f'a variable this run never needed must not be mentioned:\n{r.stdout}')
@@ -987,7 +994,8 @@ DYNAMIC = {'common.': 'merge_desc.py', 'verify.': 'erd.py'}
 RESERVED = {
     'log.row_truncated': 'doc.meta·doc.sources·doc.mapping·doc.open_items 의 남는 칸이 '
                          '말없이 버려지는 것 (build_docx.py·build_html.py)',
-    'col.null': "build_html.py 컬럼표의 하드코딩 'Null' 머리글",
+    # 'col.null' 은 17R 에 build_html.py:274 가 실제로 부르기 시작해서 뺐다 —
+    # 예고된 정상 경로다(위 '쓰이기 시작하면 여기서 지운다').
     'html.badge_cols': "build_html.py 의 하드코딩 'cols {n}' 배지",
     'html.badge_tables': "build_html.py 의 하드코딩 '{n} tables' 배지",
 }
@@ -1033,6 +1041,89 @@ def _(work):
     # 그리고 예약 이름이 실제로 카탈로그에 있어야 한다 (오타면 봐주는 것이 없어진다)
     ghost = sorted(set(RESERVED) - keys)
     eq(ghost, [], 'RESERVED names a key that is not in lang/en.py')
+
+
+# ── 17R. 손으로 적는 값이 조용히 안 듣던 자리 ────────────────────────────────
+
+@case('erd: ERD_EXCLUDE matches the table name even with a label in front of the key')
+def _(work):
+    # 17R 뮤테이션. `excluded()` 가 제가 받은 문자열에 정규식을 그대로 걸던 동안,
+    # SKILL.md 가 약속한 '제외할 **테이블** 정규식' 은 라벨을 쓰는 사람에게 안
+    # 들었다 — 키가 `shop.public.tmp_cache` 라 `^tmp_` 가 라벨에 막혔다. 그런데
+    # 화면에는 한 글자도 안 나왔다: 원치 않는 테이블이 그냥 문서에 실렸다.
+    write_schema(work, {
+        'shop.public.orders': table('orders', [col('id')], pk=['id'],
+                                    schema='shop.public', db='shop'),
+        'shop.public.tmp_cache': table('tmp_cache', [col('id')], pk=['id'],
+                                       schema='shop.public', db='shop')})
+    run('build_erd.py', work, env={'ERD_EXCLUDE': '^tmp_'})
+    run('build_html.py', work, env={'ERD_EXCLUDE': '^tmp_'})
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    if 'tmp_cache' in html:
+        raise Fail('a table the user excluded by name still reached the document '
+                   'because a label was sitting in front of its key')
+    has(html, 'orders', 'and the table that was not excluded is still there')
+
+
+@case('errors: a spec file that is not utf-8 names ERD_SPEC instead of a traceback')
+def _(work):
+    # 17R 뮤테이션. JSONDecodeError 만 잡던 자리라, utf-8 이 아닌 spec 은
+    # `UnicodeDecodeError` 가 **raw 트레이스백**으로 나갔다 — 사용자는 제 변수
+    # 이름 대신 파이썬의 말을 봤다. as_file·as_dir 이 줄곧 없애 온 그 모양이다.
+    write_schema(work, {'t': table('t', [col('id')], pk=['id'])})
+    # cp949 로 저장된 한글 spec — 윈도우에서 손으로 만들면 실제로 이렇게 나온다
+    (work / 'erd.spec.json').write_bytes(
+        '{"areas": [["A", "주문", "public", ["t"]]]}'.encode('cp949'))
+    r = run('build_erd.py', work, expect_ok=False)
+    no_traceback(r, 'a spec that is not utf-8 must be a message, not a traceback')
+    if r.returncode == 0:
+        raise Fail('a spec that could not be read at all was passed over in silence')
+    has(r.stdout + r.stderr, 'ERD_SPEC', 'the message names the variable to look at')
+
+
+@case('i18n: a placeholder typo in one line does not cost the whole run')
+def _(work):
+    # 17R 뮤테이션. 번역판의 자리표시자가 영어판과 어긋나면 `str.format` 이 문구를
+    # **쓰는 자리**에서 터진다. 그것을 그대로 두면 오타 하나에 그림도 문서도 없이
+    # 역추적만 남는다. 카탈로그를 못 읽을 때와 같은 판단을 댄다: 그림은 계속 그리되
+    # 왜 말이 바뀌었는지는 알려 준다.
+    #
+    # 깨진 카탈로그는 **검사 대상 트리 밖**(복사본)에 쓴다 — `i18n: a catalog that
+    # cannot be read …` 가 15라운드에 간헐 실패로 배운 자리다.
+    import shutil
+    tree = work.parent / 'scripts'
+    shutil.copytree(HERE, tree, symlinks=True,
+                    ignore=shutil.ignore_patterns('__pycache__', 'out', 'erd-build'))
+    (tree / 'lang' / 'zz.py').write_text(
+        "M = {'word.fig_no': '[Fig. {num}]'}\n", encoding='utf-8')   # en 은 {n} 이다
+    if (HERE / 'lang' / 'zz.py').exists():
+        raise Fail('the broken catalog was written into the tree under test, not the copy')
+    write_schema(work, {'t': table('t', [col('id')], pk=['id'])})
+    r = run(str(tree / 'build_erd.py'), work, env={'ERD_LANG': 'zz'}, expect_ok=False)
+    if r.returncode != 0:
+        raise Fail('one mistyped placeholder took the whole run down:\n'
+                   + (r.stdout + r.stderr)[-500:])
+    if not list((work / 'out').glob('*.png')):
+        raise Fail('the run survived but drew nothing — a broken line must not cost '
+                   'the diagrams')
+    has(r.stdout + r.stderr, 'word.fig_no',
+        'and the line that could not be rendered is named, not swallowed')
+
+
+@case('errors: a schema.json that is not utf-8 names ERD_WORK instead of a traceback')
+def _(work):
+    # 17R 뮤테이션. spec 과 **같은 결함의 나머지 절반**이다. 옛 판이 cp949 로 써 둔
+    # schema.json 은 `import erd` 한 줄에서 UnicodeDecodeError 로 터졌고, 사용자는
+    # 제 파일 이야기 대신 파이썬의 말을 봤다. 문서 빌더 셋이 모두 이 import 를
+    # 지나므로 그날은 산출물이 하나도 안 나온다.
+    work.mkdir(parents=True, exist_ok=True)
+    (work / 'schema.json').write_bytes(
+        '{"t": {"name": "t", "note": "주문", "columns": []}}'.encode('cp949'))
+    r = run('build_erd.py', work, expect_ok=False)
+    no_traceback(r, 'a schema.json that is not utf-8 must be a message, not a traceback')
+    if r.returncode == 0:
+        raise Fail('a schema.json that could not be read at all was passed over')
+    has(r.stdout + r.stderr, 'ERD_WORK', 'the message names the variable to look at')
 
 
 if __name__ == '__main__':

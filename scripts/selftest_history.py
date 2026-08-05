@@ -89,7 +89,7 @@ COLQ, PKQ, FKQ = 'information_schema.columns', 'PRIMARY KEY', "contype='f'"
 
 
 def schema_of(work):
-    return json.loads((work / 'schema.json').read_text())
+    return json.loads((work / 'schema.json').read_text(encoding='utf-8'))
 
 
 # ── 1. 문서를 틀리게 만든 것 ─────────────────────────────────────────────────
@@ -419,7 +419,7 @@ def _(work):
                         'c': table('c', [col('id')])})
     (work / 'erd.spec.json').write_text(json.dumps(
         {'areas': [['A', 'one', 'public', ['a', 'b']],
-                   ['B', 'two', 'public', ['b', 'c']]]}))
+                   ['B', 'two', 'public', ['b', 'c']]]}), encoding='utf-8')
     out = run('build_erd.py', work).stdout
     has(out, 'b', 'the table that appears twice is named')
     run('build_html.py', work)
@@ -532,7 +532,7 @@ def _(work):
         for p in (work / 'out').glob('*.png'):
             p.unlink()
         sp = work / 'erd.spec.json'
-        sp.write_text(json.dumps(spec)) if spec else sp.unlink(missing_ok=True)
+        sp.write_text(json.dumps(spec), encoding='utf-8') if spec else sp.unlink(missing_ok=True)
         run('build_erd.py', work, env={'ERD_LANG': lang})
         r = run(str(probe), work, env={'PYTHONPATH': str(HERE)}, expect_ok=False)
         if r.returncode:
@@ -605,7 +605,7 @@ def _(work):
     write_schema(work, {'src': table('src', [col('id')]), 'dst': table('dst', [col('id')])})
     (work / 'erd.spec.json').write_text(json.dumps(
         {'areas': [['A', 'one', 'public', ['src', 'dst']]],
-         'derives': [['src', 'dst', 'nightly load'], ['src', 'nowhere', 'ghost flow']]}))
+         'derives': [['src', 'dst', 'nightly load'], ['src', 'nowhere', 'ghost flow']]}), encoding='utf-8')
     run('merge_desc.py', work)
     run('build_erd.py', work)
     run('build_docx.py', work)
@@ -670,7 +670,7 @@ def _(work):
         'doc': {'meta': [['name', 'v', 'k', 'v2', 'one cell too many'],
                          ['short']],
                 'mapping': [['1', 'a', 'b', 'c', 'd', 'e', 'f'], ['2', 'a']],
-                'open_items': [['x'], ['y', 'z', 'w', 'q', 'r']]}}))
+                'open_items': [['x'], ['y', 'z', 'w', 'q', 'r']]}}), encoding='utf-8')
     run('merge_desc.py', work)
     run('build_erd.py', work)
     r = run('build_docx.py', work)
@@ -1083,7 +1083,7 @@ def _(work):
     counts = []
     for _ in range(2):
         run('build_erd.py', work, env={'ERD_VERIFY_LOG': str(good)})
-        counts.append(len(good.read_text().strip().splitlines()))
+        counts.append(len(good.read_text(encoding='utf-8').strip().splitlines()))
     eq(counts[0], counts[1], 'the log holds one run, not every run ever')
 
 
@@ -1302,7 +1302,7 @@ def _paint(work, mode):
     e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(work), 'ERD_LANG': 'en',
               'ERD_DOCNAME': 'T', 'ERD_SVG': '0'})
     r = subprocess.run([sys.executable, '-c', _PAINT_PROBE, mode],
-                       capture_output=True, text=True, env=e, cwd=str(HERE))
+                       capture_output=True, text=True, encoding='utf-8', env=e, cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'the paint probe died:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -1430,7 +1430,7 @@ print(json.dumps({
         placed(100.0, 100.0 + (ink[3] - ink[1]) + halo), f, S)),
 }))
 '''
-    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True,
+    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True, encoding='utf-8',
                        env=e, cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'the label rule probe died:\n{r.stdout}\n{r.stderr}')
@@ -1508,7 +1508,7 @@ _LIVE = {}
 
 def _sh(*argv, **kw):
     import subprocess
-    return subprocess.run(argv, capture_output=True, text=True, **kw)
+    return subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', **kw)
 
 
 def pg(image, partitions=False):

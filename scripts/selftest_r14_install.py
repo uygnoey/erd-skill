@@ -57,16 +57,26 @@ ANSI = re.compile(r'\x1b\[[0-9;]*m')
 # 가짜 selftest.py. 진짜 것은 40초가 걸리고, 무엇보다 **다른 파일의 상태**에 따라
 # 빨강이 된다 — install.sh 의 논리를 재려는 시험이 남의 회귀에 딸려 흔들리면 안 된다.
 # 출력 모양만 진짜와 똑같이 흉내 낸다: 케이스 줄 → 빈 줄 → 안 돌린 것 → 집계.
+#
+# 콘솔 처리기도 진짜와 같이 맞춘다(selftest_kit 바닥의 `_keep_console_alive`). 이 줄이
+# 없으면 ascii 로케일(LC_ALL=C)에서 이 stub 이 `✓` 를 찍다 UnicodeEncodeError 로 죽어,
+# `install.sh --check` 를 재는 다섯 케이스가 **install.sh 와 무관한 이유로** 빨개졌다.
+# 흉내 내는 쪽이 흉내 대상보다 약하면 그 차이가 그대로 남의 실패로 보인다.
 STUB = """\
 import pathlib
 import sys
+try:
+    if sys.stdout.errors in ('strict', 'surrogateescape', 'surrogatepass'):
+        sys.stdout.reconfigure(errors='backslashreplace')
+except Exception:
+    pass
 MARK = {mark!r}
 if {writes_cwd!r}:
     # 이 판이 어디서 도는지 보이게 제 cwd 에 흔적을 남긴다.
     # (`--check` 가 임시 자리로 안 옮겨 가면 이것이 부르는 사람의 cwd 에 떨어진다)
     p = pathlib.Path('erd-build/out')
     p.mkdir(parents=True, exist_ok=True)
-    (p / 'marker.txt').write_text(MARK)
+    (p / 'marker.txt').write_text(MARK, encoding='utf-8')
 print('  \\033[32m\u2713\\033[0m stub case (' + MARK + ')')
 print()
 print('  6 cases need a real server and were NOT run (stub ' + MARK + ').')
@@ -102,10 +112,10 @@ def shim_dir(root):
     d = root / 'shim'
     d.mkdir(parents=True, exist_ok=True)
     log = d / 'calls.log'
-    log.write_text('')
+    log.write_text('', encoding='utf-8')
     for name in ('curl', 'unzip'):
         f = d / name
-        f.write_text('#!/bin/sh\necho "%s $*" >> "%s"\nexit 1\n' % (name, log))
+        f.write_text('#!/bin/sh\necho "%s $*" >> "%s"\nexit 1\n' % (name, log), encoding='utf-8')
         f.chmod(0o755)
     return d, log
 
@@ -145,10 +155,10 @@ def run_install(root, tree, *args, cwd=None, home=None, lang='en'):
     cwd = cwd or (root / 'elsewhere')
     cwd.mkdir(parents=True, exist_ok=True)
     r = subprocess.run(['bash', str(tree / 'install.sh'), *args],
-                       capture_output=True, text=True, env=e, cwd=str(cwd),
+                       capture_output=True, text=True, encoding='utf-8', env=e, cwd=str(cwd),
                        stdin=subprocess.DEVNULL)
     r.out = ANSI.sub('', r.stdout + r.stderr)
-    called = log.read_text().strip()
+    called = log.read_text(encoding='utf-8').strip()
     if called:
         raise Fail('install.sh reached the network in a test\n      ' + called)
     return r
@@ -309,7 +319,7 @@ def _(work):
         e = {k: v for k, v in os.environ.items() if not k.startswith('ERD_')}
         e['ERD_LANG'] = lang
         return subprocess.run(['bash', '-c', script, '_', str(sh), *args],
-                              capture_output=True, text=True, env=e)
+                              capture_output=True, text=True, encoding='utf-8', env=e)
 
     en = keys('en')
     if len(en) < 40:
@@ -358,7 +368,7 @@ def _(work):
     tree = make_tree(root / 'tree', writes_cwd=True)
     caller = root / 'caller'
     caller.mkdir(parents=True, exist_ok=True)
-    (caller / 'mine.txt').write_text('do not touch')
+    (caller / 'mine.txt').write_text('do not touch', encoding='utf-8')
 
     before_cwd, before_tree = snapshot(caller), snapshot(tree)
     r = run_install(root, tree, '--check', cwd=caller)
