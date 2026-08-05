@@ -850,6 +850,141 @@ def _(work):
        'a ] inside a name closes nothing, so COLLATE is still a boundary')
 
 
+@case('parse: a ] cannot close a ( that the DEFAULT left open')
+def _(work):
+    # `paren_depth` 가 스택으로 짝을 맞추는 이유의 **마지막 반**이다. 위 두 케이스
+    # (짝 안 맞는 `]`·`[`)는 스택을 순진한 `±1` 이나 `max(0, d-1)` 로 되돌리면 함께
+    # 붉어지므로 그쪽은 이미 재고 있다. 안 재던 것은 **짝의 종류를 보는 한 줄**
+    # (`stack[-1][1] == c`)이다 — 그것만 지우고 아무거나 팝하게 해도 210 이 전부
+    # 초록이었다.
+    #
+    # 종류를 안 보면 `]` 가 앞서 열린 `(` 를 닫아 **없는 쌍**이 생기고, 그 쌍이
+    # 최상위 콤마를 제 안에 가둔다. 아래 입력에서 `f(` 는 끝내 안 닫히고 `[`…`]`
+    # 만 진짜 쌍이라 `b` 앞 콤마는 깊이 0 이어야 하는데, 아무거나 팝하면 `(`…`]`
+    # 가 쌍이 되어 그 콤마가 깊이 1 로 보인다 — b 가 통째로 a 의 기본값 속으로
+    # 사라진다.
+    #
+    # 괄호는 짝이 맞고(`f(`+`)` 와 바깥 한 쌍) 닫는 괄호 뒤가 콤마가 아니라,
+    # `parse_create` 의 버리는 두 갈래에는 닿지 않는다 — 그래서 이 입력은 정말로
+    # `paren_depth` 만 묻는다.
+    s = ddl(work, 'CREATE TABLE t ( a text DEFAULT f(1, b text[2), c text] );\n')
+    eq([(c['name'], c['default']) for c in s['t']['columns']],
+       [('a', 'f(1'), ('b', '')],
+       'a ] closes no ( , so the comma before b is still top level')
+
+
+# ── 경계가 깨진 CREATE TABLE ─────────────────────────────────────────────────
+# 아래 다섯은 `parse_create` 가 **본문의 괄호 짝이 어긋난 문장**을 어떻게 다루는지를
+# 한 갈래씩 나눠 잰다. 한 케이스에 몰지 않는 것은 일부러다 — 빨강이 났을 때 여는
+# 쪽이 깨졌는지, 닫는 쪽인지, 알림인지, 되살아남인지가 이름만 보고 갈려야 한다.
+#
+# 다섯이 함께 못박는 것: **읽지 못한 것은 이름을 대고 버린다.** 조용히 0개로 끝내는
+# 것도, 반쯤 읽은 것을 완성본처럼 싣는 것도, 버렸다고 말해 놓고 되살리는 것도 아니다.
+def _ddl_run(work, text, name='a.sql'):
+    """DDL 한 파일을 돌리고 (스키마, stdout) 을 함께 준다.
+
+    `ddl()` 은 스키마만 돌려준다. 아래 케이스들은 **화면에 나간 말**이 재는 것의
+    절반이라 — 조용히 버리는 것을 잡는 케이스가 여럿이다 — 출력까지 봐야 한다.
+    """
+    d = work / 'sql'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(text, encoding='utf-8')
+    r = run('parse_ddl.py', work, sql_dir=d)
+    return json.loads((work / 'schema.json').read_text(encoding='utf-8')), r.stdout
+
+
+@case('parse: a CREATE TABLE whose ( never closes is named, not dropped in silence')
+def _(work):
+    # 여는 괄호가 끝내 안 닫히는 갈래(`if depth:`). 예전엔 `continue` 한 줄이 전부라
+    # 테이블 0개에 rc 0 으로 끝났고 화면에는 단서가 한 글자도 없었다 — DDL 을 다시
+    # 들여다볼 이유조차 안 남았다.
+    #
+    # 두 가지를 함께 본다. 버렸다는 것(테이블 0개)과 **이름을 댔다는 것**이다.
+    # 이름 쪽을 빼면 알림을 통째로 들어내도 초록이다 — 실제로 그랬다.
+    s, out = _ddl_run(work, 'CREATE TABLE r ( a int DEFAULT (1, b text, c text );\n')
+    eq(sorted(s), [], 'a table whose body never closes is not filed')
+    has(out, 'could not be read: r', 'and the name it was written under is said out loud')
+
+
+@case('parse: a CREATE TABLE cut short by a stray ) is named, not filed half-read')
+def _(work):
+    # 남는 `)` 는 본문을 **너무 일찍** 끊는다. `a int DEFAULT 1), b text, c text` 는
+    # 그 `)` 를 닫는 괄호로 읽어 b·c 가 문 밖으로 밀려났고, 컬럼 하나만 든 테이블이
+    # 아무 말 없이 정의서에 실렸다 — 사람 눈에는 그냥 컬럼이 하나인 테이블이다.
+    # 위 케이스와 갈래가 다르다(`) ,` 검출). 그쪽은 깊이가 남는 쪽, 이쪽은 깊이가
+    # 일찍 0 이 되는 쪽이라 한쪽만 재면 다른 쪽이 통째로 무방비다.
+    s, out = _ddl_run(work, 'CREATE TABLE q ( a int DEFAULT 1), b text, c text );\n')
+    eq(sorted(s), [], 'a body cut short by a stray ) is not filed with the columns it kept')
+    has(out, 'could not be read: q', 'and the name is said out loud')
+
+
+@case('parse: the stray ) is caught with blanks between it and the comma')
+def _(work):
+    # 위 케이스와 **한 글자** 차이다 — `)` 와 콤마 사이의 공백. 검출이 꼬리를
+    # `lstrip()` 하지 않으면 이 모양만 빠져나가, 손으로 띄어 쓴 DDL 이 다시 조용히
+    # 반만 실린다. 위 케이스는 이것을 못 잰다(공백이 없으므로 둘 다 잡힌다).
+    s, out = _ddl_run(work, 'CREATE TABLE q ( a int DEFAULT 1)  , b text, c text );\n')
+    eq(sorted(s), [], 'blanks before the comma hide nothing')
+    has(out, 'could not be read: q', 'and the name is said out loud')
+
+
+@case('parse: an unclosed body stops at its own ; instead of eating the next table')
+def _(work):
+    # 본문이 제 문(`;`)을 넘어가던 때의 모양이다. 짝 안 맞는 `(` 가 **뒤 문장의** `)`
+    # 로 맞아떨어져, 남의 `CREATE TABLE` 이 통째로 앞 테이블의 기본값 칸에 실렸다:
+    #   r.a 의 기본값 = `(1, b text ); CREATE TABLE u ( a int DEFAULT 1)`
+    # 그러면서 r 은 **성한 테이블처럼** 정의서에 실리고 경고도 u 것 하나뿐이었다.
+    #
+    # 그래서 세 가지를 본다. ⑴ 두 문 다 버려진다 ⑵ 둘 **다** 이름이 불린다
+    # ⑶ 뒤따르는 성한 `ok` 는 멀쩡히 살아남는다. ⑶ 이 없으면 '어긋난 문 하나가
+    # 파일의 나머지를 다 삼키는' 처방도 초록으로 통과한다.
+    s, out = _ddl_run(work,
+                      'CREATE TABLE r ( a int DEFAULT (1, b text );\n'
+                      'CREATE TABLE u ( a int DEFAULT 1), b text );\n'
+                      'CREATE TABLE ok (id int);\n')
+    eq(sorted(s), ['ok'], 'neither broken statement is filed, and the healthy one is')
+    eq([c['name'] for c in s['ok']['columns']], ['id'], 'the healthy table is whole')
+    has(out, 'could not be read: r (a.sql), u (a.sql)', 'both names are said, in file order')
+
+
+@case('parse: a table that could not be read is not raised again by a later ALTER')
+def _(work):
+    # 버렸다고 **말한** 것이 되살아나던 자리다. `parse_alter` 는 없는 테이블을 만나면
+    # 스텁을 세우는데, 이름만 보던 판은 방금 버린 q 를 컬럼 0개짜리로 다시 세웠다.
+    # 세 가지가 한꺼번에 틀렸다: 빠진다고 말해 놓고 안 빠졌고, 배지가 `new` 에서
+    # `existing` 으로 뒤집혔고, `ddl_no_db` 가 'ERD_DB/ERD_PSQL 을 주면 채워진다' 고
+    # 안내해 있지도 않은 접속 문제를 쫓게 했다 — 신규 테이블이라 DB 에 있을 리 없다.
+    #
+    # 마지막 한 줄이 이 케이스가 **혼자** 재는 것이다. 스텁이 서는 것만 보면 안내
+    # 문구는 따로 안 재어지는데, 사람이 실제로 시간을 버리는 자리는 그 문구다.
+    s, out = _ddl_run(work, 'CREATE TABLE q ( a int DEFAULT 1), b text );\n'
+                            'ALTER TABLE q ADD COLUMN z int;\n')
+    eq(sorted(s), [], 'the ALTER does not raise the table its CREATE could not be read')
+    has(out, 'could not be read: q', 'the name is said out loud')
+    eq('never defined in the DDL' in out, False,
+       'and a table nobody could read is not explained away as a missing connection')
+
+
+@case('parse: WITH and PARTITION BY tables are read with no warning at all')
+def _(work):
+    # 위 다섯의 **반대쪽 못**이다. 그쪽은 전부 '버려야 할 것을 버리는가' 를 묻는데,
+    # 그것만 재면 검출을 넓히는 쪽으로 틀린 처방이 다 초록이다 — 성한 DDL 을 버려도
+    # 아무도 안 묻기 때문이다. 실제로 '콤마가 **어딘가** 있다' 로 넓힌 판은 아래 두
+    # 테이블을 통째로 버렸다.
+    #
+    # 경고가 **0줄** 인 것까지 보는 것이 요점이다. 버리지는 않고 경고만 더 내는 판
+    # (넓힌 검출로 이름만 적고 계속 읽는 것)은 표에 남는 것이 하나도 안 달라져,
+    # 컬럼만 세는 케이스로는 210 이 전부 초록이었다. 없는 고장을 알리는 것도 고장이다.
+    s, out = _ddl_run(work,
+                      'CREATE TABLE t (a int) WITH (fillfactor = 70, '
+                      'autovacuum_enabled = false);\n'
+                      'CREATE TABLE p (a int, b int) PARTITION BY RANGE (a, b);\n')
+    eq([(k, [c['name'] for c in v['columns']]) for k, v in sorted(s.items())],
+       [('p', ['a', 'b']), ('t', ['a'])], 'both healthy tables are read whole')
+    eq([ln for ln in out.splitlines() if 'could not be read' in ln], [],
+       'and neither of them is cried over')
+
+
 @case('parse: ADD COLUMN IF NOT EXISTS written twice adds the column once')
 def _(work):
     # 두 마이그레이션 파일이 같은 `ADD COLUMN IF NOT EXISTS` 를 들고 있는 것은 흔한
@@ -2186,12 +2321,12 @@ CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 26,
 # **이 벌 전체가 몇 개인가**는 개명으로 바뀌지 않는다. 개명만 하는 것은 이 바닥을
 # 통과하고(그래도 좋다 — 개명 자체는 아무것도 안 잃는다), 개명에 삭제를 섞는 순간
 # 총계가 내려가 여기서 붉어진다. 도커 케이스는 서버가 있어야만 등록되므로 뺀다.
-TOTAL_FLOOR = 210
+TOTAL_FLOOR = 217
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 92
+EXPECT_CASES = 99
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
