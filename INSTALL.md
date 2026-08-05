@@ -106,7 +106,7 @@ A healthy run looks like this:
   ✓ mono:   …/Menlo.ttc
 
 6. Regression test
-  ✓ all 202 passed
+  ✓ all 199 passed
   ! 6 cases need a real server and were NOT run (ERD_SELFTEST_DOCKER=1 …)
 
 Result

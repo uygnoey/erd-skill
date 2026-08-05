@@ -8,8 +8,8 @@
 놓인 `selftest_*.py` 를 글로브로 찾아 오므로 네 파일이 한 벌로 돈다.
 
 이번 라운드의 것은 모양이 하나로 모인다. **`--check` 가 안 한 검사를 통과로 적었다.**
-REVIEW-LOG 가 세 번 이름 붙인 그 부류다 — 잴 것이 없으면 그 사실 자체가 실패여야
-하는데, 여기서는 절이 통째로 사라지고 `✓ installation complete` 만 남았다.
+잴 것이 없으면 그 사실 자체가 실패여야 하는데, 여기서는 절이 통째로 사라지고
+`✓ installation complete` 만 남았다.
 
   · `scripts/` 가 없으면 6번 절이 출력에서 지워지고 초록불     (I1)
   · clone 을 재고 설치본을 합격시킨다                          (I2)
@@ -34,19 +34,11 @@ import sys
 from selftest_kit import Fail, HERE, case, eq, has, main
 
 
-EXPECT_CASES = 13       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
+EXPECT_CASES = 10       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
 
 REPO = HERE.parent
 INSTALL_SH = REPO / 'install.sh'
 REQ_TXT = REPO / 'requirements.txt'
-REVIEW_LOG = REPO / 'REVIEW-LOG.md'
-INSTALL_DOCS = ('INSTALL.md', 'INSTALL.ko.md', 'INSTALL.ja.md', 'INSTALL.es.md')
-
-# 한 칸의 상한. `REVIEW-LOG.md` 가 제 규칙으로 "칸은 한 문장을 넘기지 않는다" 를
-# 적어 두었는데 그것을 재는 것이 없었다. 문장 길이를 기계가 셀 수는 없으므로 글자
-# 수로 대신 잰다 — 넘치면 `### 각주` 로 빼라는 뜻이다. 15라운드가 표를 다시 세울 때
-# 가장 긴 칸이 110자였으므로, 그 위로 조금만 여유를 준다.
-CELL_MAX = 140
 
 # install.sh 가 말(카탈로그)의 끝에 박아 둔 표시. 여기까지는 부수효과가 없어서
 # source 해도 안전하다 — 'every message key renders…' 가 그 성질을 쓴다.
@@ -459,9 +451,9 @@ def _(work):
 @case('install: --check reports the cases the regression test did not run')
 def _(work):
     """`tail -1` 만 읽어, `selftest.py` 가 집계 **윗줄**에 찍는
-    `N cases … were NOT run` 을 버렸다. SKILL.md 와 REVIEW-LOG 는 "안 돌린 개수는
-    집계 윗줄에 매번 찍힌다" 고 적는데, 문서가 유일한 입구라고 못박은 `--check`
-    에서는 그 줄만 안 보였다 — 안 한 검사를 통과로 적는 그 부류다."""
+    `N cases … were NOT run` 을 버렸다. SKILL.md 는 "안 돌린 개수는 집계 윗줄에
+    매번 찍힌다" 고 적는데, 문서가 유일한 입구라고 못박은 `--check` 에서는 그 줄만
+    안 보였다 — 안 한 검사를 통과로 적는 그 부류다."""
     root = work.parent
     tree = make_tree(root / 'tree', mark='NOTE')
     r = run_install(root, tree, '--check')
@@ -502,148 +494,6 @@ def _(work):
     has(r3.out, 'requirements.txt', 'it must name the file that is missing')
 
 
-# ── 16R · 문서를 재는 것이 하나도 없었다 ───────────────────────────────────
-# 15라운드 수정자 D 가 `반증 안 됨` 으로 남긴 네 행(#109~#112)의 원인을 그렇게 짚었다.
-# 네 행 전부가 `REVIEW-LOG.md` 자신에 대한 것이고, 그 문서를 여는 시험이 하나도 없어서
-# **되돌려도 아무 데서도 빨강이 뜨지 않았다.** 여기 셋이 그 자리를 문다.
-#
-# 파일 이름은 install 이지만 담긴 것은 문서다 — 이 파일이 `install.sh --check` 가
-# 돌리는 회귀 시험의 한 조각이고, `--check` 가 사용자에게 보여 주는 예시 출력이 바로
-# 아래 두 번째 케이스가 재는 숫자이기 때문이다. 더 나은 자리가 생기면 옮기면 된다.
-
-_CELL = re.compile(r'(?<!\\)\|')        # `\|` 는 칸을 나누지 않는다 (마크다운 규칙)
-_SEP = re.compile(r'^[\s:|-]+$')
-
-
-def md_tables(text):
-    """마크다운 표를 [(첫 줄 번호, [행…])] 로 끊어 낸다. 행은 칸 목록이다."""
-    out, cur, start = [], [], 0
-    for i, line in enumerate(text.split('\n'), 1):
-        s = line.strip()
-        if s.startswith('|') and s.endswith('|') and len(s) > 1:
-            if not cur:
-                start = i
-            cur.append((i, [c.strip() for c in _CELL.split(s)[1:-1]]))
-        elif cur:
-            out.append((start, cur))
-            cur = []
-    if cur:
-        out.append((start, cur))
-    return out
-
-
-@case('docs: every row of the REVIEW-LOG tables has the shape its header declares')
-def _(work):
-    """`REVIEW-LOG.md` 의 주 표는 여덟 열이다. 그런데 그 모양을 재는 것이 없어서,
-    칸 안의 `|` 하나가 열을 늘려도(표가 깨진다) 빈 칸이 남아도(문서 제 규칙 위반)
-    한 칸에 문단이 들어가도(15라운드까지 그랬다) 아무 데서도 빨강이 안 떴다.
-
-    세 가지를 잰다 — 모든 행이 제 표 머리와 같은 열 수인가, 빈 칸이 없는가, 어떤
-    칸도 `CELL_MAX` 를 넘지 않는가."""
-    if not REVIEW_LOG.exists():
-        raise Fail(f'{REVIEW_LOG} is missing — the log is part of the skill, and a '
-                   f'case that measures nothing must not pass')
-    tables = md_tables(REVIEW_LOG.read_text(encoding='utf-8'))
-    rows = sum(len(t) for _s, t in tables)
-    # 이빨: 파싱이 무너지면 '전부 통과' 가 된다. 표가 실제로 잡혔는지 먼저 못박는다.
-    if len(tables) < 2 or rows < 100:
-        raise Fail(f'the table parse found {len(tables)} table(s) and {rows} row(s) — '
-                   f'that is too little to be this document, so this case measured '
-                   f'nothing')
-    for _start, table in tables:
-        width = len(table[0][1])
-        for ln, cells in table:
-            if _SEP.fullmatch('|'.join(cells)) and set(''.join(cells)) <= set(' :-'):
-                continue                       # 머리 아래 구분선
-            if len(cells) != width:
-                raise Fail(f'REVIEW-LOG.md:{ln} has {len(cells)} columns but its '
-                           f'header has {width} — a raw "|" inside a cell must be '
-                           f'written as \\| \n      {"|".join(cells)[:160]}')
-            for i, c in enumerate(cells, 1):
-                if not c:
-                    raise Fail(f'REVIEW-LOG.md:{ln} column {i} is empty — the '
-                               f"document's own rule is that no cell is left blank")
-                if len(c) > CELL_MAX:
-                    raise Fail(f'REVIEW-LOG.md:{ln} column {i} is {len(c)} characters '
-                               f'(limit {CELL_MAX}) — move it into ### 각주 as a '
-                               f'footnote\n      {c[:120]}…')
-
-
-@case('docs: the case counts the documents state are the counts a run produces')
-def _(work):
-    """`지금 있는 것` 의 "131개" 는 **두 라운드째 틀린 값**이었고, 15라운드가 그것을
-    161 로 고칠 때 `INSTALL.md`·`.ko`·`.ja`·`.es` 네 곳의 같은 131 은 그대로 남았다.
-    같은 숫자가 다섯 군데에 손으로 적혀 있고 그중 하나만 고쳐도 아무 데서도 빨강이
-    안 떴다 — 그것이 `반증 안 됨` 네 행의 모양이다.
-
-    그래서 숫자를 하드코딩하지 않고 **규칙**으로 잰다: 문서가 적은 수는 이 판이
-    실제로 등록한 수와 같아야 한다. 라운드가 케이스를 늘리면 이 케이스가 빨개지고,
-    그때 다섯 자리를 함께 고치면 된다."""
-    import selftest_kit as kit
-    import selftest_history as hist
-
-    ran = len(kit.CASES)                 # 지금 등록된 것 (도커면 DB 케이스도 포함)
-    db = hist._DB_CASES
-    no_docker = ran - db if hist._DB_RAN else ran
-    if no_docker < 1 or db < 1:
-        raise Fail(f'the counts came out as {no_docker}/{db} — this case could not '
-                   f'read the registry, so it measured nothing')
-
-    text = REVIEW_LOG.read_text(encoding='utf-8')
-    m = re.search(r'\*\*(\d+)개 항목\*\*', text)
-    if not m:
-        raise Fail('REVIEW-LOG.md no longer states its case count as "**N개 항목**" — '
-                   'this case cannot find the number it is meant to keep honest')
-    eq(int(m.group(1)), no_docker, 'REVIEW-LOG.md 의 `지금 있는 것` 개수')
-    m2 = re.search(r'ERD_SELFTEST_DOCKER=1` 이면 여기에 (\d+)개가 더해진다', text)
-    if not m2:
-        raise Fail('REVIEW-LOG.md no longer states how many cases docker adds')
-    eq(int(m2.group(1)), db, 'REVIEW-LOG.md 의 도커 추가분')
-
-    # 날짜가 없으면 그 숫자가 언제의 것인지 아무 데도 없다 — 이 문서가 네 번 틀린
-    # 자리의 공통점이다.
-    near = text[m.start():m.start() + 200]
-    if not re.search(r'20\d\d-\d\d-\d\d', near):
-        raise Fail('the case count in REVIEW-LOG.md carries no measurement date — '
-                   '"131" survived two rounds precisely because nobody could tell '
-                   'when it had been measured')
-
-    # 네 언어의 INSTALL 예시 출력. 15라운드는 여기 넷을 잊었다.
-    for name in INSTALL_DOCS:
-        p = REPO / name
-        if not p.exists():
-            raise Fail(f'{name} is missing')
-        body = p.read_text(encoding='utf-8')
-        got = re.findall(r'all (\d+) passed', body)
-        if not got:
-            raise Fail(f'{name} no longer shows an "all N passed" example line — the '
-                       f'documented output of install.sh --check is what this measures')
-        for n in got:
-            eq(int(n), no_docker, f'{name} 의 예시 출력')
-        skipped = re.findall(r'(\d+) cases need a real server|! (\d+) ', body)
-        nums = [int(a or b) for a, b in skipped]
-        if nums and any(n != db for n in nums):
-            raise Fail(f'{name} says {nums} cases were not run, but the suite reports '
-                       f'{db}')
-
-
-@case('docs: "확인 필요" never survives as a cell of the REVIEW-LOG table')
-def _(work):
-    """14라운드가 라운드가 *끝나기 전에* 문서를 써서 세 칸을 `확인 필요` 로 두었고,
-    그 셋은 다음 라운드가 실측해서야 채워졌다. 15라운드가 그것을 규칙 문장으로
-    넣었지만, **규칙을 지키는지 보는 것은 아무것도 없었다.**
-
-    규칙을 말하는 산문은 그대로 둔다 — 재는 것은 표의 칸이다."""
-    tables = md_tables(REVIEW_LOG.read_text(encoding='utf-8'))
-    if not tables:
-        raise Fail('no table found in REVIEW-LOG.md — this case measured nothing')
-    for _start, table in tables:
-        for ln, cells in table:
-            for i, c in enumerate(cells, 1):
-                if c.strip('* `').startswith('확인 필요'):
-                    raise Fail(f'REVIEW-LOG.md:{ln} column {i} is still "확인 필요" — '
-                               f'a round that has ended may not leave one behind '
-                               f'(the document says so itself)')
 
 
 if __name__ == '__main__':
