@@ -23,6 +23,12 @@
 들어간다. 그것만 믿지 않고 `curl`·`unzip` 을 가로채는 껍데기를 PATH 앞에 두고,
 **부를 때마다** 한 번도 안 불렸는지 확인한다(`run_install` 의 마지막 줄) —
 '안 썼다' 도 재야 하는 말이다.
+
+맨 끝의 둘은 라운드의 것이 아니라 **문서**의 것이다. 네 언어의 `INSTALL*.md` 가
+`--check` 의 예시 출력으로 보여 주는 두 숫자, 그리고 `SKILL.md`·`SKILL.ko.md` 의
+실행법 블록이 적는 두 숫자를 실제 등록 수와 맞춘다. 그 자리를 재던 것이 다른 문서를
+함께 읽다가 그 문서와 함께 사라져, 여섯 곳의 손으로 적은 수를 읽는 것이 하나도 없게
+되었다. 여기가 `--check` 를 재는 파일이라 그 옆에 둔다.
 """
 import hashlib
 import os
@@ -34,7 +40,7 @@ import sys
 from selftest_kit import Fail, HERE, case, eq, has, main
 
 
-EXPECT_CASES = 10       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
+EXPECT_CASES = 12       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
 
 REPO = HERE.parent
 INSTALL_SH = REPO / 'install.sh'
@@ -494,6 +500,279 @@ def _(work):
     has(r3.out, 'requirements.txt', 'it must name the file that is missing')
 
 
+# ── 문서가 적은 케이스 수 ───────────────────────────────────────────────────
+# 파일 이름은 install 이지만 담긴 것은 문서다 — 네 언어의 설치 문서가 보여 주는 예시
+# 출력이 바로 `install.sh --check` 의 마지막 두 줄이고, 그 두 줄을 만드는 것이 이
+# 파일이 재고 있는 그 명령이기 때문이다. `SKILL*.md` 의 실행법 블록도 같은 부류라
+# 바로 옆에 둔다(아래 두 번째 케이스).
+#
+# 같은 숫자가 여섯 군데에 손으로 적혀 있고, 그중 하나만 고쳐도 아무 데서도 빨강이
+# 뜨지 않았다. 그래서 숫자를 여기 하드코딩하지 않고 **규칙**으로 잰다: 문서가 적은
+# 수는 이 벌이 실제로 등록한 수와 같아야 한다. 라운드가 케이스를 늘리면 이 케이스가
+# 빨개지고, 그때 문서를 함께 고치면 된다.
+INSTALL_DOCS = ('INSTALL.md', 'INSTALL.ko.md', 'INSTALL.ja.md', 'INSTALL.es.md')
+SKILL_DOCS = ('SKILL.md', 'SKILL.ko.md')
+
+
+def case_defs(path):
+    """파일 하나에 `@case(...)` 가 붙은 함수가 몇 개인지 — 소스를 AST 로 센다.
+
+    등록된 목록을 세는 것과 **다른 근거**다. 세는 쪽과 세어지는 쪽이 같은 값을 보면
+    어긋나도 자기일관이라 조용하다(`selftest_history` 의 도커 개수가 그 자리였다).
+    """
+    import ast
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    return sum(1 for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and any(isinstance(d, ast.Call) and getattr(d.func, 'id', '') == 'case'
+                       for d in n.decorator_list))
+
+
+def _history_module():
+    """`selftest_history` 의 모듈 객체 — 어느 입구로 들어왔든 같은 것을 집는다.
+
+    여기가 `import selftest_history as hist` 였고, 그 한 줄이 `python3
+    selftest_history.py` 를 통째로 빨갛게 만들었다. 그 입구로 들어오면 그 파일은
+    이미 `__main__` 으로 40개를 등록한 상태인데, 제 이름으로 다시 import 하면 **같은
+    파일이 두 번째 모듈**이 되어 40개를 또 올리고 이름 중복 검사가 죽인다.
+    `selftest_kit.load_extras()` 가 `p.resolve() != _self` 로 일부러 피하는 자리를
+    이 import 가 뒤로 돌아 들어가 우회한 것이다.
+
+    그래서 새로 부르지 않는다 — **`_DB_CASES` 를 들고 있는 쪽**을 고른다. 리터럴
+    `6` 으로 적지 않는 이유는 그 수가 `_register_db_cases()` 를 세어 나오는 값이라,
+    도커 케이스가 늘면 여기만 조용히 틀리기 때문이다.
+    """
+    for mod in (sys.modules.get('selftest_history'), sys.modules.get('__main__')):
+        if hasattr(mod, '_DB_CASES'):
+            return mod
+    raise Fail('neither selftest_history nor __main__ holds _DB_CASES — the number of '
+               'cases that need a real server could not be read, so this case measured '
+               'nothing')
+
+
+def suite_counts():
+    """문서가 인용하는 세 수 — (집계에 찍히는 수, 안 돌린 수, 입구 파일 몫을 뺀 수).
+
+    도커 케이스는 서버가 있어야만 등록되고, 등록되면 이름이 `db: ` 로 시작한다.
+    문서의 `all N passed` 는 **서버 없이** 돈 판의 수이므로 그 여섯을 뺀다 —
+    `selftest.py` 의 `TOTAL_FLOOR` 가 쓰는 규칙과 같다. 여섯은 집계 **윗줄**에 따로
+    찍히고 문서도 그 줄을 따로 적으므로, 두 수를 따로 돌려준다.
+
+    셋째는 `python3 selftest_history.py` 로 들어왔을 때 도는 수다. 그 입구는 제 파일
+    것만 도는 것이 아니라 글로브에 걸리는 옆 파일을 전부 함께 올린다 — 걸리지 않는
+    것은 입구 파일 `selftest.py` 하나뿐이라, 총계에서 그 몫을 뺀 값이다.
+    """
+    import selftest_kit as kit
+
+    kit.load_extras()      # 이 파일만 직접 돌려도 옆의 것이 함께 올라온다
+    ran = sum(1 for n, _f in kit.CASES if not n.startswith('db: '))
+    # 입구 파일(`selftest.py`)은 글로브 `selftest_*.py` 에 걸리지 않는다. 그 파일을
+    # 돌리는 중이면 그 몫이 이미 CASES 에 있고, 이 파일만 직접 돌리면 통째로 빠져
+    # 있다 — 빠진 채로 재면 이 케이스가 보는 수가 사용자가 보는 수와 달라져, 문서를
+    # 지켜 주는 척만 하게 된다. 빠졌으면 소스에서 세어 채운다.
+    entry = HERE / 'selftest.py'
+    if not entry.exists():
+        raise Fail(f'{entry.name} is missing — the file that prints the tally the '
+                   f'documents quote is not there, so this case measured nothing')
+    own = case_defs(entry)
+    main_file = getattr(sys.modules.get('__main__'), '__file__', '') or ''
+    if 'selftest' not in sys.modules and os.path.basename(main_file) != entry.name:
+        ran += own
+    return ran, _history_module()._DB_CASES, ran - own
+
+
+def fenced_spans(body):
+    """``` / ~~~ 로 열고 닫은 블록의 (시작, 끝) 오프셋 목록.
+
+    구멍 4 에 대한 판단이 여기 있다. 이전 판은 `re.findall` 로 **파일 전체**를 훑어,
+    예시 출력 블록에서 그 줄이 사라져도 같은 문구가 파일 어딘가에 남아 있으면 초록
+    이었다(줄을 통째로 지우는 것은 잡았다). 잰다고 말한 것은 '문서가 보여 주는 예시
+    출력' 인데 실제로 재던 것은 '파일 어딘가의 문자열' 이라, 그만큼은 재는 척이다.
+
+    그래서 **자리까지 잰다.** 여기가 대는 것은 울타리의 위치뿐이다 — 터미널 출력
+    예시는 어느 언어판에서도 코드 블록으로 적히므로, '코드 블록 안일 것' 만으로도
+    숫자가 산문으로 새어 나가는 우회는 막히고 문서를 재구성해도 거짓 빨강이 없다.
+
+    다만 그것만으로는 **어느 블록인지**가 안 잡힌다. 얼마나 더 못박을지는 자리마다
+    다르므로 여기서 정하지 않고 부르는 쪽에 둔다 — 줄머리의 `✓`·`!` 표를 정규식에
+    함께 넣는 것과 `same_block()` 이 그 판단이다.
+    """
+    spans, open_at, mark = [], None, None
+    for m in re.finditer(r'(?m)^[ \t]*(```|~~~)', body):
+        if open_at is None:
+            open_at, mark = m.end(), m.group(1)
+        elif m.group(1) == mark:
+            spans.append((open_at, m.start()))
+            open_at, mark = None, None
+    return spans
+
+
+def doc_numbers(name, pattern, what):
+    """`name` 안에서 `pattern` 의 첫 그룹을 정수로 — **코드 블록 안의 것만** 센다.
+
+    돌려주는 것은 `(수, 몇 번째 블록에서 나왔는가)` 의 목록이다. 부르는 쪽이 두 수가
+    **같은 블록** 안에 있기를 요구할 수 있어야 하기 때문이다 — 왜 그 요구가 필요한
+    자리와 필요 없는 자리가 갈리는지는 `same_block()` 에 적었다.
+
+    하나도 못 찾으면 실패다. 문서가 그 줄을 잃은 것도 결함이고, 못 찾은 채 통과하면
+    이 케이스는 아무것도 안 잰 것이 된다.
+    """
+    p = REPO / name
+    if not p.exists():
+        raise Fail(f'{name} is missing — it is part of the skill, and a case that '
+                   f'measures nothing must not pass')
+    body = p.read_text(encoding='utf-8')
+    spans = fenced_spans(body)
+    got = [(int(m.group(1)), i) for m in re.finditer(pattern, body)
+           for i, (a, b) in enumerate(spans) if a <= m.start() < b]
+    if not got:
+        loose = re.search(pattern, body)
+        raise Fail(f'{name} no longer shows {what} inside a code block' +
+                   (f' (the text is still in the file, but outside every fence — a '
+                    f'number in prose is not the example output this measures)'
+                    if loose else ''))
+    return got
+
+
+def same_block(name, first, second, what):
+    """`doc_numbers()` 가 돌려준 두 무리가 **한 블록** 안에서 만나는지.
+
+    `fenced_spans()` 는 '코드 블록 안' 까지만 봤고 **어느 블록인지**는 안 봤다. 그
+    틈으로 이런 우회가 통과했다(실측): `INSTALL.md` 의 `✓ all 201 passed` 와
+    `! 6 cases …` 두 줄을 통째로 지우고, 문서 맨 위 설치 명령 bash 블록에 같은 수를
+    한 줄로 적어 넣으면 초록이었다. `--check` 예시 출력이 사라졌는데 초록이다.
+
+    두 수가 **한 판의 출력에서 위아래로 붙어 나오는 것**일 때만 이 요구가 옳다.
+    서로 다른 블록에 흩어져 있다면 그것은 재겠다고 말한 그 출력이 아니기 때문이다.
+    반대로 각 줄이 **명령 자체**를 달고 있어 어디에 있든 뜻이 서는 자리(`SKILL*.md`
+    의 실행법)에는 걸지 않는다 — 거기서는 블록이 갈려도 문서가 거짓이 되지 않아,
+    문서 구조에 케이스를 묶는 값만 남는다.
+    """
+    if not ({b for _n, b in first} & {b for _n, b in second}):
+        raise Fail(f'{name} shows {what} in different code blocks — they are two lines '
+                   f'of one example output, so a number that drifted out of that block '
+                   f'is no longer the output this measures')
+
+
+@case('install: the case counts the INSTALL documents state are the counts a run produces')
+def _(work):
+    """네 언어의 설치 문서가 `install.sh --check` 의 예시 출력으로 보여 주는 두
+    숫자를 잰다 — 집계 줄의 `all N passed` 와 그 아랫줄의 `N cases need a real
+    server`. `selftest.py` 자신은 안 돌린 수를 집계 **위**에 찍지만, `install.sh` 는
+    집계(`tail -1`)를 먼저 넘기고 남은 줄을 뒤에 붙이므로 문서에는 아래에 온다.
+
+    네 곳에 같은 수가 손으로 적혀 있고 그것을 읽는 것이 하나도 없었다. 문서만 보는
+    사람에게 그 줄은 '이 설치가 성공하면 무엇이 나오는가' 의 유일한 근거이므로,
+    조용히 틀린 수는 그대로 조용한 거짓말이 된다.
+
+    **넷을 다 본다.** 하나만 보면 나머지 셋이 어긋나도 초록이다.
+
+    자리도 함께 못박는다 — 아래 두 정규식은 `install.sh` 의 `ok`/`warn` 이 붙이는
+    `✓`·`!` 표까지 요구하고, 두 매치가 **같은 코드 블록** 안에서 나와야 한다. 표도
+    두 줄도 프로그램이 찍는 영문 출력이라 네 언어판이 글자까지 같다(실측 확인).
+    이것이 없으면 예시 출력을 통째로 지우고 다른 블록에 수만 적어 넣는 우회가 그대로
+    통과한다 — `same_block()` 에 그 실측을 적어 두었다."""
+    ran, db, _outside = suite_counts()
+    # 이빨: 등록을 못 읽었으면 아래 대조가 전부 통과가 된다. 잴 것이 잡혔는지 먼저
+    # 못박는다 — 이 벌은 백 개가 넘고, 안 돌린 것은 최소 하나다.
+    if ran < 100 or db < 1:
+        raise Fail(f'the counts came out as {ran}/{db} — this case could not read the '
+                   f'registry, so it measured nothing')
+
+    seen = set()
+    for name in INSTALL_DOCS:
+        tally = doc_numbers(name, r'(?m)^[ \t]*✓[ \t]+all (\d+) passed',
+                            'a "✓ all N passed" example line')
+        skipped = doc_numbers(name,
+                              r'(?m)^[ \t]*![ \t]+(\d+) cases need a real server',
+                              'the "! N cases need a real server" line that install.sh '
+                              '--check prints below the tally')
+        for n, _b in tally:
+            eq(n, ran, f'{name} 의 예시 출력 (all N passed)')
+        for n, _b in skipped:
+            eq(n, db, f'{name} 의 안 돌린 개수')
+        same_block(name, tally, skipped,
+                   'the "all N passed" tally and the "N cases need a real server" line')
+        seen.add(name)
+    # 이빨: 여기가 `eq(seen, 4)` 였고 `seen` 은 **루프를 돈 횟수**였다 — 목록이
+    # `('INSTALL.md',) * 4` 여도 4 라서, 개명 중 오타 하나로 스페인어판이 영영 안
+    # 읽히는 채 초록일 수 있었다. 읽은 **이름의 집합**을 저장소에 실제로 있는
+    # `INSTALL*.md` 전부와 맞춘다. 언어판이 하나 늘어도 여기서 빨개진다.
+    on_disk = {p.name for p in REPO.glob('INSTALL*.md')}
+    if len(on_disk) < 4:
+        raise Fail(f'the repository holds only {sorted(on_disk)} — the skill ships four '
+                   f'install documents, so something was lost')
+    if seen != on_disk:
+        raise Fail(f'this case read {sorted(seen)} but the repository holds '
+                   f'{sorted(on_disk)} — every install document must be measured, or '
+                   f'the unread one drifts quietly')
+
+
+@case('install: the case counts SKILL.md and SKILL.ko.md state are the counts a run produces')
+def _(work):
+    """`SKILL*.md` 의 실행법이 주석으로 적는 세 수를 잰다 — `python3 selftest.py`
+    옆의 전체 개수, `python3 selftest_history.py` 옆의 개수, 그리고
+    `ERD_SELFTEST_DOCKER=1 python3 selftest.py` 옆의 도커 개수.
+
+    바로 위 케이스가 설치 문서 넷을 지키게 된 뒤에도 이 자리는 아무도 안 보고
+    있었다. 실제로 `101` 과 `39` 가 남아 있었다 — `199` 시절보다도 오래된 수라, 앞
+    라운드가 `grep "199\\|200"` 으로 훑었을 때도 걸리지 않았다. 손으로 적은 수를
+    손으로 찾는 것은 이렇게 실패하므로, 같은 부류의 자리는 같은 규칙으로 잰다.
+
+    `39` 쪽은 수만 낡은 것이 아니었다. `그 파일 것 39개만` 이라는 문장은 적힐 당시
+    (`c391783`) 에는 **참이었다** — 그때 `scripts/` 에 있던 시험 파일은
+    `selftest.py`·`selftest_history.py`·`selftest_kit.py` 셋뿐이라 글로브에 걸려
+    함께 올라올 옆 파일이 없었다(`git ls-tree` 로 확인). `64b643d` 가
+    `selftest_r14_*` 넷을 더하면서 그 입구가 옆 파일까지 돌게 되어 문장이 거짓이 됐고
+    아무도 안 고쳤다. 그래서 고칠 때 수만 바꾸지 않고 문장을 함께 바꿨다.
+
+    주석에서 **첫 번째 숫자**를 집는다. 언어판마다 어순이 달라 낱말에 못을 박을 수
+    없기 때문이다(`# everything (201 cases)` · `# 전부 (201개)`). 뒤따르는 `(10초쯤)`
+    같은 수는 그래서 안 걸린다.
+
+    도커 줄도 같은 규칙으로 잰다. 이전 판은 '한 줄에 `postgres:16-alpine` 이 함께
+    있어 첫 숫자 규칙이 16 을 집는다' 고 적고 이 자리를 뺐는데, **그 서술이 틀렸다**
+    — 두 언어판 모두 `6` 이 `16` 보다 앞에 있어 비탐욕 매치가 `6` 을 문다(정규식을
+    실제로 돌려 확인했다: `# + the 6, on postgres:16-alpine …` · `# 6개까지
+    (postgres:16-alpine …)`). 잴 수 있는 자리를 못 잰다고 적고 비워 둔 것이라
+    되살린다.
+
+    산문 쪽 둘(`Six more cases …` · `6개가 더 …`)은 안 잰다. 영어판이 그 수를
+    **낱말로** 적어(`Six`) 숫자를 찾는 규칙에 아예 안 걸리기 때문이다 — 언어마다
+    수사 표를 두면 잴 수는 있지만, 그것은 번역문의 표기법에 케이스를 묶는 것이다.
+    그래서 이 케이스가 지키는 것은 **코드 블록 안의 세 자리**뿐이고, 산문의 그 수가
+    어긋나는 것은 여기서 안 잡힌다.
+
+    세 줄에 `same_block()` 은 걸지 않는다. 각 줄이 명령 자체를 달고 있어 어느 블록에
+    있든 뜻이 서고, 실제로 도커 줄은 앞의 둘과 다른 블록에 있다(실측 확인)."""
+    ran, db, outside = suite_counts()
+    if ran < 100 or db < 1 or outside < 50:
+        raise Fail(f'the counts came out as {ran}/{db}/{outside} — this case could not '
+                   f'read the registry, so it measured nothing')
+
+    seen = set()
+    for name in SKILL_DOCS:
+        for n, _b in doc_numbers(name, r'(?m)^python3 selftest\.py[ \t]+#[^\n]*?(\d+)',
+                                 'the `python3 selftest.py` line with the case count in '
+                                 'its comment'):
+            eq(n, ran, f'{name} 의 실행법 (python3 selftest.py)')
+        for n, _b in doc_numbers(name,
+                                 r'(?m)^python3 selftest_history\.py[ \t]+#[^\n]*?(\d+)',
+                                 'the `python3 selftest_history.py` line with the case '
+                                 'count in its comment'):
+            eq(n, outside, f'{name} 의 실행법 (python3 selftest_history.py)')
+        for n, _b in doc_numbers(
+                name,
+                r'(?m)^ERD_SELFTEST_DOCKER=1 python3 selftest\.py[ \t]+#[^\n]*?(\d+)',
+                'the `ERD_SELFTEST_DOCKER=1` line with the docker case count in its '
+                'comment'):
+            eq(n, db, f'{name} 의 실행법 (ERD_SELFTEST_DOCKER=1)')
+        seen.add(name)
+    on_disk = {p.name for p in REPO.glob('SKILL*.md')}
+    if seen != on_disk:
+        raise Fail(f'this case read {sorted(seen)} but the repository holds '
+                   f'{sorted(on_disk)} — every SKILL document must be measured, or the '
+                   f'unread one drifts quietly')
 
 
 if __name__ == '__main__':

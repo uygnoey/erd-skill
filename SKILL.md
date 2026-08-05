@@ -371,9 +371,9 @@ database, no docker — about 20 seconds. It is the one entry point: the cases l
 of them up. `install.sh --check` runs exactly this.
 
 ```bash
-python3 selftest.py            # everything (101 cases)
+python3 selftest.py            # everything (201 cases)
 python3 selftest.py parse      # only cases whose name contains 'parse'
-python3 selftest_history.py    # just that file's own 39 (about 10 seconds)
+python3 selftest_history.py    # 118 — every file but the entry file's own (about 10 seconds)
 ```
 
 Six more cases need a real server and are skipped by default — the run says so on the line

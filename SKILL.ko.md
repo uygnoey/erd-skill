@@ -340,9 +340,9 @@ DB 도 docker 도 필요 없고 20초쯤 걸린다. 입구는 이 파일 하나�
 `install.sh --check` 가 돌리는 것도 이것이다.
 
 ```bash
-python3 selftest.py            # 전부 (101개)
+python3 selftest.py            # 전부 (201개)
 python3 selftest.py parse      # 이름에 'parse' 가 든 항목만
-python3 selftest_history.py    # 그 파일 것 39개만 (10초쯤)
+python3 selftest_history.py    # 118개 — 입구 파일 것을 뺀 나머지 전부 (10초쯤)
 ```
 
 진짜 서버가 있어야 도는 6개가 더 있고 기본으로는 건너뛴다 — 집계 바로 윗줄에 몇 개를
