@@ -711,8 +711,22 @@ def _column(cname, rest, comment, added):
       · 값의 **경계** 는 가린 사본에서 찾고 **값** 은 원본에서 꺼낸다. 가린 사본에서
         값까지 읽으면 문자열이 공백이라 빈 값이 되고, 원본에서 경계를 찾으면
         DEFAULT 'see REFERENCES users' 가 `'see` 로 잘린다.
-      · not_null·identity 는 `_decl()` 로 REFERENCES 절을 걷어낸 뒤에 본다. 안 그러면
-        `REFERENCES serial_numbers(id)` 의 부모 이름이 그 컬럼을 identity 로 만든다.
+      · not_null·identity·PK·UNIQUE 는 `_decl()` 로 REFERENCES 절을 걷어낸 뒤에 본다.
+        안 그러면 `REFERENCES serial_numbers(id)` 의 부모 이름이 그 컬럼을 identity 로
+        만든다. **REFERENCES 자신만 원본(rest_sc)에서 읽는다** — 걷어낸 사본에는 없다.
+
+    마지막 줄이 오래 반쪽이었다. not_null·identity 만 `decl` 을 보고 PK·UNIQUE 는
+    `rest_sc` 를 그대로 봤다 — 같은 함수 안에서 같은 규칙을 두 벌로 적은 자리다.
+    `mask` 는 큰따옴표 식별자를 **일부러 안 가리므로**(`_IDC` 가 거기서 이름을 읽어야
+    한다) 부모 쪽 이름이 그대로 판정에 샜다:
+
+        create table t (id bigint, x int references p ("PRIMARY KEY"));
+        → t.pk = ['x']        x 는 PK 가 아니다
+
+    `"UNIQUE"` 라는 이름도 같은 모양이고, 이름이 아니어도 샌다 —
+    `references p (id) /* PRIMARY KEY 였다 */` 의 그 주석은 `msc` 에서 지워지지만
+    ADD COLUMN 으로 들어오는 `rest` 는 이미 접힌 사본이라 자리마다 다르다. 판정하는
+    낱말을 **한 사본에서** 보게 두면 그런 갈래가 아예 안 생긴다.
     """
     # 앞서 만든 사본은 공백을 접으면서 원본과 길이가 어긋났으므로, 이 선언부 하나만
     # 다시 가린다 — 같은 길이라야 값을 위치로 꺼낼 수 있다.
@@ -1400,6 +1414,17 @@ def parse_unique(sql: str, tables: dict):
 
     introspect 와 같은 '컬럼 이름 목록' 형식이어야 한다. dict 로 넣던 때는 HTML 이
     그 키를 이어 붙여 `UNIQUE (columns, where)` 라고 찍었다.
+
+    **같은 컬럼 목록은 두 번 싣지 않는다.** `parse_alter` 는 인라인 UNIQUE 를 붙일 때
+    `if is_uq and [cname] not in t['uniques']` 로 이미 막고 있었는데 여기만 규율 밖이라,
+    같은 버그를 반만 고친 자리였다. 새는 길이 셋이다 — 마이그레이션 파일 여럿이 같은
+    인덱스를 다시 적는 것, `CREATE UNIQUE INDEX IF NOT EXISTS` 를 두 번 적는 것, 그리고
+    한 컬럼 인덱스가 `CREATE TABLE (code text UNIQUE)` 와 겹치는 것. 어느 쪽이든 최종
+    상태에 유니크 제약이 **둘**인 DB 는 없는데, 정의서의 제약 목록에는 `UNIQUE (code)`
+    가 두 줄로 실렸다(HTML 의 접힌 제약 절·docx 의 UQ 표시가 같은 값을 두 번 센다).
+
+    걸러 내는 자는 `parse_alter` 와 같다 — 목록이 이미 있으면 그 문을 없는 셈 친다.
+    차례를 흔들지 않으려고 **먼저 적힌 것**을 남기는 것도 같다.
     """
     _ms, _mc, msc = mask(sql)
     for m in re.finditer(r'CREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?'

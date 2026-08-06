@@ -2604,7 +2604,7 @@ TOTAL_FLOOR = 248
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 110
+EXPECT_CASES = 114
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -3104,6 +3104,116 @@ def _(work):
     html = (work / 'T.html').read_text(encoding='utf-8')
     for name in ('t', 'u'):
         has(html, f'<h4 id="tb_{name}">', f'{name} reached the document from an old schema')
+
+
+# ── 같은 이름이 두 자리를 가리킬 때 ──────────────────────────────────────────
+# 아래 넷은 전부 '이름 하나가 뜻을 하나만 가리킨다' 를 믿었다가 틀린 자리다. 제약
+# 이름은 스키마가 아니라 테이블 안에서 유일하고, 컬럼 선언 안의 낱말은 그 컬럼 것일
+# 수도 부모 이름일 수도 있고, 같은 인덱스를 두 번 적은 DDL 이 유니크 제약 둘이 되지는
+# 않으며, spec 의 한 줄짜리 값은 줄 하나지 글자 목록이 아니다.
+@case('introspect: a primary key is joined by table, not by constraint name alone')
+def _(work):
+    # Postgres 에서 유일한 것은 (테이블, 제약 이름) 쌍이다. PK·UNIQUE 는 같은 이름의
+    # 인덱스를 만들어 저희끼리 못 겹치지만 FK·CHECK 는 인덱스를 안 만들므로 남의
+    # 테이블에서 같은 이름을 그대로 쓸 수 있다:
+    #     create table a (id bigint, x text, constraint foo primary key (id));
+    #     create table b (x bigint, constraint foo foreign key (x) references a(id));
+    # 이름만으로 이으면 b 의 FK 컬럼이 a 의 PK 목록에 딸려 와 `a.pk = ['id','x']` 가
+    # 된다 — 실측(PG16)으로 정의서의 a 표에서 x 가 `● PK` 로, 굵게 실렸다.
+    #
+    # 서버 없이 재므로 **조회문 자체**를 본다. 이 자리를 결과로 재려면 도커가 필요한데
+    # (그 케이스들은 selftest_history.py 에 있고 기본으로는 안 돈다), 그러면 평소
+    # 실행에서는 아무도 이 자리를 안 지킨다. 조회가 무엇을 무엇에 맞추는지는 조회문에
+    # 다 적혀 있으므로, 여기서는 그 술어가 있는지를 잰다.
+    sys.path.insert(0, str(HERE))
+    import introspect
+    q = ' '.join(introspect.Q_PK.split())
+    join = q[q.index('key_column_usage'):q.index('where')]
+    for a, b in (('kcu.table_name', 'tc.table_name'),
+                 ('kcu.constraint_name', 'tc.constraint_name'),
+                 ('kcu.table_schema', 'tc.table_schema')):
+        if f'{a}={b}' not in join and f'{b}={a}' not in join:
+            raise Fail(f'Q_PK joins key_column_usage without matching {a} to {b} — '
+                       f"another table's constraint of the same name comes along\n"
+                       f'      join: {join}')
+    # 컬럼 차례는 테이블별로 읽힌다 — 여러 테이블의 행이 섞여 와도 순서가 남게.
+    order = q[q.index('order by'):]
+    for piece in ('tc.table_name', 'kcu.ordinal_position'):
+        has(order, piece, f'Q_PK orders by {piece}')
+
+
+@case('parse: a parent name in REFERENCES is not read as this column\'s own key')
+def _(work):
+    # `mask` 는 큰따옴표 식별자를 일부러 안 가린다(`_IDC` 가 거기서 이름을 읽어야
+    # 한다). 그래서 부모 쪽 이름이 그대로 판정에 샜다 — not_null·identity 는
+    # `_decl()` 로 REFERENCES 절을 걷어낸 뒤에 보고 있었는데 PK·UNIQUE 만 규율 밖이라,
+    # 같은 함수 안에서 같은 규칙이 두 벌이던 자리다.
+    s = ddl(work, '''
+CREATE TABLE p ("PRIMARY KEY" bigint, "UNIQUE" text);
+CREATE TABLE t (
+  id bigint PRIMARY KEY,
+  x  int REFERENCES p ("PRIMARY KEY"),
+  y  int REFERENCES p ("UNIQUE"),
+  z  int NOT NULL REFERENCES p ("PRIMARY KEY")
+);
+''')
+    eq(s['t']['pk'], ['id'], "a parent column named \"PRIMARY KEY\" is not this table's PK")
+    eq(s['t']['uniques'], [], 'a parent column named "UNIQUE" does not invent a UNIQUE')
+    # 걷어낸 사본으로 보면서도 관계와 NOT NULL 은 그대로 읽혀야 한다 — REFERENCES 는
+    # 원본에서 읽고 나머지만 걷어낸 사본에서 본다.
+    eq(sorted((f['column'], f['ref_column']) for f in s['t']['fks']),
+       [('x', 'PRIMARY KEY'), ('y', 'UNIQUE'), ('z', 'PRIMARY KEY')],
+       'the relationships themselves survive')
+    eq([c['not_null'] for c in s['t']['columns'] if c['name'] == 'z'], [True],
+       'NOT NULL after a REFERENCES clause still counts')
+
+
+@case('parse: the same unique index written twice is one constraint, not two')
+def _(work):
+    # 최종 상태에 유니크 제약이 둘인 DB 는 없다. `parse_alter` 는 인라인 UNIQUE 를
+    # 붙일 때 이미 걸러 내고 있었고 `parse_unique` 만 규율 밖이라, 마이그레이션 파일이
+    # 같은 인덱스를 다시 적으면 정의서의 제약 목록에 같은 줄이 두 번 실렸다.
+    s = ddl(work, '''
+CREATE TABLE t (id bigint PRIMARY KEY, code text UNIQUE, a int, b int);
+CREATE UNIQUE INDEX i1 ON t (code);
+CREATE UNIQUE INDEX IF NOT EXISTS i1 ON t (code);
+CREATE UNIQUE INDEX i2 ON t (a, b);
+''')
+    eq(s['t']['uniques'], [['code'], ['a', 'b']],
+       'a repeated unique index is carried once, and the others keep their order')
+    # 문서까지 따라간다 — 세는 자리가 하나면 접힌 제약 목록도 한 줄이다.
+    run('build_erd.py', work)
+    run('build_html.py', work)
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    eq(html.count('UNIQUE (code)'), 1, 'the document lists that constraint once')
+
+
+@case('spec: a doc value of the wrong shape names itself instead of splitting')
+def _(work):
+    # `doc` 은 'dict 이기만 하면' 통과였다. 그 안쪽은 저장소에서 사람이 가장 많이 손으로
+    # 쓰는 자리인데도 아무도 안 재는 자리라, 한 줄짜리 문자열을 적으면 build_docx 의
+    # `for line in DOC['scope']` 가 **글자마다** 문단을 하나씩 만들었다 — 죽지도, 알리지도
+    # 않고 완성된 얼굴로 나왔다.
+    write_schema(work, {'t': table('t', [col('id')])})
+    for value, key in (({'scope': 'one line'}, 'doc.scope'),
+                       ({'sources': 'information_schema'}, 'doc.sources'),
+                       ({'scope': [['a']]}, 'doc.scope'),
+                       ({'title': 123}, 'doc.title'),
+                       ({'area_desc': ['x']}, 'doc.area_desc')):
+        (work / 'erd.spec.json').write_text(json.dumps({'doc': value}), encoding='utf-8')
+        r = run('build_erd.py', work, expect_ok=False)
+        if 'Traceback' in r.stderr:
+            raise Fail(f'a malformed {key} should be a message, not a traceback:\n'
+                       f'{r.stderr[-400:]}')
+        has(r.stdout + r.stderr, key, f'the message names {key}')
+    # 성한 값은 그대로 지나간다. `mapping` 의 문자열 행은 `meta_cells` 가 한 칸으로
+    # 받아 주기로 이미 정해 둔 동작이라 여기서 더 엄하게 굴지 않는다.
+    (work / 'erd.spec.json').write_text(json.dumps(
+        {'doc': {'title': 'T', 'scope': ['a', 'b'], 'sources': [['x', 'y']],
+                 'meta': [['a', 'b', 'c', 'd']], 'mapping': ['a whole row as one string']}}),
+        encoding='utf-8')
+    run('build_erd.py', work)
+    run('build_docx.py', work)
 
 
 if __name__ == '__main__':

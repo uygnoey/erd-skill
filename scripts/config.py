@@ -737,7 +737,6 @@ _DOC_SHAPE = {
     'mapping': (list, '[[no, proposed, actual, applied, reason], …]', (list, tuple)),
     'open_items': (list, '[[priority, item, target, current, action], …]', (list, tuple)),
     'area_desc': (dict, '{area code: description}', str),
-    'db_names': (dict, '{label: display name}', str),
 }
 
 

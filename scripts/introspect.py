@@ -72,6 +72,30 @@ left join pg_attribute a
 where c.table_schema in ({schemas})
 order by c.table_schema, c.table_name, c.ordinal_position"""
 
+# PK 는 **제약 이름과 테이블을 함께** 맞춰 잇는다.
+#
+# 예전엔 `constraint_name` 과 `table_schema` 둘만 맞췄다. 제약 이름이 스키마 안에서
+# 유일하다고 본 셈인데 Postgres 는 그렇지 않다 — 유일한 것은 (테이블, 이름) 쌍이다.
+# PK·UNIQUE 는 같은 이름의 **인덱스**를 만들어 저희끼리는 못 겹치지만, FK·CHECK 는
+# 인덱스를 안 만들므로 남의 테이블에서 같은 이름을 그대로 쓸 수 있다:
+#
+#     create table a (id bigint, x text, constraint foo primary key (id));
+#     create table b (x bigint, constraint foo foreign key (x) references a(id));
+#
+# 그러면 `foo` 로 이은 key_column_usage 에 **b 의 FK 컬럼까지** 딸려 와서
+# `a.pk = ['id', 'x']` 가 됐다. 실측(PG16): 정의서의 a 표에서 x 가 `● PK` 로,
+# 이름은 굵게 실렸다 — a 의 PK 가 아닌 컬럼이다. 이름이 겹치는 두 테이블에 같은
+# 컬럼명이 없으면 없는 컬럼이 pk 목록에만 남아 눈에 안 띄고, 겹치면 이렇게 문서가
+# 조용히 틀린다. 어느 쪽이든 경고는 한 줄도 없었다.
+#
+# `constraint_schema` 도 함께 맞춘다. 제약은 제 테이블의 스키마에 속하므로 오늘
+# 이 술어가 걷어내는 행은 없지만, 이 조인이 재는 것은 '같은 제약인가' 이고 제약을
+# 가리키는 이름은 (카탈로그, 스키마, 이름) 셋이다 — 둘만 보면 규칙이 반쪽이다.
+#
+# `order by` 에 테이블을 앞세우는 것도 같은 이유다. 컬럼 차례(ordinal_position)만
+# 두면 여러 테이블의 행이 섞여 오고, 그때 순서가 지켜지는 것은 '테이블마다 따로
+# 담으니 상대 순서는 남는다' 는 **부르는 쪽 사정**에 기댄 것이다. 조회가 제 순서를
+# 스스로 말하게 둔다.
 Q_PK = """
 select tc.table_schema, tc.table_name, kcu.column_name
 from information_schema.table_constraints tc
