@@ -3288,31 +3288,35 @@ def _(work):
     has(said, en.M['docx.ch7_intro'], 'without the key, chapter 7 keeps the catalogue text')
 
 
-@case('merge: SQLAlchemy 1.x Column comments are inherited like Mapped comments')
+@case('merge: the ORM net catches both spellings and nothing else')
 def _(work):
-    # SQLAlchemy 1.x declarative models are still widespread.  They assign
-    # Column(...) rather than annotating Mapped[...]; both forms must preserve
-    # the same preceding/inline comment semantics.
-    import config
-    import merge_desc
-    models = work / 'models'
-    models.mkdir(parents=True)
-    (models / 'models.py').write_text(
-        "class User(Base):\n"
+    # Exercise the real merge_desc.py subprocess, both SQLAlchemy spellings,
+    # and the negative cases that must not become phantom columns.
+    (work / 'models').mkdir(parents=True, exist_ok=True)
+    (work / 'models' / 'm.py').write_text(
+        'column_names = ["not", "a", "column"]\n'
+        'class User(Base):\n'
         "    __tablename__ = 'users'\n"
-        "    # 회원 번호\n"
-        "    id = Column(BigInteger, primary_key=True)\n"
-        "    email = sqlalchemy.Column(Text)  # 로그인 이메일\n"
-        "    name = mapped_column(String)  # 표시 이름\n", encoding='utf-8')
-    old = config.MODEL_DIR
-    try:
-        config.MODEL_DIR = models
-        got = merge_desc.parse_orm()
-    finally:
-        config.MODEL_DIR = old
-    eq(got, {'users.id': '회원 번호', 'users.email': '로그인 이메일',
-             'users.name': '표시 이름'},
-       'both SQLAlchemy declarative assignment forms keep their comments')
+        '    id = Column(BigInteger, primary_key=True)   # the member number\n'
+        '    email = sqlalchemy.Column(Text)             # login e-mail\n'
+        '    # the display name\n'
+        '    nick: Mapped[str] = mapped_column()\n'
+        '    helper = some_helper_value\n', encoding='utf-8')
+    s = ddl(work, 'CREATE TABLE users (id bigint PRIMARY KEY, email text, '
+                  'nick text, memo text);\n')
+    for t in s.values():
+        for c in t['columns']:
+            c['comment'] = ''
+    write_schema(work, s)
+    run('merge_desc.py', work, env={'ERD_MODEL_DIR': str(work / 'models')})
+    got = {c['name']: c for c in json.loads(
+        (work / 'schema.json').read_text(encoding='utf-8'))['users']['columns']}
+    for cname, want in (('id', 'the member number'),
+                        ('email', 'login e-mail'),
+                        ('nick', 'the display name')):
+        eq(got[cname]['comment'], want, f'{cname} came from the ORM model')
+        eq(got[cname]['desc_src'], 'orm', f'{cname} is counted as an ORM description')
+    eq(got['memo']['desc_src'], 'none', 'a column the model never mentions stays empty')
 
 
 @case('svg: every font erd calls monospace is recognised as monospace here')
