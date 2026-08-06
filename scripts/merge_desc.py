@@ -12,7 +12,7 @@ from pathlib import Path
 # 경로 상수는 **부를 때** 묻는다 — `from config import SCHEMA_JSON` 한 줄이 곧
 # 'erd-build/out 을 만들라' 는 뜻이었다 (config.py 의 '늦춰 두는 값' 참고).
 import config
-from config import as_file, clean
+from config import as_file, atomic_write_text, clean, validate_schema
 from i18n import t as T
 
 # ── 공통 컬럼 (테이블 무관 · 최후 폴백) ────────────────────────────────────────
@@ -152,7 +152,13 @@ def ambiguous_names(schema):
 def main():
     # 인코딩을 안 주면 로케일이 정한다 — ascii 로케일에서 한글 설명이 든 schema.json
     # 을 읽다 UnicodeDecodeError 로 죽는다. 아래 write_text 와 짝을 맞춘다.
-    schema = json.loads(config.SCHEMA_JSON.read_text(encoding='utf-8'))
+    try:
+        schema = json.loads(config.SCHEMA_JSON.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        raise SystemExit(T('err.spec_json', path=config.SCHEMA_JSON, err=e))
+    except (UnicodeDecodeError, OSError) as e:
+        raise SystemExit(T('err.env_bad', env='ERD_WORK', value=config.SCHEMA_JSON, why=e))
+    validate_schema(schema, config.SCHEMA_JSON)
     orm = parse_orm()
     doc = parse_doc_html()
     # 'edit' 는 사람이 schema.json 을 손으로 고쳐 채운 설명이다 — DB 코멘트도(ddl),
@@ -232,7 +238,7 @@ def main():
     text = json.dumps(schema, ensure_ascii=False, indent=2)
     if (not config.SCHEMA_JSON.exists()
             or config.SCHEMA_JSON.read_text(encoding='utf-8') != text):
-        config.SCHEMA_JSON.write_text(text, encoding='utf-8')
+        atomic_write_text(config.SCHEMA_JSON, text)
     print(T('log.by_source'), filled)
     # 조용히 버리면 '왜 안 들어가지' 로 끝난다 — 대신 쓸 정식 키를 그대로 보여 준다.
     if vague:

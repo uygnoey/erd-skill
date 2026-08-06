@@ -9,7 +9,6 @@
   doc.open_items   [[…], …]             7장 미반영 항목 (없으면 장 생략)
   doc.mapping_note / doc.open_note      각 장 끝 보충 문단
 """
-import json
 import os
 from pathlib import Path
 
@@ -25,13 +24,13 @@ from docx.shared import Cm, Pt, RGBColor
 import erd
 from build_erd import (doc_counts, doc_tables, doc_text, fig_caption, meta_cells,
                        require_fresh)
-from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, ROLE, SCHEMA, layer
+from erd import AREAS, LAYERS, ROLE, SCHEMA, layer
 
 # 경로 값(OUT·PROJ)은 `config` 를 통해 **쓰는 자리에서** 묻는다 — 그 이름들은 PEP 562
 # 모듈 __getattr__ 로 늦춰져 있어, `from config import OUT` 한 줄이 import 시점에
 # mkdir 을 돌려 부르는 사람의 cwd 에 `erd-build/out` 을 남겼다.
 import config
-from config import DOCNAME
+from config import DOCNAME, atomic_output
 from erd import SPEC
 from i18n import LANG, t as T
 
@@ -349,7 +348,7 @@ def build():
                 # 제출용 문서 쪽에서만 스키마 사실 하나가 통째로 사라지고 있었다.
                 # 칸을 늘리지 않고 이미 있는 '구분' 칸에 적는다.
                 mark = erd.col_role(t_, c) or (
-                    'UQ' if any(c['name'] in u for u in t_.get('uniques', [])) else '')
+                    'UQ' if erd.is_single_unique(t_, c['name']) else '')
                 desc = (T('word.added') + ' ' if c['added'] else '') + c['comment']
                 row(ct, (mark, c['name'], c['type'] + (' NN' if c['not_null'] else ''), desc),
                     [1.3, 4.2, 3.0, 8.5], font_size=8, mono_cols=(1, 2), bold_cols=(1,),
@@ -393,7 +392,8 @@ def build():
         _chapter_open(doc)
 
     path = config.PROJ / f'{DOCNAME}.docx'
-    doc.save(path)
+    with atomic_output(path) as tmp:
+        doc.save(tmp)
     if MISSING_FIGS:
         # 조용히 빠지면 그림 없는 문서가 그림 있는 문서인 척 나간다
         print(T('log.figs_missing', n=len(MISSING_FIGS),

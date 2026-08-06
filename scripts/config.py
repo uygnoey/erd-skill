@@ -39,11 +39,14 @@ spec 이 없으면 스키마와 테이블명 접두어로 자동 추론한다.
       물은 적 없는 스키마의 문서가 완성된 얼굴로 나온다. 잘못 적었다고 말하는 편이 낫다.
 """
 import json
+import math
 import os
 import re
 import shlex
 import subprocess
+import tempfile
 import unicodedata
+from contextlib import contextmanager
 from pathlib import Path
 
 from i18n import t as T
@@ -112,6 +115,43 @@ def as_file(path, env):
     if path.exists() and not path.is_file():
         raise SystemExit(T('err.env_not_file', env=env, path=path))
     return path
+
+
+@contextmanager
+def atomic_output(path):
+    """Write beside the destination and replace it only after a successful build."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw = tempfile.mkstemp(prefix=f'.{path.name}.', suffix=path.suffix,
+                               dir=str(path.parent))
+    os.close(fd)
+    tmp = Path(raw)
+    try:
+        yield tmp
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+        tmp.chmod(mode)
+        with tmp.open('rb') as stream:
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+        _fsync_directory(path.parent)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def atomic_write_text(path, text, encoding='utf-8'):
+    with atomic_output(path) as tmp:
+        tmp.write_text(text, encoding=encoding)
+
+
+def _fsync_directory(path):
+    """Persist a directory entry where directory handles support fsync."""
+    if os.name == 'nt':
+        return
+    dir_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 _BAD_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -262,6 +302,20 @@ def has_db():
 PGENC = 'UTF8'        # psql 파이프의 인코딩. PostgreSQL 이 부르는 이름 (파이썬은 utf-8)
 
 
+def query_timeout():
+    """Maximum seconds for one psql invocation; 0 explicitly disables it."""
+    raw = os.environ.get('ERD_QUERY_TIMEOUT', '120').strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        raise SystemExit(T('err.env_bad', env='ERD_QUERY_TIMEOUT', value=raw,
+                           why=T('err.timeout_number'))) from None
+    if not math.isfinite(value) or value < 0:
+        raise SystemExit(T('err.env_bad', env='ERD_QUERY_TIMEOUT', value=raw,
+                           why=T('err.timeout_number')))
+    return value
+
+
 def psql_cmd():
     """psql 실행 명령. ERD_PSQL 이 있으면 그것을, 없으면 docker exec 를 쓴다."""
     if _get('PSQL_WORDS'):
@@ -335,9 +389,14 @@ def _run(query, rs='\n'):
     그래서 값을 손에 쥐는 이 자리에서 한 번 알린다. _run 이 psql·psql_rows 두 갈래가
     함께 지나는 유일한 목이라 여기 두면 어느 쪽으로 읽어도 걸린다.
     """
-    r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-R', rs, '-c', query],
-                       capture_output=True, text=True,
-                       encoding='utf-8', errors='replace', env=_psql_env())
+    limit = query_timeout()
+    try:
+        r = subprocess.run(psql_cmd() + ['-tA', '-F', SEP, '-R', rs, '-c', query],
+                           capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', env=_psql_env(),
+                           timeout=limit or None)
+    except subprocess.TimeoutExpired:
+        raise QueryFailed(T('err.query_timeout', seconds=f'{limit:g}')) from None
     if r.returncode != 0:
         print(T('log.query_fail', err=_why(r)))
     _warn_undecodable(r.stdout)
@@ -554,9 +613,9 @@ def _split(tables, schema_name, max_areas, min_size=3):
 _SPEC_SHAPE = {
     'areas':        (list, '[[code, name, schema, [table, …]], …]'),
     'layers':       (dict, '{code: [fill, header, border, label]}'),
-    'layer_labels': (dict, '{code: label}'),
-    'layer_of':     (dict, '{table: layer code}'),
-    'roles':        (dict, '{table: role name}'),
+    'layer_labels': (dict, '{code: string label}'),
+    'layer_of':     (dict, '{table: string layer code}'),
+    'roles':        (dict, '{table: string role name}'),
     'derives':      (list, '[[from, to, label], …]'),
     'doc':          (dict, '{"title": …, "subtitle": …, …}'),
 }
@@ -568,6 +627,68 @@ def _jtype(v):
         return 'a boolean'
     return {dict: 'an object', list: 'an array', str: 'a string', int: 'a number',
             float: 'a number', type(None): 'null'}.get(type(v), type(v).__name__)
+
+
+def validate_schema(schema, path, required=()):
+    """Validate fields consumers iterate, while allowing fields absent in old schemas."""
+    if not isinstance(schema, dict) or any(not isinstance(v, dict) for v in schema.values()):
+        raise SystemExit(T('err.schema_shape', path=path))
+
+    def bad(table, field, want, got):
+        raise SystemExit(T('err.schema_field', path=path, table=table, field=field,
+                           want=want, got=_jtype(got)))
+
+    for table, value in schema.items():
+        for field in ('name', 'schema', 'origin', 'src_file', 'note', 'db', 'size'):
+            if field in value and value[field] is not None and not isinstance(value[field], str):
+                bad(table, field, 'a string', value[field])
+        if ('rows' in value and value['rows'] is not None
+                and type(value['rows']) not in (int, float)):
+            bad(table, 'rows', 'a number or null', value['rows'])
+        for field in required:
+            if field not in value:
+                bad(table, field, 'an array', None)
+        for field in ('columns', 'pk', 'fks', 'uniques', 'checks', 'indexes'):
+            if field in value and not isinstance(value[field], list):
+                bad(table, field, 'an array', value[field])
+        for column in value.get('columns', []):
+            if not isinstance(column, dict):
+                bad(table, 'columns[]', 'an object', column)
+            if not isinstance(column.get('name'), str):
+                bad(table, 'columns[].name', 'a string', column.get('name'))
+            for field in ('type', 'comment', 'default'):
+                if (field in column and column[field] is not None
+                        and not isinstance(column[field], str)):
+                    bad(table, f'columns[].{field}', 'a string', column[field])
+            for field in ('not_null', 'identity', 'added'):
+                if (field in column and column[field] is not None
+                        and not isinstance(column[field], bool)):
+                    bad(table, f'columns[].{field}', 'a boolean', column[field])
+        for column in value.get('pk', []):
+            if not isinstance(column, str):
+                bad(table, 'pk[]', 'a string', column)
+        for fk in value.get('fks', []):
+            if not isinstance(fk, dict):
+                bad(table, 'fks[]', 'an object', fk)
+            for field in ('column', 'ref_table', 'ref_column'):
+                if not isinstance(fk.get(field), str):
+                    bad(table, f'fks[].{field}', 'a string', fk.get(field))
+            if ('on_delete' in fk and fk['on_delete'] is not None
+                    and not isinstance(fk['on_delete'], str)):
+                bad(table, 'fks[].on_delete', 'a string', fk['on_delete'])
+        for unique in value.get('uniques', []):
+            if (not isinstance(unique, list)
+                    or any(not isinstance(column, str) for column in unique)):
+                bad(table, 'uniques[]', 'an array of strings', unique)
+        for field in ('checks', 'indexes'):
+            for item in value.get(field, []):
+                if not isinstance(item, dict):
+                    bad(table, f'{field}[]', 'an object', item)
+                for name in ('name', 'def'):
+                    if (name in item and item[name] is not None
+                            and not isinstance(item[name], str)):
+                        bad(table, f'{field}[].{name}', 'a string', item[name])
+    return schema
 
 
 def _spec_bad(key, got):
@@ -590,6 +711,61 @@ def _spec_val(spec, key):
     if not isinstance(v, want):
         _spec_bad(key, v)
     return v
+
+
+def _string_map(spec, key):
+    """A JSON object whose keys and values are strings."""
+    value = _spec_val(spec, key)
+    bad = next((x for pair in value.items() for x in pair if not isinstance(x, str)), None)
+    if bad is not None:
+        _spec_bad(key, bad)
+    return value
+
+
+_DOC_SHAPE = {
+    'title': (str, 'a string', None),
+    'subtitle': (str, 'a string', None),
+    'intro': (str, 'a string', None),
+    'purpose': (str, 'a string', None),
+    'sources_note': (str, 'a string', None),
+    'mapping_intro': (str, 'a string', None),
+    'mapping_note': (str, 'a string', None),
+    'open_note': (str, 'a string', None),
+    'scope': (list, '[line, …]', str),
+    'sources': (list, '[[basis, content], …]', (list, tuple)),
+    'meta': (list, '[[label, value, label, value], …]', (list, tuple)),
+    'mapping': (list, '[[no, proposed, actual, applied, reason], …]', (list, tuple)),
+    'open_items': (list, '[[priority, item, target, current, action], …]', (list, tuple)),
+    'area_desc': (dict, '{area code: description}', str),
+    'db_names': (dict, '{label: display name}', str),
+}
+
+
+def _doc_checked(doc):
+    """Validate known doc fields before builders iterate or unpack them."""
+    unknown = [str(key) for key in doc if not str(key).startswith('_')
+               and key not in _DOC_SHAPE]
+    if unknown:
+        print(T('log.spec_unknown', n=len(unknown),
+                list=', '.join(f'doc.{key}' for key in sorted(unknown)[:6]),
+                known=', '.join(f'doc.{key}' for key in sorted(_DOC_SHAPE))))
+    for key, (want, shape, item) in _DOC_SHAPE.items():
+        value = doc.get(key)
+        if value is None:
+            continue
+        bad = value if not isinstance(value, want) else None
+        if bad is None and item is not None and isinstance(value, dict):
+            bad = next((x for pair in value.items() for x in pair
+                        if not isinstance(x, item)), None)
+        elif bad is None and item is not None:
+            bad = next((x for x in value if not isinstance(x, item)), None)
+        if bad is None and key in ('sources', 'meta', 'mapping', 'open_items'):
+            bad = next((cell for row in value for cell in row
+                        if not isinstance(cell, str)), None)
+        if bad is not None:
+            raise SystemExit(T('err.spec_type', path=_get('SPEC_JSON'),
+                               key=f'doc.{key}', want=shape, got=_jtype(bad)))
+    return doc
 
 
 def _clean_deep(v):
@@ -799,12 +975,12 @@ def load_spec(schema):
     # ── 레이어(색): 명시 없으면 영역 단위로 배정 ──
     # 레이어 코드는 그림 안(GraphML 설명)에도 그대로 실린다 — 양쪽을 같은 규칙으로
     # 씻어야 spec 이 적은 코드와 여기서 만든 코드가 계속 맞는다.
-    layer_of = {k: clean(v) for k, v in _spec_val(spec, 'layer_of').items()}
+    layer_of = {k: clean(v) for k, v in _string_map(spec, 'layer_of').items()}
     if not layer_of:
         for a in areas:
             for t in a[3]:
                 layer_of[t] = a[0]
-    labels = {clean(k): clean(v) for k, v in _spec_val(spec, 'layer_labels').items()}
+    labels = {clean(k): clean(v) for k, v in _string_map(spec, 'layer_labels').items()}
     keys, layers = [], {}
     for a in areas:
         k = layer_of.get(a[3][0], a[0]) if a[3] else a[0]
@@ -825,7 +1001,7 @@ def load_spec(schema):
         layers[clean(k)] = tuple(v[:4])
 
     # ── 역할명: spec → DB 테이블 코멘트 → 빈값 ──
-    roles = {k: clean(v) for k, v in _spec_val(spec, 'roles').items()}
+    roles = {k: clean(v) for k, v in _string_map(spec, 'roles').items()}
     for t in tables:
         roles.setdefault(t, clean(schema[t].get('note', '')))
 
@@ -833,9 +1009,10 @@ def load_spec(schema):
     for x in _spec_val(spec, 'derives'):
         # `"derives": "ab"` 는 죽지도 않고 [["a"],["b"]] 라는 쓰레기를 만든 뒤,
         # 한참 뒤에 엉뚱한 KeyError 로 나왔다.
-        if not isinstance(x, (list, tuple)):
+        if (not isinstance(x, (list, tuple)) or len(x) != 3
+                or not all(isinstance(v, str) for v in x)):
             _spec_bad('derives', x)
-        derives.append([clean(v) if isinstance(v, str) else v for v in x])
+        derives.append([clean(v) for v in x])
 
     return {
         'areas': areas,
@@ -843,5 +1020,5 @@ def load_spec(schema):
         'layer_of': layer_of,
         'roles': roles,
         'derives': derives,
-        'doc': _clean_deep(_spec_val(spec, 'doc')),
+        'doc': _clean_deep(_doc_checked(_spec_val(spec, 'doc'))),
     }

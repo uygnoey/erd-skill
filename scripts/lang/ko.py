@@ -187,8 +187,11 @@ M = {
     'err.font_none': '{kind} 폰트를 찾지 못했다. install.sh 를 돌리거나 {env} 로 직접 '
                      '지정한다.\n  찾아본 곳: {looked}',
     'err.merge_usage': '사용법: python3 merge_schemas.py <라벨> <라벨> …',
+    'err.merge_label': '올바르지 않은 DB 라벨이다: {label!r}. 파일명에 안전한 단순 라벨을 쓸 것.',
+    'err.merge_collision': 'DB 라벨 {label!r} 때문에 테이블 키가 겹친다: {tables}',
     'err.merge_missing': '{path} 가 없다. ERD_LABEL={label} 로 introspect.py 를 먼저 돌릴 것.',
     'err.no_sql_dir': 'DDL 디렉토리가 없다: {path}  (ERD_SQL_DIR 로 지정)',
+    'err.sql_file_outside': '{env} 에 {path} 밖을 가리키는 경로가 있다: {value}',
     'err.spec_no_area': '{path} 의 areas 에 실제로 있는 테이블이 하나도 없다.',
     'err.spec_dup_code': '{path}: 두 영역이 같은 영역 코드 {code} 를 쓴다 (다른 쪽은 {other}).\n'
                          '  영역 코드는 파일 이름이 된다({file}). macOS·Windows 에서는 대소문자나\n'
@@ -197,6 +200,9 @@ M = {
     'err.spec_layer': '레이어 {key} 의 형식이 잘못됐다: {value}\n'
                       '  [채움, 헤더, 테두리, 라벨] 이어야 하고 색은 #rrggbb 다',
     'err.spec_json': '{path} 가 올바른 JSON 이 아니다: {err}',
+    'err.schema_shape': '{path} 의 최상위는 테이블 객체들을 담은 JSON 객체여야 한다.',
+    'err.schema_field': '{path}: 테이블 {table!r} 의 {field} 필드는 {want} 여야 한다. 현재 {got}.',
+    'err.schema_key_collision': '안전하지 않은 문자를 정리하면 테이블 키가 겹친다: {tables}',
     'err.fig_unregistered': '그림 {stem} 에 도판 번호가 없다 — build_erd.py 의 fig_numbers() 가 '
                             '그 이름을 적어 두지 않았다.\n'
                             '  이 스크립트가 그리는 그림은 모두 그 목록에서 번호를 받고, 그 번호는 '
@@ -214,6 +220,8 @@ M = {
                         '  아무것도 쓰지 않았다. 스키마를 반만 읽은 실행은 완성된 것처럼 '
                         '보이는 문서를 만든다.',
     'err.query_truncated': '결과가 행 도중에 끊겼다',
+    'err.query_timeout': 'DB 조회가 {seconds}초를 넘겼다',
+    'err.timeout_number': '0 또는 0보다 큰 초 단위 숫자를 쓴다',
     'err.env_not_dir': '{env}: {path} 는 디렉토리가 아니다 — 그 자리에 이미 다른 것이 있다.',
     'err.env_not_file': '{env}: {path} 는 읽을 수 있는 파일이 아니다.',
     'err.env_bad': '{env} 를 쓸 수 없다: {why}\n  값: {value}',
@@ -225,6 +233,7 @@ M = {
     # ── 진행 출력 ─────────────────────────────────────────────────────────
     'log.query_fail': '  [경고] DB 조회 실패: {err}',
     'log.query_incomplete': '  [경고] 읽지 못한 것: {list} — 문서에서 딱 그만큼이 빠진다',
+    'log.ddl_alter_unsupported': '  [경고] 지원하지 않는 ALTER TABLE 절 ({table}): {clause}',
     'log.psql_undecodable': '  [경고] DB 가 보낸 답이 UTF-8 이 아니다 — 그 글자들은 문서에 '
                             '� 로 남는다.\n'
                             '          우리가 띄우는 psql 에는 PGCLIENTENCODING={enc} 를 주지만, '
@@ -275,7 +284,7 @@ M = {
     'log.png_full': 'PNG  전체 ERD → {name} {size}',
     'log.png_area': 'PNG  영역 {code} {name} ({n}개 + 참조 {ext}) → {file}  {size}',
     'log.scale_down': '    [알림] {name}: 그림이 커서 배율을 {s}배로 낮춤',
-    'log.overlap_at': '      겹침: 좌표{a}  [{s0}~{s1}] vs [{t0}~{t1}]',
+    'log.overlap_at': '      겹침: 좌표{a}  [{s0}~{s1}] {ea} vs [{t0}~{t1}] {eb}',
     'log.verify': '    검증 {name}: {report}',
     'log.verify_log_fail': '  [경고] ERD_VERIFY_LOG 를 쓰지 못했다. 그림은 그대로 있다: '
                            '{path} — {err}',

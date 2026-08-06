@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""그림을 그리는 쪽(erd.py)이 지키는 것 — 자기참조 팔의 자리, 라벨의 자리, 재는 자.
+"""렌더러·폰트·자기참조 라우팅·검증 회귀 시험.
 
 `selftest.py` 가 옆에 있는 `selftest_*.py` 를 글로브로 찾아 불러오므로 여기 항목은
 등록 줄 없이 함께 돈다 (selftest_kit.load_extras 참고).
@@ -58,7 +58,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from selftest_kit import Fail, case, col, eq, has, run, table, write_schema
+from selftest_kit import Fail, case, col, eq, has, main, run, table, write_schema
 
 HERE = Path(__file__).resolve().parent
 
@@ -626,7 +626,7 @@ def _(work):
     # `min(max(lft, x1-600), hi-1)` · `max(min(rgt, x2+600), lo+1)` 로 억지로 만들어
     # slot() 에 600px 짜리 창을 줬다. 방이 없다는 것은 그 창이 통째로 남의 테이블
     # 속이라는 뜻이므로, 벌리는 것이 정확히 최악의 수다 — 같은 라운드가 앞선
-    # 커밋에서 이 자리의 '아무 데나' 를 한 번 잡아냈고(`selftest_history.py` 의
+    # 커밋에서 이 자리의 '아무 데나' 를 한 번 잡아냈고(`selftest_schema.py` 의
     # `render: a self-reference loop is not painted through a table`), 이 갈래는
     # 그때도 남아 있었다.
     #
@@ -841,6 +841,21 @@ def _(work):
             f'label↔label says {got["counts"].get("label_x")!r} with '
             f'{lab["n_labels"]} labels on the board')
 
+    # seed 17 의 22번째 판은 첫 번째 빈 띠가 자기참조 팔로 꽉 차 있었다. 예전
+    # route() 는 다른 빈 띠를 보지 않고 fallback lane 을 팔에서 3px 떨어진 곳에
+    # 얹어, 전체도에 수평 중첩 1을 남겼다. 모든 빈 띠를 비교하는 경로를 고정한다.
+    import random
+    rnd = random.Random(17)
+    tabs = None
+    for _ in range(23):
+        tabs = board(rnd, 'mix')
+    recs, err = _fuzz_one(HERE, work.parent / 'alternate-band' / 'work', tabs)
+    if err:
+        raise Fail(f'the alternate-band regression board died: {err}')
+    full = next(r for r in recs if r['file'] == 'fz_full.png')
+    eq(full['counts']['h_overlap'], 0,
+       'a saturated first band makes the router try another free band')
+
 
 @case('erd: importing erd creates nothing but the directory it reads the schema from')
 def _(work):
@@ -926,7 +941,7 @@ def _(work):
 #               `label_x` 를 크기 조건부로 거짓말시키는 뮤턴트(`lab_hits()` 첫 줄에
 #               `if len(lab_boxes) > 3: return 0`)는 `selftest.py` 의 단위 케이스가
 #               잡는다 — 이 파일은 못 잡는다. 다음 라운드가 여기를 열려면 위 40×12
-#               판을 쓰면 된다(`python3 selftest_r14_render.py board --mode …` 가
+#               판을 쓰면 된다(`python3 selftest_render.py board --mode …` 가
 #               아니라 손으로 만든 허브 판이다. 만드는 법은 위 두 줄이 전부다).
 #   label_table **입력으로는 못 움직인다 — 그리고 그것이 옳다.** 자리잡기의
 #               `on_a_table()` 과 검증의 `lab_hit` 이 같은 함수 둘(label_ink_box ·
@@ -1041,9 +1056,10 @@ def _(work):
 # 그래서 이 파일 안에 둔다. `selftest.py` 는 이 파일을 **import** 하므로 아래
 # `__main__` 은 시험 중에는 한 줄도 돌지 않는다.
 #
-#   python3 selftest_r14_render.py fuzz --seed 7 --boards 60 --mode mix
-#   python3 selftest_r14_render.py fuzz --scripts /other/scripts --seed 7 …
-#   python3 selftest_r14_render.py board --mode big --seed 3 --out /tmp/w
+#   python3 selftest_render.py fuzz --seed 7 --boards 60 --mode mix
+#   python3 selftest_render.py fuzz --scripts /other/scripts --seed 7 …
+#   python3 selftest_render.py board --seed 7 --index 22 --out /tmp/board22
+#   python3 selftest_render.py board --mode big --seed 3 --out /tmp/w
 #
 # `--scripts` 로 **다른 트리**를 가리킬 수 있다 — 수정 전/후를 나란히 재는 방법이
 # 그것이다(사본을 만들고 erd.py 만 옛것으로 바꿔 두 번 돌린다).
@@ -1317,9 +1333,15 @@ def _board_file(argv):
 
     out = Path(opt('--out', './fuzz-board')).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    tabs = board(random.Random(int(opt('--seed', '1'))), opt('--mode', 'mix'))
+    rnd = random.Random(int(opt('--seed', '1')))
+    index = int(opt('--index', '0'))
+    if index < 0:
+        raise SystemExit('--index must be >= 0')
+    tabs = None
+    for _ in range(index + 1):
+        tabs = board(rnd, opt('--mode', 'mix'))
     (out / 'schema.json').write_text(json.dumps(tabs, ensure_ascii=False, indent=1), encoding='utf-8')
-    print(out / 'schema.json', f'({len(tabs)} tables)')
+    print(out / 'schema.json', f'({len(tabs)} tables, board {index})')
 
 
 if __name__ == '__main__':
@@ -1328,11 +1350,5 @@ if __name__ == '__main__':
         _fuzz(sys.argv[2:])
     elif _cmd == 'board':
         _board_file(sys.argv[2:])
-    else:
-        raise SystemExit(__doc__.splitlines()[0] + '\n'
-                         'usage: selftest_r14_render.py fuzz '
-                         '[--scripts DIR] [--seed N] [--boards N] [--mode NAME]\n'
-                         '       selftest_r14_render.py board '
-                         '[--out DIR] [--seed N] [--mode NAME]\n'
-                         'modes: self hub long chain mix big dense\n'
-                         '(the regression cases run from selftest.py, not from here)')
+    elif not _cmd or _cmd not in ('fuzz', 'board'):
+        raise SystemExit(main(load_all=False))

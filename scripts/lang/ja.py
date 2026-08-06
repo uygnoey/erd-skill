@@ -187,9 +187,12 @@ M = {
     'err.font_none': '{kind}フォントが見つからない。install.sh を実行するか、{env} で'
                      '直接指定すること。\n  探索した場所: {looked}',
     'err.merge_usage': '使い方: python3 merge_schemas.py <ラベル> <ラベル> …',
+    'err.merge_label': '無効な DB ラベル: {label!r}。ファイル名として安全な単純なラベルを使用してください。',
+    'err.merge_collision': 'DB ラベル {label!r} によりテーブルキーが重複します: {tables}',
     'err.merge_missing': '{path} が存在しない。まず ERD_LABEL={label} で '
                          'introspect.py を実行すること。',
     'err.no_sql_dir': 'DDL ディレクトリがない: {path}  (ERD_SQL_DIR で指定)',
+    'err.sql_file_outside': '{env} に {path} の外を指すパスがあります: {value}',
     'err.spec_no_area': '{path} の areas に実在するテーブルが一つもない。',
     'err.spec_dup_code': '{path}: 二つの領域が同じ領域コード {code} を使っている (もう一方は {other})。\n'
                          '  領域コードはファイル名になる({file})。macOS・Windows では大文字小文字や\n'
@@ -198,6 +201,9 @@ M = {
     'err.spec_layer': 'レイヤー {key} の形式が不正だ: {value}\n'
                       '  [塗り, ヘッダ, 枠, ラベル] で、色は #rrggbb でなければならない',
     'err.spec_json': '{path} が正しい JSON ではない: {err}',
+    'err.schema_shape': '{path} の最上位はテーブルオブジェクトを含む JSON オブジェクトでなければなりません。',
+    'err.schema_field': '{path}: テーブル {table!r} の {field} は {want} でなければなりません。現在は {got} です。',
+    'err.schema_key_collision': '安全でない文字を除去するとテーブルキーが重複します: {tables}',
     'err.fig_unregistered': '図 {stem} に図番号がない — build_erd.py の fig_numbers() が'
                             'その名前を持っていない。\n'
                             '  このスクリプトが描く図は全てその一覧から番号を受け取り、その番号は'
@@ -215,6 +221,8 @@ M = {
                         '  何も書いていない。スキーマを半分しか読めなかった実行は、'
                         '完成して見えるだけの文書を作る。',
     'err.query_truncated': '結果が行の途中で切れた',
+    'err.query_timeout': 'DB クエリが {seconds} 秒を超えた',
+    'err.timeout_number': '0 または正の秒数を指定する',
     'err.env_not_dir': '{env}: {path} はディレクトリではない — そこにすでに別のものがある。',
     'err.env_not_file': '{env}: {path} は読めるファイルではない。',
     'err.env_bad': '{env} は使えない: {why}\n  値: {value}',
@@ -227,6 +235,7 @@ M = {
     # ── 進行状況の出力 ────────────────────────────────────────────────────
     'log.query_fail': '  [警告] DB クエリ失敗: {err}',
     'log.query_incomplete': '  [警告] 読めなかったもの: {list} — 文書からちょうどその分が欠ける',
+    'log.ddl_alter_unsupported': '  [警告] 未対応の ALTER TABLE 句 ({table}): {clause}',
     'log.psql_undecodable': '  [警告] DB の応答が UTF-8 ではなかった — その文字は文書に '
                             '� として残る。\n'
                             '          こちらが起動する psql には PGCLIENTENCODING={enc} を'
@@ -278,7 +287,7 @@ M = {
     'log.png_full': 'PNG  全体 ERD → {name} {size}',
     'log.png_area': 'PNG  領域 {code} {name} ({n}件 + 参照 {ext}) → {file}  {size}',
     'log.scale_down': '    [注記] {name}: 図が大きいため倍率を {s}倍に下げた',
-    'log.overlap_at': '      重なり: 座標 {a}  [{s0}~{s1}] vs [{t0}~{t1}]',
+    'log.overlap_at': '      重なり: 座標 {a}  [{s0}~{s1}] {ea} vs [{t0}~{t1}] {eb}',
     'log.verify': '    検証 {name}: {report}',
     'log.verify_log_fail': '  [警告] ERD_VERIFY_LOG を書けなかった。図はそのまま残っている: '
                            '{path} — {err}',

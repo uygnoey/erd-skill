@@ -115,6 +115,7 @@ ERD_DOC_HTML=이전문서.html python3 merge_desc.py
 | `ERD_DOCNAME` | `ERD` | 산출 파일명 (확장자 제외) |
 | `ERD_LANG` | 로케일, 없으면 `en` | 출력 언어: `en` · `ko` · `ja` · `es` |
 | **`ERD_PSQL`** | — | psql 명령 직접 지정. 예: `psql postgresql://u:p@h:5432/db` |
+| `ERD_QUERY_TIMEOUT` | `120` | DB 조회 한 번의 최대 초. `0`은 제한을 끈다 |
 | **`ERD_DB`** | — | docker 경유. 형식: `컨테이너:계정:DB` |
 | `ERD_SCHEMAS` | `public` | 대상 스키마 (콤마 구분) |
 | `ERD_EXCLUDE` | — | 제외할 테이블 정규식 |
@@ -335,14 +336,13 @@ HTML 문서는 `doc` 의 아래 키를 더 쓴다 — 전부 선택이다.
 ## 회귀 시험
 
 `selftest.py` 는 만들어 낸 입력으로 스킬 전체를 한 번 돌리고 결과를 검사한다.
-DB 도 docker 도 필요 없고 20초쯤 걸린다. 입구는 이 파일 하나다 — 항목은 `selftest.py`
-와 옆의 `selftest_*.py` 들에 나뉘어 있고, `selftest.py` 를 돌리면 전부 함께 돈다.
-`install.sh --check` 가 돌리는 것도 이것이다.
+DB 도 docker 도 필요 없고 20초쯤 걸린다. 항목은 기능 영역별 파일로 나뉘고,
+출력도 `:` 앞의 영역명으로 묶여 나온다. `install.sh --check` 가 돌리는 것도 이것이다.
 
 ```bash
-python3 selftest.py            # 전부 (228개)
+python3 selftest.py            # 전부 (248개)
 python3 selftest.py parse      # 이름에 'parse' 가 든 항목만
-python3 selftest_history.py    # 118개 — 입구 파일 것을 뺀 나머지 전부 (10초쯤)
+python3 selftest_schema.py    # 스키마·DDL·인트로스펙션 58개
 ```
 
 진짜 서버가 있어야 도는 6개가 더 있고 기본으로는 건너뛴다 — 집계 바로 윗줄에 몇 개를
@@ -385,9 +385,14 @@ INSTALL.md        설치 가이드 (.ko · .ja · .es 도 있다)
 install.sh        자동 설치 (배치·의존성·폰트)
 requirements.txt  파이썬 의존성
 scripts/
-  selftest.py     회귀 시험 — 만들어 낸 입력으로 스킬을 돌려 본다 (DB 불필요)
-  selftest_kit.py 두 시험이 함께 쓰는 항목 목록·도우미·실행기
-  selftest_history.py  검토 라운드를 소급해 만든 항목들 (+docker 로 도는 6개)
+  selftest.py       전체 입구와 핵심 항목
+  selftest_schema.py DDL 파싱·DB 인트로스펙션·스키마 병합 (+docker 6개)
+  selftest_config.py config·환경변수·spec·i18n
+  selftest_render.py 레이아웃·라우팅·폰트·검증
+  selftest_build.py HTML·DOCX·GraphML·산출물 일관성
+  selftest_install.py 설치·의존성·문서 계약
+  selftest_kit.py   등록·픽스처·실행기·어설션
+  SELFTESTS.md      테스트 영역 지도와 집중 실행법
   i18n.py         출력 언어를 고르고 메시지 키를 푼다
   lang/           문구 카탈로그 — en.py · ko.py · ja.py · es.py
   config.py       경로·DB 접속·spec 로딩·영역 자동 분류

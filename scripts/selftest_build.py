@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""14라운드 — 두 문서 빌더(build_html·build_docx)에서 고친 것을 지키는 항목.
+"""HTML·DOCX·GraphML 산출물 회귀 시험.
 
 `selftest.py` 가 옆의 `selftest_*.py` 를 글로브로 끌어가므로 이 파일은 따로 등록할
 곳이 없다. 항목마다 어느 결함을 지키는지 적는다.
@@ -21,7 +21,7 @@ import re
 import sys
 from html import escape
 
-from selftest_kit import (HERE, Fail, case, col, drawn_names, eq, has, run, table,
+from selftest_kit import (HERE, Fail, case, col, drawn_names, eq, has, main, run, table,
                           write_schema)
 
 EXPECT_CASES = 26       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
@@ -311,8 +311,9 @@ def _(work):
     # 알고, docx 에는 HTML 이 가진 제약·인덱스 절도 없다. 제출용 문서에서만 스키마
     # 사실 하나가 통째로 사라지고 있었다.
     write_schema(work, {
-        't': table('t', [col('id'), col('email', 'text'), col('other', 'text')],
-                   pk=['id'], uniques=[['email']])})
+        't': table('t', [col('id'), col('email', 'text'), col('tenant', 'text'),
+                         col('code', 'text'), col('other', 'text')],
+                   pk=['id'], uniques=[['email'], ['tenant', 'code']])})
     run('merge_desc.py', work)
     run('build_erd.py', work)
     run('build_docx.py', work)
@@ -322,10 +323,10 @@ def _(work):
     for t in doc.tables:
         for r in t.rows:
             cells = [c.text for c in r.cells]
-            if len(cells) == 4 and cells[1] in ('id', 'email', 'other'):
+            if len(cells) == 4 and cells[1] in ('id', 'email', 'tenant', 'code', 'other'):
                 marks[cells[1]] = cells[0]
-    eq(marks, {'id': 'PK', 'email': 'UQ', 'other': ''},
-       'the Kind column tells a unique column from a plain one')
+    eq(marks, {'id': 'PK', 'email': 'UQ', 'tenant': '', 'code': '', 'other': ''},
+       'the Kind column marks a single-column unique, not each member of a tuple')
 
 
 # ── 5. 산출 경로 ─────────────────────────────────────────────────────────────
@@ -885,7 +886,7 @@ def _(work):
     #     erd / build_erd / build_html / build_docx → ./erd-build  ./erd-build/out
     # 원인은 `from config import OUT/WORK/SCHEMA_JSON` 이다. 그 이름들은 PEP 562
     # 모듈 __getattr__ 로 늦춰져 있어서, **가져오는 그 순간** 값이 만들어지고 mkdir 이
-    # 돈다. 15R 의 회귀 케이스(selftest_r14_config.py)는 네 파일만 봤다.
+    # 돈다. 15R 의 회귀 케이스(selftest_config.py)는 네 파일만 봤다.
     #
     # 여기서는 두 방향으로 잰다.
     #   ① 실행: merge_schemas 는 erd 를 안 거치므로 통째로 재현할 수 있다.
@@ -912,6 +913,7 @@ def _(work):
              "    s.layer = lambda k: ''\n"
              "    s.badge = lambda k: ('', '')\n"
              "    s.col_role = lambda t, c: ''\n"
+             "    s.is_single_unique = lambda t, c: False\n"
              "    s.OUT = Path('/nonexistent-erd-stub')\n"
              "    sys.modules['erd'] = s\n"
              'import {mod}\n'
@@ -1317,3 +1319,7 @@ def _(work):
     got = (work / 'T.graphml').read_text(encoding='utf-8')
     has(got, 'encoding="UTF-8"', 'the file still says what it is written in')
     has(got, '본문 설명', 'and the text it declares it can hold is really in it')
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(load_all=False))

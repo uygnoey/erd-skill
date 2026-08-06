@@ -18,10 +18,11 @@ from PIL import Image, ImageDraw, ImageFont
 Image.MAX_IMAGE_PIXELS = None      # 우리가 만드는 그림이라 폭탄 검사 불필요
 MAX_PIXELS = 160_000_000           # 이보다 커지면 배율을 낮춘다
 
-import config
-from config import SCHEMA_JSON, clean, env_flag, excluded, load_spec
-from i18n import LANG, t as T
-from svg_canvas import SvgCanvas
+import config  # noqa: E402
+from config import (SCHEMA_JSON, atomic_output, atomic_write_text, clean, env_flag,  # noqa: E402
+                    excluded, load_spec, validate_schema)
+from i18n import LANG, t as T  # noqa: E402
+from svg_canvas import SvgCanvas  # noqa: E402
 
 
 def __getattr__(name):
@@ -63,6 +64,7 @@ except json.JSONDecodeError as e:
     raise SystemExit(T('err.spec_json', path=SCHEMA_JSON, err=e))
 except (UnicodeDecodeError, OSError) as e:
     raise SystemExit(T('err.env_bad', env='ERD_WORK', value=SCHEMA_JSON, why=e))
+validate_schema(_RAW, SCHEMA_JSON)
 SCHEMA = {k: v for k, v in _RAW.items() if not excluded(k)}
 # 그리는 쪽의 제외는 화면에 **한 글자도** 안 나왔다 — 규칙을 밝히는 것은 introspect
 # 뿐이라, 이미 뽑아 둔 schema.json 으로 문서만 다시 만드는 실행(그리고 라벨을 붙여
@@ -120,11 +122,16 @@ for _n, _t in SCHEMA.items():
 # 개행 하나에 여전히 PIL 이 죽는다. 다만 씻은 뒤 두 키가 같아지면 테이블 하나가
 # 소리 없이 사라진다. 조용히 합치느니 손대지 않는 편이 낫다 — 그때는 그대로 둔다.
 _clean_key = {_k: (clean(_k) or _k) for _k in SCHEMA}
-if len(set(_clean_key.values())) == len(_clean_key):
-    SCHEMA = {_clean_key[_k]: _v for _k, _v in SCHEMA.items()}
-    for _t in SCHEMA.values():
-        for _fk in _t['fks']:
-            _fk['ref_table'] = _clean_key.get(_fk['ref_table'], _fk['ref_table'])
+if len(set(_clean_key.values())) != len(_clean_key):
+    by_clean = {}
+    for _old, _new in _clean_key.items():
+        by_clean.setdefault(_new, []).append(_old)
+    collisions = sorted(k for k, originals in by_clean.items() if len(originals) > 1)
+    raise SystemExit(T('err.schema_key_collision', tables=', '.join(collisions[:4])))
+SCHEMA = {_clean_key[_k]: _v for _k, _v in SCHEMA.items()}
+for _t in SCHEMA.values():
+    for _fk in _t['fks']:
+        _fk['ref_table'] = _clean_key.get(_fk['ref_table'], _fk['ref_table'])
 
 # PNG 옆에 같은 그림을 SVG 로도 남긴다. ERD_SVG=0 이면 끈다.
 SVG_OUT = env_flag('ERD_SVG', True)
@@ -251,7 +258,7 @@ def _pick_font(env, candidates, kind):
         # 여기서는 죽지 않고 regular 로 내려간다 — 다만 exists() 만 보면 열리지 않는
         # 파일을 골라 놓고 PIL 이 뒤늦게 터지므로, 재는 자는 위와 같아야 한다.
         # `and _usable(bp, bi)` 를 지우면 빨강인 것을 15라운드가 붙였다:
-        # `selftest_r14_render.py` 의 `errors: a bold font from the candidate list
+        # `selftest_render.py` 의 `errors: a bold font from the candidate list
         # is opened before it is picked`. 14라운드는 env 갈래만 시험했다.
         return (rp, ri), ((bp, bi) if Path(bp).exists() and _usable(bp, bi)
                           else (rp, ri))
@@ -312,6 +319,11 @@ def col_role(t, c):
     if any(fk['column'] == c['name'] for fk in t['fks']):
         return 'FK'
     return ''
+
+
+def is_single_unique(t, cname):
+    """Whether ``cname`` alone, rather than only a composite tuple, is unique."""
+    return any(len(u) == 1 and u[0] == cname for u in t.get('uniques', []))
 
 
 _ADDED = T('word.added')          # 붙이는 쪽과 알아보는 쪽이 같은 문자열을 봐야 한다
@@ -559,7 +571,7 @@ def layout_overview(hgap=230, vgap=76):
     for code, _name, _schema, tables in AREAS:
         w = int(max(max(tw(n, f['title']) for n in tables),
                     max(tw(ROLE.get(n, ''), f['role']) for n in tables)) + PAD * 2 + 50)
-        y, col_n, x0 = 0, 0, x
+        y, col_n = 0, 0
         for n in tables:
             if col_n and col_n % per_col == 0:       # 다음 서브열로 접는다
                 x += w + hgap
@@ -896,8 +908,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 return columns[-1]['x2'] + 10, columns[-1]['x2'] + 420
             return columns[i]['x2'] + 10, columns[i + 1]['x1'] - 10
 
-        def free_y(ci, prefer):
-            """열 ci 의 노드 사이 빈 구간 중 prefer 에 가장 가까운 것 → (중심, lo, hi)
+        def free_ys(ci, prefer):
+            """열 ci 의 노드 사이 빈 구간들을 prefer 에 가까운 순서로 낸다.
 
             경계까지 돌려주는 이유는, 그 구간에 선이 여럿 지날 때 구간 밖으로 밀려나면
             바로 위아래 테이블을 관통하기 때문이다.
@@ -908,7 +920,23 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
             for a, b in zip(spans, spans[1:]):
                 if b[0] - a[1] >= 28:
                     cands.append(((a[1] + b[0]) / 2, a[1] + 7, b[0] - 7))
-            return min(cands, key=lambda c: abs(c[0] - prefer))
+            return sorted(cands, key=lambda c: abs(c[0] - prefer))
+
+        def best_h_slot(cands, prefer, span):
+            """Choose the free band whose resulting lane has the most clearance."""
+            best = None
+            for yc, ylo, yhi in cands:
+                trial = list(used_hy)
+                yp = slot(yc, trial, 13, lo=ylo, hi=yhi, span=span)
+                _v, a0, a1 = trial[-1]
+                clearance = min((abs(yp - u) for u, ua, ub in used_hy
+                                 if not (ub <= a0 or ua >= a1)), default=INF)
+                score = (min(clearance, 12), -abs(yp - prefer))
+                if best is None or score > best[0]:
+                    best = (score, yp, ylo, yhi, trial[-1])
+            _score, yp, ylo, yhi, used = best
+            used_hy.append(used)
+            return yp, ylo, yhi
 
         exit_used = {}                   # 노드별로 이미 쓴 진출입 y (컬럼이 없을 때 분산)
         exit_all = []                    # 전체 진출입 y (같은 행에 몰리는 것 방지)
@@ -988,7 +1016,13 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     # 나눌 때 y 를 볼 수 있다. 중간 열로 건널 때는 그 열의 빈 구간
                     # 안에서 정해지므로 구간째로 잡아 둔다 (아직 어디일지는 모른다).
                     if k < len(mids):
-                        yc, ylo, yhi = free_y(mids[k], yb)
+                        cands = free_ys(mids[k], yb)
+                        nlo, nhi = gutter_bounds(gidx[k + 1])
+                        # 다음 통로의 실제 x 는 아직 정해지지 않았다. 두 통로가 쓸 수
+                        # 있는 범위 전체를 보수적으로 잡아, 다른 빈 띠를 고르더라도
+                        # 이미 놓인 가로선과의 겹침을 과소평가하지 않는다.
+                        hspan = (min(lo, nlo), max(hi, nhi))
+                        yp, ylo, yhi = best_h_slot(cands, yb, hspan)
                         span = (min(y, ylo), max(y, yhi))
                     else:
                         span = (min(y, yb), max(y, yb))
@@ -999,9 +1033,6 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                         # 다음 통로의 x 는 아직 안 정했지만 그 통로가 쓸 수 있는
                         # 범위는 안다 — 넉넉하게 그 범위까지로 잡는다. 넓게 잡는
                         # 쪽이 안전하다: 좁게 잡으면 안 겹친다고 잘못 볼 수 있다.
-                        nlo, nhi = gutter_bounds(gidx[k + 1])
-                        yp = slot(yc, used_hy, 13, lo=ylo, hi=yhi,
-                                  span=(min(gx, nlo), max(gx, nhi)))
                         pts.append((gx, yp))
                         y = yp
                 pts.append((pts[-1][0], yb))
@@ -1324,7 +1355,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     # 적었는데 그것은 k=0 일 때만 참이다. 그러면서도 통째로
                     # `for cand in []:` 로 죽여도 시험은 전부 초록이었다 — 지키는
                     # 케이스가 없었다는 뜻이다. 지금은 있다:
-                    # `selftest_r14_render.py` 의 `render: a self-reference arm with
+                    # `selftest_render.py` 의 `render: a self-reference arm with
                     # no room in its own band narrows the band`.
                     for cand in range(int(dy0) - 13, 11, -13):
                         entry = room_at(cand)
@@ -1417,7 +1448,7 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                 # 것도 안 바꾼다.
                 #
                 # 남는 것은 '보태기 없이도 정말 안전한가' 인데, 그것은 코드가 아니라
-                # 불변식이라 시험이 직접 계측한다 — `selftest_r14_render.py` 의
+                # 불변식이라 시험이 직접 계측한다 — `selftest_render.py` 의
                 # `render: the bounds handed to slot() for a self-reference arm are
                 # never empty` 가 아래 `near = …` 줄에서 lo·hi 를 그 자리의 지역
                 # 변수로 읽어 `hi - lo >= 1` 을 못박는다.
@@ -1653,8 +1684,14 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
                     continue         # 컬럼 행에 못박힌 진출입 꼬리끼리 — 옮길 수 없다
                 n += 1
                 if DEBUG_OVERLAP:
+                    def debug_path(ends):
+                        return next((pts for pts, *_rest in edges
+                                     if ((round(pts[0][0]), round(pts[0][1])),
+                                         (round(pts[-1][0]), round(pts[-1][1]))) == ends), ())
                     print(T('log.overlap_at', a=f'{a:.0f}', s0=f'{s0:.0f}',
-                             s1=f'{s1:.0f}', t0=f'{t0:.0f}', t1=f'{t1:.0f}'))
+                             s1=f'{s1:.0f}', t0=f'{t0:.0f}', t1=f'{t1:.0f}',
+                             ea=f'{ea} pin={pa} {debug_path(ea)}',
+                             eb=f'{eb} pin={pb} {debug_path(eb)}'))
         return n
 
     def thru_nodes():
@@ -1722,7 +1759,8 @@ def draw_erd(path, tnames, pos, boxes, title, subtitle='', with_desc=True, scale
     # 그림을 먼저 저장하고 계측을 뒤에 남긴다. 순서가 반대였을 때, 로그 경로가
     # 쓸 수 없는 자리이면 '검증했다' 는 줄만 찍힌 채 PNG 한 장 없이 죽었다 —
     # 재는 도구가 재려는 것을 부수면 안 된다.
-    img.save(path)
+    with atomic_output(path) as tmp:
+        img.save(tmp)
     verify_log(path, checks, tolerate)
 
     # ── 같은 그림을 벡터로 한 벌 더 (문서 삽입용 — 확대해도 안 뭉갠다) ──
@@ -1859,5 +1897,5 @@ def build_graphml(path, pos, boxes):
     # 안 주면 실제로 쓰이는 것은 로케일이 정하므로 선언과 알맹이가 어긋난다 — cp949
     # 로케일이면 yEd 가 한글을 깨서 열고, ascii 로케일이면 그 전에 UnicodeEncodeError
     # 로 죽어 그림은 다 그려 놓고 GraphML 만 0바이트로 남았다. 선언한 대로 쓴다.
-    Path(path).write_text(''.join(parts), encoding='utf-8')
+    atomic_write_text(path, ''.join(parts))
     return len(ids), e

@@ -201,9 +201,12 @@ M = {
     'err.font_none': 'No {kind} font found. Run install.sh, or set {env} yourself.\n'
                      '  Looked in: {looked}',
     'err.merge_usage': 'usage: python3 merge_schemas.py <label> <label> …',
+    'err.merge_label': 'invalid database label: {label!r}. Use a plain file-name-safe label.',
+    'err.merge_collision': 'database label {label!r} produces duplicate table keys: {tables}',
     'err.merge_missing': '{path} does not exist. Run introspect.py with '
                          'ERD_LABEL={label} first.',
     'err.no_sql_dir': 'no DDL directory: {path}  (set it with ERD_SQL_DIR)',
+    'err.sql_file_outside': '{env} contains a path outside {path}: {value}',
     'err.spec_no_area': '{path} defines areas, but none of them name a table that exists.',
     'err.spec_dup_code': '{path}: two areas use the area code {code} (the other is written {other}).\n'
                          '  Area codes become file names ({file}), and on macOS and Windows two\n'
@@ -212,6 +215,9 @@ M = {
     'err.spec_layer': 'layer {key} is malformed: {value}\n'
                       '  expected [fill, header, border, label] with #rrggbb colors',
     'err.spec_json': '{path} is not valid JSON: {err}',
+    'err.schema_shape': '{path} must contain a JSON object whose values are table objects.',
+    'err.schema_field': '{path}: table {table!r} field {field} must be {want}, not {got}.',
+    'err.schema_key_collision': 'table keys become duplicates after cleaning unsafe characters: {tables}',
     'err.fig_unregistered': 'the diagram {stem} has no figure number — fig_numbers() in '
                             'build_erd.py does not list it.\n'
                             '  Every diagram this script draws takes its number from that list, and the '
@@ -230,6 +236,8 @@ M = {
                         '  Nothing was written. A run that read only part of the schema '
                         'produces a document that looks complete and is not.',
     'err.query_truncated': 'the result stopped in the middle of a row',
+    'err.query_timeout': 'the database query exceeded {seconds} seconds',
+    'err.timeout_number': 'use zero or a positive number of seconds',
     'err.env_not_dir': '{env}: {path} is not a directory — something else is already there.',
     'err.env_not_file': '{env}: {path} is not a readable file.',
     'err.env_bad': '{env} cannot be used: {why}\n  value: {value}',
@@ -243,6 +251,7 @@ M = {
     'log.query_fail': '  [warn] database query failed: {err}',
     'log.query_incomplete': '  [warn] could not be read: {list} — the document is missing '
                             'exactly those parts',
+    'log.ddl_alter_unsupported': '  [warn] unsupported ALTER TABLE clause on {table}: {clause}',
     'log.psql_undecodable': '  [warn] the database reply was not valid UTF-8 — those characters '
                             'are � in the document now.\n'
                             '          PGCLIENTENCODING={enc} is set for the psql we start, but a '
@@ -294,7 +303,7 @@ M = {
     'log.png_full': 'PNG  full ERD → {name} {size}',
     'log.png_area': 'PNG  area {code} {name} ({n} + {ext} refs) → {file}  {size}',
     'log.scale_down': '    [note] {name}: diagram too large, scale lowered to {s}×',
-    'log.overlap_at': '      overlap: at {a}  [{s0}~{s1}] vs [{t0}~{t1}]',
+    'log.overlap_at': '      overlap: at {a}  [{s0}~{s1}] {ea} vs [{t0}~{t1}] {eb}',
     'log.verify': '    verify {name}: {report}',
     'log.verify_log_fail': '  [warn] ERD_VERIFY_LOG could not be written, the figures are '
                            'still there: {path} — {err}',

@@ -19,8 +19,6 @@ DDL 이 추가하는 컬럼을 뒤에 이어 `[추가]` 로 표시한다.
 import json
 import os
 import re
-import subprocess
-from pathlib import Path
 
 from i18n import t as T
 # 경로 상수는 **부를 때** 묻는다. `from config import SCHEMA_JSON` 한 줄이 곧
@@ -28,7 +26,8 @@ from i18n import t as T
 # 부르는 사람의 cwd 에 `erd-build/out` 을 남겼다 (config.py 의 '늦춰 두는 값' 참고).
 # 여기서도 이름을 당겨오지 않아야 그 사슬이 끊긴다.
 import config
-from config import QueryFailed, has_db as config_has_db, psql_rows, safe_name
+from config import (QueryFailed, atomic_write_text, has_db as config_has_db,
+                    psql_rows, safe_name)
 
 # ERD_LABEL — SKILL.md·SKILL.ko.md 는 이것을 **범용 표**에 넣고 "여러 DB 를 합칠 때
 # 붙일 라벨(schema.<라벨>.json)" 이라 적는데, 16라운드 전에는 introspect.py 만 보고
@@ -70,11 +69,32 @@ def _relabel(tables):
 
 def sql_files():
     """읽을 DDL 파일 목록. 지정이 없으면 디렉토리의 *.sql 을 이름순으로 전부 읽는다."""
-    named = [f.strip() for f in os.environ.get('ERD_SQL_FILES', '').split(',') if f.strip()]
+    named = []
+    for raw in os.environ.get('ERD_SQL_FILES', '').split(','):
+        name = raw.strip()
+        if name and name not in named:
+            named.append(name)
     if named:
+        root = config.SQL_DIR.resolve()
+        outside = []
+        unique, seen_paths = [], set()
+        for name in named:
+            resolved = (config.SQL_DIR / name).resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                outside.append(name)
+                continue
+            if resolved not in seen_paths:
+                seen_paths.add(resolved)
+                unique.append(name)
+        if outside:
+            raise SystemExit(T('err.sql_file_outside', env='ERD_SQL_FILES',
+                               path=config.SQL_DIR, value=', '.join(outside[:6])))
         # 없는 파일·디렉토리를 적으면 read_text 가 `FileNotFoundError: [Errno 2]` 로
         # 죽는데, 그 줄은 ERD_SQL_FILES 라는 말을 하지 않는다 (게다가 앞의 파일은
         # 이미 읽은 뒤다). 하나라도 못 읽을 것이면 시작 자리에서 이름을 댄다.
+        named = unique
         bad = [f for f in named if not (config.SQL_DIR / f).is_file()]
         if bad:
             raise SystemExit(T('err.env_not_file', env='ERD_SQL_FILES',
@@ -515,8 +535,25 @@ _ON_DELETE = r'ON\s+DELETE\s+(CASCADE|RESTRICT|SET\s+NULL|SET\s+DEFAULT|NO\s+ACT
 _INPAREN = r'((?:' + _QID + r'|[^)])+)'
 
 
+_REF_HEAD = re.compile(r'\bREFERENCES\s+(?:' + _IDC + r'\s*\.\s*)?' + _IDC +
+                       r'\s*(?:\(' + _INPAREN + r'\))?', re.I)
+
+
+def _refs_all(code):
+    """Every REFERENCES clause, each bounded before the next one."""
+    matches = list(_REF_HEAD.finditer(code))
+    out = []
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(code)
+        cols = _names(match.group(3) or '')
+        rule = re.search(_ON_DELETE, code[match.end():end], re.I)
+        out.append((unq(match.group(1)), unq(match.group(2)), cols or ['id'],
+                    ' '.join((rule.group(1) if rule else 'NO ACTION').split()).upper()))
+    return out
+
+
 def _refs(code):
-    """REFERENCES … 한 건 → (부모스키마, 부모, [부모컬럼…], 삭제규칙). 없으면 None.
+    """REFERENCES … 첫 건 → (부모스키마, 부모, [부모컬럼…], 삭제규칙). 없으면 None.
 
     부모 컬럼을 하나만 받던 때는 복합 FK 의 두 컬럼이 모두 'id' 를 가리키는 것으로
     적혀, 있지도 않은 관계가 문서에 실렸다. introspect 는 자리끼리 짝짓는다.
@@ -524,14 +561,8 @@ def _refs(code):
     삭제 규칙은 낱말을 못박아 읽는다. `[A-Z ]+` 로 긁던 예전 방식은
     `ON DELETE CASCADE ON UPDATE CASCADE` 를 'CASCADE ON' 으로 만들어 문서에 실었다.
     """
-    m = re.search(r'\bREFERENCES\s+(?:' + _IDC + r'\s*\.\s*)?' + _IDC +
-                  r'\s*(?:\(' + _INPAREN + r'\))?', code, re.I)
-    if not m:
-        return None
-    cols = _names(m.group(3) or '')
-    rule = re.search(_ON_DELETE, code[m.end():], re.I)
-    return (unq(m.group(1)), unq(m.group(2)), cols or ['id'],
-            ' '.join((rule.group(1) if rule else 'NO ACTION').split()).upper())
+    refs = _refs_all(code)
+    return refs[0] if refs else None
 
 
 _TYPE_HEAD = re.compile(
@@ -592,6 +623,12 @@ def _ref_key(ref, own_schema, dup):
     return f'{rsch}.{rname}' if rname in dup else rname
 
 
+def _default_constraint_name(table, columns, suffix):
+    """PostgreSQL's usual name for an unnamed PK/UQ/FK constraint."""
+    middle = '_'.join(columns)
+    return f'{table}_{middle}_{suffix}' if middle else f'{table}_{suffix}'
+
+
 # DEFAULT 값을 끊는 낱말들 — 컬럼 제약이 시작될 수 있는 자리.
 #
 # 앞의 lookbehind 가 이 식의 전부다. 여기서 두 번 넘어졌으므로 무엇을 지키는지 적어 둔다.
@@ -635,8 +672,23 @@ def _default_end(tail):
     """
     scan = blank_quoted(tail)
     depth = paren_depth(scan)
+    case_depth = [0] * len(scan)
+    level, cursor = 0, 0
+    for token in re.finditer(r'\b(?:CASE|END)\b', scan, re.I):
+        for i in range(cursor, token.start()):
+            case_depth[i] = level
+        word = token.group(0).upper()
+        if word == 'CASE':
+            level += 1
+        for i in range(token.start(), token.end()):
+            case_depth[i] = level
+        if word == 'END' and level:
+            level -= 1
+        cursor = token.end()
+    for i in range(cursor, len(scan)):
+        case_depth[i] = level
     for m in _DFLT_STOP.finditer(scan):
-        if not depth[m.start()]:
+        if not depth[m.start()] and not case_depth[m.start()]:
             return m.start()
     return None
 
@@ -690,12 +742,19 @@ def _column(cname, rest, comment, added):
         'added': added,
     }
     return (col,
-            bool(re.search(r'\bPRIMARY\s+KEY\b', rest_sc, re.I)),
-            bool(re.search(r'\bUNIQUE\b', rest_sc, re.I)),
-            _refs(rest_sc))
+            bool(re.search(r'\bPRIMARY\s+KEY\b', decl, re.I)),
+            bool(re.search(r'\bUNIQUE\b', decl, re.I)),
+            _refs_all(rest_sc))
 
 
-def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = None):
+def _inline_constraints(code, keyword):
+    """Return names attached directly to column constraints of one kind."""
+    return [unq(match.group(1)) for match in re.finditer(
+        r'\bCONSTRAINT\s+' + _IDC + r'\s+(?=' + keyword + r'\b)', code, re.I)]
+
+
+def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = None,
+                 unread_out=None):
     """`dropped` 는 **읽지 못해 버린 CREATE TABLE** 을 내보내는 자리다 — {키: 스키마}.
 
     버리기만 하고 그 사실을 알리지 않으면, 같은 이름을 대는 뒤 문장들이 그 테이블을
@@ -722,7 +781,7 @@ def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = Non
     msc_q = blank_quoted(msc)
     # 짝이 안 맞는 괄호로 **읽지 못한** CREATE TABLE — 아래 두 자리에서 모인다.
     # 이름을 대고 넘어가려고 들고 다닌다 (파일 하나가 끝날 때 한 줄로 낸다).
-    unread = []
+    unread = unread_out if unread_out is not None else []
     for m in head_pat.finditer(msc):
         sch, name = unq(m.group(1)) or 'public', unq(m.group(2))
         i, depth = m.end(), 1                     # 괄호 짝으로 본문을 자른다
@@ -803,6 +862,7 @@ def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = Non
         t = tables.setdefault(key, {
             'name': name, 'origin': 'new', 'src_file': src, 'schema': sch,
             'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
+            '_constraints': {},
         })
         # CREATE TABLE 바로 앞의 ── 헤더 주석을 테이블 설명으로 쓴다. 단 pg_dump 가
         # 붙이는 구조 헤더(Name: …; Type: TABLE; …)는 설명이 아니다.
@@ -829,38 +889,62 @@ def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = Non
 
         for raw_code, code, comment in split_top_level(body_mc, body_ms, body_sc):
             if _TABLE_LEVEL.match(code):
+                named = re.match(r'CONSTRAINT\s+' + _IDC + r'\s+', code, re.I)
+                cname = unq(named.group(1)) if named else None
                 pk = re.search(r'PRIMARY\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
                 if pk:
                     t['pk'] = _names(pk.group(1))
+                    key = cname or _default_constraint_name(name, [], 'pkey')
+                    t['_constraints'][key] = ('pk', list(t['pk']))
                 fk = re.search(r'FOREIGN\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
                 ref = _refs(code)
                 if fk and ref:
                     rt = _ref_key(ref, sch, dup)
                     kids = _names(fk.group(1))
-                    for idx, c in enumerate(kids):
-                        t['fks'].append({
-                            'column': c, 'ref_table': rt,
-                            'ref_column': ref[2][idx] if idx < len(ref[2]) else ref[2][-1],
-                            'on_delete': ref[3]})
+                    if len(kids) == len(ref[2]):
+                        for idx, c in enumerate(kids):
+                            row = {'column': c, 'ref_table': rt,
+                                   'ref_column': ref[2][idx], 'on_delete': ref[3]}
+                            key = cname or _default_constraint_name(name, kids, 'fkey')
+                            row['_constraint'] = key
+                            t['fks'].append(row)
+                        t['_constraints'][key] = ('fk', kids)
                 uq = re.match(r'(?:CONSTRAINT\s+' + _ID + r'\s+)?UNIQUE\s*\(' + _INPAREN + r'\)',
                               code, re.I)
                 if uq:
-                    t['uniques'].append(_names(uq.group(1)))
+                    cols = _names(uq.group(1))
+                    t['uniques'].append(cols)
+                    key = cname or _default_constraint_name(name, cols, 'key')
+                    t['_constraints'][key] = ('uq', cols)
                 continue
 
             col = re.match(r'^' + _IDC + r'\s+(.+)$', raw_code)  # 따옴표 친 컬럼명도 받는다
             if not col:
                 continue
             cname, rest = unq(col.group(1)), col.group(2).strip()
-            c, is_pk, is_uq, ref = _column(cname, rest, comment, False)
+            c, is_pk, is_uq, refs = _column(cname, rest, comment, False)
+            rest_sc = mask(rest)[2]
             t['columns'].append(c)
             if is_pk:
                 t['pk'].append(cname)
+                constraints = (_inline_constraints(rest_sc, r'PRIMARY\s+KEY')
+                               or [_default_constraint_name(name, [], 'pkey')])
+                for constraint in constraints:
+                    t['_constraints'][constraint] = ('pk', list(t['pk']))
             if is_uq:
                 t['uniques'].append([cname])
-            if ref:
+                constraints = (_inline_constraints(rest_sc, r'UNIQUE')
+                               or [_default_constraint_name(name, [cname], 'key')])
+                for constraint in constraints:
+                    t['_constraints'][constraint] = ('uq', [cname])
+            named_refs = _inline_constraints(rest_sc, r'REFERENCES')
+            for idx, ref in enumerate(refs):
+                key = (named_refs[idx] if idx < len(named_refs)
+                       else _default_constraint_name(name, [cname], 'fkey'))
                 t['fks'].append({'column': cname, 'ref_table': _ref_key(ref, sch, dup),
-                                 'ref_column': ref[2][0], 'on_delete': ref[3]})
+                                 'ref_column': ref[2][0], 'on_delete': ref[3],
+                                 '_constraint': key})
+                t['_constraints'][key] = ('fk', [cname])
 
     # 버린 것은 이름을 대고 버린다. 예전엔 `continue` 한 줄이 전부라, 괄호 하나가
     # 어긋난 파일은 테이블 0개에 rc 0 으로 조용히 끝났다 — 화면에는 '테이블 0개'
@@ -892,7 +976,7 @@ def parse_create(sql: str, src: str, tables: dict, dup: set, dropped: dict = Non
     # 버린 테이블을 가리키던 ALTER·COMMENT·FK 는 함께 사라진다. 따로 알리지 않는 것은
     # 이 한 줄이 **테이블 이름** 을 대기 때문이다 — 'q 를 못 읽었고 q 만큼이 빠진다'
     # 는 q 에 붙는 모든 문장을 포함한다. 두 번 말하면 같은 사실이 두 가지 일로 읽힌다.
-    if unread:
+    if unread and unread_out is None:
         print(T('log.query_incomplete', list=', '.join(unread)))
 
 
@@ -943,155 +1027,322 @@ def _stmts(pat, msc, msc_q):
         pos = end + 1
 
 
-def parse_alter(sql: str, src: str, tables: dict, dup: set, dropped: dict = None):
-    r"""ALTER TABLE … ADD COLUMN / ADD CONSTRAINT.
+def sql_statements(sql):
+    """Yield SQL statements in source order without splitting quoted semicolons."""
+    masked = blank_quoted(mask(sql)[2])
+    start = 0
+    for i, char in enumerate(masked):
+        if char == ';':
+            yield sql[start:i + 1]
+            start = i + 1
+    if sql[start:].strip():
+        yield sql[start:]
 
-    pg_dump 는 제약을 전부 `ALTER TABLE ONLY public.t ADD CONSTRAINT …` 로 내놓는다.
-    `ALTER TABLE (\w+)` 만 보던 예전 코드는 ONLY 도 스키마도 못 넘어, pg_dump 로 뽑은
-    DDL 에서는 PK 와 FK 가 하나도 잡히지 않았다.
+
+def parse_drop_table(sql, tables):
+    """Apply DROP TABLE and remove relationships whose referenced table vanished."""
+    _ms, _mc, msc = mask(sql)
+    match = re.match(r'\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(.+?)(?:\s+(?:CASCADE|RESTRICT))?\s*;?\s*$',
+                     msc, re.I | re.S)
+    if not match:
+        return
+    for raw in split_top_level(match.group(1), match.group(1), match.group(1)):
+        code = raw[1].strip()
+        if not re.fullmatch(r'(?:' + _ID + r'\s*\.\s*)?' + _ID, code):
+            continue
+        parts = [unq(part) for part in re.findall(_ID, code)]
+        sch, name = (parts if len(parts) == 2 else (None, parts[0]))
+        table = _find(tables, sch, name)
+        if table is None:
+            continue
+        key = next((k for k, value in tables.items() if value is table), None)
+        if key is None:
+            continue
+        tables.pop(key)
+        for other in tables.values():
+            other['fks'] = [fk for fk in other['fks'] if fk['ref_table'] != key]
+
+
+def parse_alter_state(sql: str, src: str, tables: dict, dup: set, dropped: dict = None):
+    """ALTER TABLE state changes, applied in statement and subcommand order.
+
+    ``parse_alter`` historically grew as separate regex passes.  That is adequate for
+    extracting ADD clauses, but it cannot model a final schema once DROP/RENAME/TYPE
+    clauses are present: all ADDs run before every other family regardless of source
+    order.  This ordered pass is the canonical ALTER implementation used by ``main``.
     """
     ms, mc, msc = mask(sql)
-    # 문이 어디서 끝나는지를 재는 사본은 **이름까지 덮은 것** 이다 (`blank_quoted`
-    # 참고 — 같은 규칙을 쓰는 네 번째 자리이고, `parse_create` 의 본문 슬라이서가
-    # `msc_q` 로 `;` 를 보는 것과 **같은 자, 같은 이름**이다). 이름을 읽는 `head` 와
-    # 값을 꺼내는 슬라이스는 msc·sql 을 그대로 쓴다 — 덮은 사본에서 이름을 읽으면
-    # `_IDC` 가 빈 자리를 보게 되어 `ALTER TABLE "t;x"` 가 통째로 안 잡힌다.
     msc_q = blank_quoted(msc)
-    dropped = dropped or {}
-    # `IF EXISTS` 는 손으로 쓰는 마이그레이션에 흔한데, 이 자리에서 넘지 못하면
-    # 문 전체가 **아무 말 없이** 버려졌다 — `ALTER TABLE IF EXISTS t ADD COLUMN …`
-    # 뒤에 `ADD` 가 바로 오지 않아 어느 루프에도 안 걸린다. 문법 순서는 Postgres 그대로
-    # `ALTER TABLE [IF EXISTS] [ONLY] 이름` 이다. 네 루프가 이 조각을 함께 쓰므로
-    # ADD COLUMN·ADD CONSTRAINT·ALTER COLUMN 이 한 자리에서 같이 산다.
+    if dropped is None:
+        dropped = {}
     head = (r'ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?'
             r'(?:' + _IDC + r'\s*\.\s*)?' + _IDC + r'\s+')
 
-    def find(sch, name):
-        return _find(tables, sch, name)
+    def key_of(t):
+        return next((k for k, v in tables.items() if v is t), None)
 
-    for m, end in _stmts(re.compile(head + r'(ADD\s+COLUMN\b)', re.S | re.I), msc, msc_q):
+    def find_or_stub(sch, name):
+        t = _find(tables, sch, name)
+        if t is not None:
+            return t
+        key = f'{sch}.{name}' if sch and (name in dup or name in tables) else name
+        if dropped.get(key) == (sch or 'public'):
+            return None
+        return tables.setdefault(key, {
+            'name': name, 'origin': 'existing', 'src_file': src,
+            'schema': sch or 'public', 'columns': [], 'pk': [], 'fks': [],
+            'uniques': [], 'note': '', '_constraints': {},
+        })
+
+    def rename_column(t, old, new):
+        col = next((c for c in t['columns'] if c['name'] == old), None)
+        if col is None or any(c['name'] == new for c in t['columns']):
+            return
+        col['name'] = new
+        t['pk'] = [new if c == old else c for c in t['pk']]
+        t['uniques'] = [[new if c == old else c for c in u] for u in t['uniques']]
+        t['_constraints'] = {
+            name: (kind, [new if c == old else c for c in cols])
+            for name, (kind, cols) in t.setdefault('_constraints', {}).items()
+        }
+        for fk in t['fks']:
+            if fk['column'] == old:
+                fk['column'] = new
+        own_key = key_of(t)
+        for other in tables.values():
+            for fk in other['fks']:
+                if fk['ref_table'] == own_key and fk['ref_column'] == old:
+                    fk['ref_column'] = new
+
+    def drop_column(t, name):
+        if not any(c['name'] == name for c in t['columns']):
+            return
+        t['columns'] = [c for c in t['columns'] if c['name'] != name]
+        t['pk'] = [c for c in t['pk'] if c != name]
+        t['uniques'] = [u for u in t['uniques'] if name not in u]
+        t['fks'] = [fk for fk in t['fks'] if fk['column'] != name]
+        t['_constraints'] = {
+            key: value for key, value in t.setdefault('_constraints', {}).items()
+            if name not in value[1]
+        }
+        own_key = key_of(t)
+        for other in tables.values():
+            other['fks'] = [fk for fk in other['fks']
+                            if not (fk['ref_table'] == own_key and fk['ref_column'] == name)]
+
+    def rename_table(t, new):
+        old = key_of(t)
+        if old is None:
+            return
+        t['name'] = new
+        old_items = list(tables.items())
+        counts = {}
+        for _key, item in old_items:
+            counts[item['name']] = counts.get(item['name'], 0) + 1
+        dup.clear()
+        dup.update(name for name, count in counts.items() if count > 1)
+        rekey = {}
+        tables.clear()
+        for old_key, item in old_items:
+            new_key = (f"{item.get('schema') or 'public'}.{item['name']}"
+                       if counts[item['name']] > 1 else item['name'])
+            tables[new_key] = item
+            rekey[old_key] = new_key
+        for other in tables.values():
+            for fk in other['fks']:
+                fk['ref_table'] = rekey.get(fk['ref_table'], fk['ref_table'])
+
+    pat = re.compile(head, re.S | re.I)
+    for m, end in _stmts(pat, msc, msc_q):
         sch, name = unq(m.group(1)), unq(m.group(2))
-        t = find(sch, name)
-        if t is None:
-            # 스키마를 적어 준 ALTER 는 그 스키마의 테이블로 새로 만든다. 이름만으로
-            # 가져다 쓰면 audit.users 의 컬럼이 public.users 에 붙는다.
-            key = f'{sch}.{name}' if sch and (name in dup or name in tables) else name
-            # 그 키를 `parse_create` 가 **읽지 못해 버렸다면** 여기서 세우지 않는다.
-            # 세우던 동안 `CREATE TABLE q (…괄호 어긋남…); ALTER TABLE q ADD COLUMN z;`
-            # 는 'q 를 못 읽었다, 그만큼이 빠진다' 고 찍어 놓고 컬럼 하나짜리 q 를
-            # 정의서에 실었다. 그 상자는 반쯤 읽은 것이 아니라 **거의 아무것도 안 읽은**
-            # 것이다 — 본문의 컬럼은 하나도 없고 나중에 붙인 것만 있다. 게다가 origin 이
-            # 'existing' 이라 배지가 `기존` 으로 뒤집혀, 새로 만드는 테이블이 이미 DB 에
-            # 있는 것처럼 보였다. 자세한 것은 parse_create 끝의 주석에 적었다.
-            #
-            # 여기서 `continue` 는 이 ALTER **문 하나** 를 통째로 건너뛴다 — 컬럼만 빼고
-            # 제약은 받는 식으로 반만 건너뛰지 않는다(바로 아래 중복 컬럼 자리와 같은
-            # 규율이다).
-            #
-            # 재는 자는 키 **와 스키마** 둘 다다. 키만 보던 판은 남의 테이블을 함께
-            # 버렸다 — `CREATE TABLE q (…어긋남…); ALTER TABLE audit.q ADD COLUMN z;`
-            # 에서 audit.q 의 키가 `q` 로 접혀 버린 public.q 와 겹쳤다(parse_create
-            # 의 docstring 참고). 스키마를 안 적은 ALTER 는 parse_create 와 같은
-            # 기본값 'public' 으로 읽는다.
-            #
-            # 남는 어긋남 하나는 적어 둔다: 이름이 여러 스키마에 걸치는데(`dup`) ALTER
-            # 가 스키마를 안 적으면 키가 `q` 라 버린 `shop.q` 와 안 맞아 스텁이 선다.
-            # 그때는 **세우는 쪽**으로 틀린다 — 어느 스키마를 말하는지 DDL 이 안 적었고,
-            # 성한 테이블을 버리는 것보다 못 버리는 것이 덜 나쁘다.
-            if dropped.get(key) == (sch or 'public'):
-                continue
-            t = tables.setdefault(key, {
-                'name': name, 'origin': 'existing', 'src_file': src,
-                'schema': sch or 'public',
-                'columns': [], 'pk': [], 'fks': [], 'uniques': [], 'note': '',
-            })
-        t['altered_by'] = src
-        for raw_code, code, comment in split_top_level(mc[m.start(3):end],
-                                                       ms[m.start(3):end],
-                                                       msc[m.start(3):end]):
-            # `IF NOT EXISTS` 를 안 넘던 때는 그 세 낱말의 첫 마디가 컬럼 이름이 됐다 —
-            # `ADD COLUMN IF NOT EXISTS memo text` 가 이름 `IF`, 타입 `NOT` 인 컬럼으로
-            # 정의서에 실리고 memo 는 사라졌다. 경고는 없었다. `IF` 뒤에 반드시 공백을
-            # 요구하므로 `if_flag` 같은 진짜 컬럼 이름은 그대로 이름으로 남는다.
-            am = re.match(r'ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?' + _IDC + r'\s+(.+)$',
-                          raw_code, re.I)
-            if not am:
-                continue
-            cname, rest = unq(am.group(1)), am.group(2).strip()
-            # ── 이미 있는 컬럼이면 이 문은 통째로 없는 셈 친다 ──────────────────
-            # 한 테이블에 같은 이름의 컬럼이 둘일 수 있는 최종 상태는 **없다**. 그런데
-            # 그냥 append 하던 동안 정의서에는 같은 컬럼이 두 줄로 실렸고, 인라인
-            # UNIQUE·REFERENCES 도 두 벌이 됐다 (PK 만 아래에서 막고 있었다 — 같은
-            # 버그를 반만 고친 자리였다).
-            #
-            # 어느 쪽을 남기는가: **먼저 적힌 것**이다. `IF NOT EXISTS` 가 붙었으면
-            # Postgres 는 이미 있는 컬럼을 그대로 두고 그 문 전체를 건너뛴다(NOTICE
-            # 한 줄). 뒤 문의 UNIQUE·REFERENCES 도 **안 붙는다.** 그러니 컬럼만 빼고
-            # 제약은 받는 식으로 반만 건너뛰면 DB 와 어긋난다 — 문 하나를 통째로 건너뛴다.
-            #
-            # `IF NOT EXISTS` 가 없으면 Postgres 는 에러다. 그 DDL 로 도달할 수 있는
-            # 상태가 아예 없으므로 '옳은 그림' 도 없는데, 그렇다고 같은 컬럼을 두 줄로
-            # 싣는 것은 어느 쪽으로도 답이 아니다. 두 경우를 갈라 두면 갈래마다 다른
-            # 실수가 생기므로 규칙은 하나로 둔다: **먼저 적힌 것이 이긴다.** 이러면
-            # 컬럼 차례도 안 흔들린다(뒤 문이 순서를 바꾸지 못한다).
-            # 말없이 건너뛰는 것이 마음에 걸리지만, 이 뜻의 카탈로그 키가 아직 없다.
-            if any(c['name'] == cname for c in t['columns']):
-                continue
-            # 판정은 parse_create 와 **같은 함수** 로 한다 (_column 의 주석 참고).
-            c, is_pk, is_uq, ref = _column(cname, rest, comment, True)
-            t['columns'].append(c)
-            # 인라인 PK·UNIQUE·REFERENCES 도 CREATE 쪽과 같게 읽는다. 같은 문법을
-            # 어느 문에 적었느냐로 결과가 달라지면, 컬럼을 나중에 붙인 테이블만
-            # 정의서의 PK·UNIQUE 칸과 관계선이 조용히 빈다.
-            if is_pk and cname not in t['pk']:
-                # CREATE 가 이미 적어 둔 PK 를 두 번 세지 않는다 — 정의서의 PK 칸이
-                # 같은 컬럼을 두 번 가리키고, 아래 not_null 채우기가 헛돈다.
-                t['pk'].append(cname)
-            if is_uq and [cname] not in t['uniques']:
-                # PK 와 **같은 규칙**이다. 위 컬럼 중복 막기가 걸리는 길은 이미 막지만,
-                # `CREATE TABLE t (code text UNIQUE)` 에 `ALTER … ADD COLUMN` 이 아니라
-                # 다른 경로로 같은 한 컬럼 UNIQUE 가 또 들어오는 길이 남는다. 한쪽만
-                # 막아 두면 다음 사람이 또 반만 고친다.
-                t['uniques'].append([cname])
-            if ref:
-                t['fks'].append({
-                    'column': cname,
-                    'ref_table': _ref_key(ref, t.get('schema') or 'public', dup),
-                    'ref_column': ref[2][0], 'on_delete': ref[3]})
-
-    for m, end in _stmts(re.compile(head + r'ADD\s+CONSTRAINT\s+' + _ID + r'\s+',
-                                    re.S | re.I), msc, msc_q):
-        t = find(unq(m.group(1)), unq(m.group(2)))
+        t = find_or_stub(sch, name)
         if t is None:
             continue
-        code = ' '.join(sql[m.end():end].split())
-        pk = re.search(r'PRIMARY\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
-        if pk:
-            t['pk'] = _names(pk.group(1))
-        fk = re.search(r'FOREIGN\s+KEY\s*\(' + _INPAREN + r'\)', code, re.I)
-        ref = _refs(code)
-        if fk and ref:
-            rt = _ref_key(ref, t.get('schema', 'public'), dup)
-            kids = _names(fk.group(1))
-            for idx, c in enumerate(kids):
-                t['fks'].append({
-                    'column': c, 'ref_table': rt,
-                    'ref_column': ref[2][idx] if idx < len(ref[2]) else ref[2][-1],
-                    'on_delete': ref[3]})
-        uq = re.match(r'UNIQUE\s*\(' + _INPAREN + r'\)', code, re.I)
-        if uq:
-            t['uniques'].append(_names(uq.group(1)))
+        t['altered_by'] = src
+        pieces = split_top_level(mc[m.end():end], ms[m.end():end], msc[m.end():end])
+        for raw_code, code, comment in pieces:
+            raw_code, code = raw_code.strip(), code.strip()
 
-    # pg_dump 는 IDENTITY 를 별도 문으로 내고, serial 은 시퀀스 기본값으로 푼다.
-    # 둘 다 여기서 되살리지 않으면 DB 를 직접 읽은 결과와 어긋난다.
-    for m in re.finditer(head + r'ALTER\s+COLUMN\s+' + _IDC + r'\s+'
-                         r'(?:ADD\s+GENERATED\b|SET\s+DEFAULT\s+nextval)',
-                         msc, re.S | re.I):
-        t = find(unq(m.group(1)), unq(m.group(2)))
-        if t:
-            for c in t['columns']:
-                if c['name'] == unq(m.group(3)):
-                    c['identity'] = c['not_null'] = True
+            am = re.match(r'ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?' +
+                          _IDC + r'\s+(.+)$', raw_code, re.I | re.S)
+            if am:
+                cname, rest = unq(am.group(1)), am.group(2).strip()
+                if any(c['name'] == cname for c in t['columns']):
+                    continue
+                c, is_pk, is_uq, refs = _column(cname, rest, comment, True)
+                rest_sc = mask(rest)[2]
+                t['columns'].append(c)
+                if is_pk and cname not in t['pk']:
+                    t['pk'].append(cname)
+                    constraints = (_inline_constraints(rest_sc, r'PRIMARY\s+KEY')
+                                   or [_default_constraint_name(t['name'], [], 'pkey')])
+                    for key in constraints:
+                        t.setdefault('_constraints', {})[key] = ('pk', list(t['pk']))
+                if is_uq and [cname] not in t['uniques']:
+                    t['uniques'].append([cname])
+                    constraints = (_inline_constraints(rest_sc, r'UNIQUE')
+                                   or [_default_constraint_name(t['name'], [cname], 'key')])
+                    for key in constraints:
+                        t.setdefault('_constraints', {})[key] = ('uq', [cname])
+                named_refs = _inline_constraints(rest_sc, r'REFERENCES')
+                for idx, ref in enumerate(refs):
+                    key = (named_refs[idx] if idx < len(named_refs) else
+                           _default_constraint_name(t['name'], [cname], 'fkey'))
+                    t['fks'].append({
+                        'column': cname,
+                        'ref_table': _ref_key(ref, t.get('schema') or 'public', dup),
+                        'ref_column': ref[2][0], 'on_delete': ref[3],
+                        '_constraint': key})
+                    t.setdefault('_constraints', {})[key] = ('fk', [cname])
+                continue
+
+            cm = re.match(r'ADD\s+CONSTRAINT\s+' + _IDC + r'\s+(.+)$', code,
+                          re.I | re.S)
+            if cm:
+                constraint = unq(cm.group(1))
+                clause = cm.group(2)
+                pk = re.search(r'PRIMARY\s+KEY\s*\(' + _INPAREN + r'\)', clause, re.I)
+                if pk:
+                    t['pk'] = _names(pk.group(1))
+                    t.setdefault('_constraints', {})[constraint] = ('pk', list(t['pk']))
+                fk = re.search(r'FOREIGN\s+KEY\s*\(' + _INPAREN + r'\)', clause, re.I)
+                ref = _refs(clause)
+                if fk and ref:
+                    kids, rt = _names(fk.group(1)), _ref_key(
+                        ref, t.get('schema') or 'public', dup)
+                    if len(kids) == len(ref[2]):
+                        for idx, child in enumerate(kids):
+                            t['fks'].append({
+                                'column': child, 'ref_table': rt,
+                                'ref_column': ref[2][idx], 'on_delete': ref[3],
+                                '_constraint': constraint})
+                        t.setdefault('_constraints', {})[constraint] = ('fk', kids)
+                uq = re.match(r'UNIQUE\s*\(' + _INPAREN + r'\)', clause, re.I)
+                if uq:
+                    cols = _names(uq.group(1))
+                    if cols not in t['uniques']:
+                        t['uniques'].append(cols)
+                    t.setdefault('_constraints', {})[constraint] = ('uq', cols)
+                continue
+
+            dm = re.match(r'DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?' + _IDC, code, re.I)
+            if dm:
+                constraint = unq(dm.group(1))
+                kind_cols = t.setdefault('_constraints', {}).pop(constraint, None)
+                if kind_cols:
+                    kind, cols = kind_cols
+                    if kind == 'pk':
+                        t['pk'] = []
+                    elif kind == 'uq':
+                        still_declared = any(
+                            other_kind == 'uq' and other_cols == cols
+                            for other_kind, other_cols in t['_constraints'].values())
+                        if not still_declared:
+                            t['uniques'] = [u for u in t['uniques'] if u != cols]
+                    elif kind == 'fk':
+                        t['fks'] = [fk for fk in t['fks']
+                                    if fk.get('_constraint') != constraint]
+                continue
+
+            dm = re.match(r'DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?' + _IDC, code, re.I)
+            if dm:
+                drop_column(t, unq(dm.group(1)))
+                continue
+            rm = re.match(r'RENAME\s+COLUMN\s+' + _IDC + r'\s+TO\s+' + _IDC,
+                          code, re.I)
+            if rm:
+                rename_column(t, unq(rm.group(1)), unq(rm.group(2)))
+                continue
+            rm = re.match(r'RENAME\s+TO\s+' + _IDC, code, re.I)
+            if rm:
+                rename_table(t, unq(rm.group(1)))
+                continue
+
+            cm = re.match(r'ALTER\s+COLUMN\s+' + _IDC + r'\s+(.+)$', raw_code,
+                          re.I | re.S)
+            if not cm:
+                print(T('log.ddl_alter_unsupported', table=t['name'], clause=code[:120]))
+                continue
+            cname, action = unq(cm.group(1)), cm.group(2).strip()
+            col = next((c for c in t['columns'] if c['name'] == cname), None)
+            if col is None:
+                continue
+            if re.match(r'SET\s+NOT\s+NULL\b', action, re.I):
+                col['not_null'] = True
+            elif re.match(r'DROP\s+NOT\s+NULL\b', action, re.I):
+                col['not_null'] = False
+            elif re.match(r'DROP\s+DEFAULT\b', action, re.I):
+                col['default'] = ''
+            elif (x := re.match(r'SET\s+DEFAULT\s+(.+)$', action, re.I | re.S)):
+                col['default'] = x.group(1).strip()
+                if re.search(r'\bnextval\s*\(', col['default'], re.I):
+                    col['identity'] = col['not_null'] = True
+            elif (x := re.match(r'(?:SET\s+DATA\s+)?TYPE\s+(.+)$', action,
+                                re.I | re.S)):
+                typ = re.split(r'\s+USING\s+', x.group(1), maxsplit=1, flags=re.I)[0]
+                col['type'] = _type(typ.strip())
+            elif re.match(r'ADD\s+GENERATED\b', action, re.I):
+                col['identity'] = col['not_null'] = True
+            elif re.match(r'DROP\s+IDENTITY\b', action, re.I):
+                col['identity'] = False
+            else:
+                print(T('log.ddl_alter_unsupported', table=t['name'], clause=code[:120]))
+
+
+def _comment_value(tail):
+    """Parse NULL, ordinary/E strings, and PostgreSQL dollar-quoted comment values."""
+    tail = tail.lstrip()
+    if re.match(r'NULL\b', tail, re.I):
+        return ''
+    dollar = re.match(r'(\$[A-Za-z_][A-Za-z_0-9]*\$|\$\$)', tail)
+    if dollar:
+        mark = dollar.group(1)
+        end = tail.find(mark, len(mark))
+        return None if end < 0 else tail[len(mark):end]
+    extended = len(tail) >= 2 and tail[0] in 'eE' and tail[1] == "'"
+    start = 1 if extended else 0
+    if start >= len(tail) or tail[start] != "'":
+        return None
+    out, i = [], start + 1
+    escapes = {'n': '\n', 'r': '\r', 't': '\t', 'b': '\b', 'f': '\f'}
+    while i < len(tail):
+        if tail[i] == "'":
+            if i + 1 < len(tail) and tail[i + 1] == "'":
+                out.append("'")
+                i += 2
+                continue
+            return ''.join(out)
+        if extended and tail[i] == '\\' and i + 1 < len(tail):
+            nxt = tail[i + 1]
+            if nxt == '\n':
+                i += 2
+                continue
+            if nxt in '01234567':
+                digits = re.match(r'[0-7]{1,3}', tail[i + 1:]).group(0)
+                out.append(chr(int(digits, 8)))
+                i += 1 + len(digits)
+                continue
+            if nxt in 'xX':
+                digits = re.match(r'[0-9A-Fa-f]{1,2}', tail[i + 2:])
+                if digits:
+                    out.append(chr(int(digits.group(0), 16)))
+                    i += 2 + len(digits.group(0))
+                    continue
+            if nxt in 'uU':
+                width = 4 if nxt == 'u' else 8
+                digits = tail[i + 2:i + 2 + width]
+                if len(digits) == width and re.fullmatch(r'[0-9A-Fa-f]+', digits):
+                    value = int(digits, 16)
+                    if value <= 0x10ffff and not 0xd800 <= value <= 0xdfff:
+                        out.append(chr(value))
+                        i += 2 + width
+                        continue
+            out.append(escapes.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(tail[i])
+        i += 1
+    return None
 
 
 def parse_comments(sql: str, tables: dict):
@@ -1108,10 +1359,10 @@ def parse_comments(sql: str, tables: dict):
 
     for m in re.finditer(r'COMMENT\s+ON\s+(TABLE|COLUMN)\s+'
                          r'((?:' + _ID + r'\s*\.\s*){0,2}' + _ID + r')\s+IS\b', msc, re.I):
-        lit = re.match(r"\s*'((?:[^']|'')*)'", sql[m.end():])
-        if not lit:
+        tail = sql[m.end():]
+        text = _comment_value(tail)
+        if text is None:
             continue
-        text = lit.group(1).replace("''", "'")
         # 점으로 자르지 않는다 — 따옴표 친 이름 안의 점은 구분자가 아니다
         parts = [unq(x) for x in re.findall(_ID, m.group(2))]
         is_col = m.group(1).upper() == 'COLUMN'
@@ -1159,7 +1410,7 @@ def parse_unique(sql: str, tables: dict):
                          r'(?:\s+USING\s+\w+)?\s*\(' + _INPAREN + r'\)', msc, re.I):
         t = _find(tables, unq(m.group(1)), unq(m.group(2)))
         cols = _names(m.group(3))
-        if t is not None and not any('(' in c for c in cols):
+        if t is not None and not any('(' in c for c in cols) and cols not in t['uniques']:
             t['uniques'].append(cols)      # 함수 인덱스(lower(email))는 컬럼 목록이 아니다
 
 
@@ -1201,7 +1452,7 @@ def _lit(s):
     있는 서버**로 나간다. escape 를 지우면 나가는 문장이 이렇게 된다:
         where c.table_schema='s1' or '1'='1' and c.table_name in ('x')
     15라운드 전에는 이 자리를 재는 항목이 introspect 쪽에만 있었고 여기는 0건이라,
-    지워도 141개가 전부 초록이었다 (selftest_r14_config.py 의 'parse: a quote in
+    지워도 141개가 전부 초록이었다 (selftest_config.py 의 'parse: a quote in
     ERD_REF_SCHEMA…' 가 이제 그것을 문다).
     """
     return "'" + str(s).replace("'", "''") + "'"
@@ -1324,16 +1575,17 @@ def main():
     # 버린 이름을 다른 파일의 ALTER·FK 가 되살리는 길까지 막는다 (parse_create 끝 주석).
     dropped = {}
     for f, sql in files:
-        parse_create(sql, f, tables, dup, dropped)
-    # 성하게 읽힌 정의가 이미 있으면 버린 것이 아니다 — 같은 이름을 두 번 적고 한쪽만
-    # 깨진 DDL 에서, 성한 쪽에 붙는 ALTER 까지 함께 버리지 않는다. 파일 차례와 무관하게
-    # 같은 답이 나오도록 **다 읽은 뒤** 한 번에 걷는다.
-    for k in tables:
-        dropped.pop(k, None)
-    for f, sql in files:                      # 제약·주석은 테이블이 다 모인 뒤에
-        parse_alter(sql, f, tables, dup, dropped)
-        parse_unique(sql, tables)
-        parse_comments(sql, tables)
+        file_unread = []
+        for statement in sql_statements(sql):
+            parse_create(statement, f, tables, dup, dropped, file_unread)
+            for k in tables:
+                dropped.pop(k, None)
+            parse_alter_state(statement, f, tables, dup, dropped)
+            parse_drop_table(statement, tables)
+            parse_unique(statement, tables)
+            parse_comments(statement, tables)
+        if file_unread:
+            print(T('log.query_incomplete', list=', '.join(file_unread)))
     if dup:
         print(T('log.dup_names', n=len(dup), list=', '.join(sorted(dup)[:6])))
 
@@ -1426,6 +1678,9 @@ def main():
 
     for t in tables.values():
         t.setdefault('schema', 'public')
+        t.pop('_constraints', None)
+        for fk in t['fks']:
+            fk.pop('_constraint', None)
     if REF_SOURCES and REF_SCHEMA:
         tables.update(fetch_ref(REF_SOURCES))
     elif REF_SOURCES:
@@ -1439,8 +1694,7 @@ def main():
            else config.SCHEMA_JSON)
     # ensure_ascii=False 라 한글이 그대로 나간다 — encoding 을 안 주면 ascii 로케일
     # (LC_ALL=C)에서 UnicodeEncodeError 로 죽는다. 읽는 쪽도 utf-8 로 못박혀 있다.
-    Path(out).write_text(json.dumps(tables, ensure_ascii=False, indent=2),
-                         encoding='utf-8')
+    atomic_write_text(out, json.dumps(tables, ensure_ascii=False, indent=2))
     print(T('log.ddl_parsed', n=len(tables), path=out))
     for n, t in sorted(tables.items(), key=lambda x: (x[1]['origin'], x[0])):
         added = sum(1 for c in t['columns'] if c['added'])

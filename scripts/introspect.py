@@ -22,7 +22,8 @@ from i18n import t as T
 # import 만으로 cwd 에 erd-build 를 만들지 않게, 그리고 이 파일을 읽기만 하는 쪽이
 # 남의 ERD_SCHEMAS 판정에 걸리지 않게.
 import config
-from config import EXCLUDE, QueryFailed, clean, excluded, psql_rows, safe_name
+from config import (EXCLUDE, QueryFailed, atomic_write_text, clean, excluded,
+                    psql_rows, safe_name)
 
 # ERD_LABEL 은 파일명(schema.<label>.json)과 테이블 키에 그대로 들어간다. `a/b` 를
 # 주면 조회를 **전부 끝낸 뒤** 마지막 쓰기에서 `ValueError: Invalid name` 으로 죽어
@@ -75,9 +76,12 @@ Q_PK = """
 select tc.table_schema, tc.table_name, kcu.column_name
 from information_schema.table_constraints tc
 join information_schema.key_column_usage kcu
-  on kcu.constraint_name=tc.constraint_name and kcu.table_schema=tc.table_schema
+  on kcu.constraint_schema=tc.constraint_schema
+ and kcu.constraint_name=tc.constraint_name
+ and kcu.table_schema=tc.table_schema
+ and kcu.table_name=tc.table_name
 where tc.constraint_type='PRIMARY KEY' and tc.table_schema in ({schemas})
-order by kcu.ordinal_position"""
+order by tc.table_schema, tc.table_name, kcu.ordinal_position"""
 
 # FK 는 pg_catalog 에서 읽는다.
 #
@@ -136,13 +140,18 @@ where con.contype='c' and n.nspname in ({schemas})
 order by rel.relname, con.conname"""
 
 Q_UNIQUE = """
-select n.nspname, rel.relname, con.conname,
-       replace(pg_get_constraintdef(con.oid), chr(10), ' ')
-from pg_constraint con
-join pg_class rel on rel.oid=con.conrelid
+select n.nspname, rel.relname, idx.relname, att.attname
+from pg_index i
+join pg_class rel on rel.oid=i.indrelid
 join pg_namespace n on n.oid=rel.relnamespace
-where con.contype='u' and n.nspname in ({schemas})
-order by rel.relname, con.conname"""
+join pg_class idx on idx.oid=i.indexrelid
+join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord)
+  on k.attnum>0 KEY_FILTER
+join pg_attribute att on att.attrelid=i.indrelid and att.attnum=k.attnum
+where i.indisunique and i.indisvalid and not i.indisprimary
+  and i.indpred is null and i.indexprs is null
+  and n.nspname in ({schemas})
+order by rel.relname, idx.relname, k.ord"""
 
 
 def q_fk(ver):
@@ -154,6 +163,12 @@ def q_fk(ver):
     술어를 빼면 그만이다 — 거를 것이 없어서 거르지 않는 것이다.
     """
     return Q_FK if ver >= 110000 else Q_FK.replace('con.conparentid=0 and ', '')
+
+
+def q_unique(ver):
+    """Exclude INCLUDE columns where PostgreSQL exposes indnkeyatts (11+)."""
+    key_filter = 'and k.ord<=i.indnkeyatts' if ver >= 110000 else ''
+    return Q_UNIQUE.replace('KEY_FILTER', key_filter)
 
 
 MIN_PG = 90400        # PostgreSQL 9.4 — WITH ORDINALITY 와 별칭이 붙는 row_to_json 의 하한
@@ -201,7 +216,8 @@ def main():
     # ERD_SCHEMAS="s1','s2" 가 `in ('s1'', ''s2')` 라는 남의 문법이 됐다.
     # (빈 목록 — `in ()` — 은 config 가 시작 자리에서 이름을 대고 막는다.)
     schemas = ', '.join("'" + s.replace("'", "''") + "'" for s in config.SCHEMAS)
-    q = lambda tpl: tpl.format(schemas=schemas)
+    def q(template):
+        return template.format(schemas=schemas)
     tables = {}
 
     # 버전을 먼저 본다 — 조회문이 서버마다 다르고(q_fk), 너무 낮으면 무엇을 물어도
@@ -279,11 +295,15 @@ def main():
         if t and cdef:
             t['checks'].append({'name': cname, 'def': cdef})
 
-    for sch, tname, cname, cdef in rows('unique constraints', q(Q_UNIQUE), 4, core=False):
+    unique_groups = {}
+    for sch, tname, cname, column in rows('unique constraints', q(q_unique(ver)), 4,
+                                          core=False):
         t = tables.get(key(tname, sch))
-        if t and cdef:
-            cols = cdef[cdef.find('(') + 1:cdef.rfind(')')]
-            t['uniques'].append([c.strip() for c in cols.split(',')])
+        if t and column:
+            unique_groups.setdefault((key(tname, sch), cname), []).append(column)
+    for (tkey, _cname), columns in unique_groups.items():
+        if columns not in tables[tkey]['uniques']:
+            tables[tkey]['uniques'].append(columns)
 
     for t in tables.values():                 # 제외된 테이블을 가리키는 FK 는 버린다
         keep = [fk for fk in t['fks'] if fk['ref_table'] in tables]
@@ -299,7 +319,7 @@ def main():
     # 쓸지는 로케일이 정하고, ascii 로케일(LC_ALL=C)에서는 UnicodeEncodeError 로
     # **조회를 다 마친 왕복이 마지막 한 줄에서 통째로 버려졌다**(cp949 는 죽는 대신
     # 읽는 쪽에서 깨진다). 읽는 쪽은 전부 utf-8 로 못 박혀 있다 — 쓰는 쪽도 맞춘다.
-    out_path.write_text(json.dumps(tables, ensure_ascii=False, indent=2), encoding='utf-8')
+    atomic_write_text(out_path, json.dumps(tables, ensure_ascii=False, indent=2))
     n_col = sum(len(t['columns']) for t in tables.values())
     n_fk = sum(len(t['fks']) for t in tables.values())  # noqa: E501  (dropped 반영 후)
     n_desc = sum(1 for t in tables.values() for c in t['columns'] if c['comment'])

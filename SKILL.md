@@ -124,6 +124,7 @@ ERD_DOC_HTML=previous.html python3 merge_desc.py
 | `ERD_DOCNAME` | `ERD` | output file name (without extension) |
 | `ERD_LANG` | locale, else `en` | output language: `en` · `ko` · `ja` · `es` |
 | **`ERD_PSQL`** | — | the psql command itself, e.g. `psql postgresql://u:p@h:5432/db` |
+| `ERD_QUERY_TIMEOUT` | `120` | maximum seconds for one DB query; `0` disables the limit |
 | **`ERD_DB`** | — | via docker. Format: `container:user:db` |
 | `ERD_SCHEMAS` | `public` | target schemas (comma separated) |
 | `ERD_EXCLUDE` | — | regex of tables to exclude |
@@ -366,14 +367,13 @@ written the run says so and still produces every figure.
 ## Regression test
 
 `selftest.py` runs the whole skill against synthetic input and checks the result. No
-database, no docker — about 20 seconds. It is the one entry point: the cases live in
-`selftest.py` and in the `selftest_*.py` files beside it, and running `selftest.py` picks all
-of them up. `install.sh --check` runs exactly this.
+database, no docker — about 20 seconds. Cases are split by product area and the runner
+groups output by the prefix before `:`. `install.sh --check` runs exactly this.
 
 ```bash
-python3 selftest.py            # everything (228 cases)
+python3 selftest.py            # everything (248 cases)
 python3 selftest.py parse      # only cases whose name contains 'parse'
-python3 selftest_history.py    # 118 — every file but the entry file's own (about 10 seconds)
+python3 selftest_schema.py    # 58 schema/DDL/introspection cases
 ```
 
 Six more cases need a real server and are skipped by default — the run says so on the line
@@ -419,9 +419,14 @@ INSTALL.md        installation guide (also .ko / .ja / .es)
 install.sh        automated install (placement · dependencies · fonts)
 requirements.txt  Python dependencies
 scripts/
-  selftest.py     regression test — runs the skill on synthetic input, no DB needed
-  selftest_kit.py the case list, the helpers and the runner both suites share
-  selftest_history.py  cases reconstructed from the review rounds (+6 behind docker)
+  selftest.py       full-suite entry point and core cases
+  selftest_schema.py DDL parsing · introspection · schema merge (+6 behind docker)
+  selftest_config.py config · environment · spec · i18n
+  selftest_render.py layout · routing · fonts · verification
+  selftest_build.py HTML · DOCX · GraphML · artifact consistency
+  selftest_install.py installer · dependencies · documentation contracts
+  selftest_kit.py   registration · fixtures · runner · assertions
+  SELFTESTS.md      test-area map and focused-run instructions
   i18n.py         picks the output language, resolves message keys
   lang/           message catalogs — en.py · ko.py · ja.py · es.py
   config.py       paths · DB connection · spec loading · automatic area classification

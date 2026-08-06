@@ -217,6 +217,6 @@ class SvgCanvas:
         return head + t + bg + ''.join(self.parts) + '</svg>'
 
     def save(self, path, title=None):
-        from pathlib import Path
-        Path(path).write_text(self.tostring(title), encoding='utf-8')
+        from config import atomic_write_text
+        atomic_write_text(path, self.tostring(title))
         return path

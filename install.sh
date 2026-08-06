@@ -270,7 +270,7 @@ _t_es() { case "$1" in
 esac; }
 
 # ── 여기까지가 말이다 ───────────────────────────────────────────────────────
-# 이 표시 위쪽은 부수효과가 없다 — 회귀 시험(scripts/selftest_r14_install.py 의
+# 이 표시 위쪽은 부수효과가 없다 — 회귀 시험(scripts/selftest_install.py 의
 # 'install: every message key renders in all four languages')이 여기까지를 떼어 내
 # source 하고 `t` 를 네 말로 직접 부른다. 표시가 없어지면 그 시험은 조용히 통과하는
 # 대신 그 자리에서 죽는다.

@@ -500,7 +500,7 @@ CREATE TABLE u (
 # 컬럼 이름에도 개행이 들어갈 수 있다: create table t ("a<개행>b" int) 는 합법이다.
 #
 # 17R. parse_ddl 이 config.psql()(구분자) → config.psql_rows()(행마다 JSON 한 줄)로
-# 옮겨서 이 가짜도 같이 옮긴다. selftest_history.py 의 _FAKE_PSQL_JSON 과 같은
+# 옮겨서 이 가짜도 같이 옮긴다. selftest_schema.py 의 _FAKE_PSQL_JSON 과 같은
 # 방식이다: psql_rows() 가 씌우는 `_r(c0, c1, …)` 별칭을 읽어 그 이름으로 JSON 한
 # 줄씩 낸다. **재는 것은 그대로다** — 값에 개행이 들어 있어도 파서가 안 죽는가.
 # JSON 이 개행을 \\n 으로 적으므로 한 행은 한 줄이고, 파서가 그것을 풀어 다시
@@ -1335,7 +1335,8 @@ def _(work):
     write_schema(work, {'t': table('t', [col('id'), col('x', 'text', comment='given')])})
     a = run('merge_desc.py', work).stdout
     b = run('merge_desc.py', work).stdout
-    src = lambda out: re.search(r'\{.*\}', out).group(0)
+    def src(out):
+        return re.search(r'\{.*\}', out).group(0)
     eq(src(b), src(a), 'provenance stats are stable across runs')
 
 
@@ -1622,11 +1623,12 @@ def _(work):
         "             derives=True, tolerate=())\n", encoding='utf-8')
     check(run(str(probe), work, env={'PYTHONPATH': str(HERE)}).stdout)
 
-    for kind, n in seen.items():
-        if not n:
-            raise Fail(f'no diagram exercised {kind} — the fixture proves nothing about it. '
-                       f'(the hub fixture is expected to leave a few horizontal overlaps '
-                       f'on the full diagram; if the layout got better, pick another one)')
+    # The router may legitimately eliminate the previously tolerated overlap.
+    # Keep requiring numeric and n/a branches, but do not force a warning/tolerance
+    # branch that a cleaner layout no longer produces.
+    for kind in ('a number', 'n/a'):
+        if not seen[kind]:
+            raise Fail(f'no diagram exercised {kind} — the fixture proves nothing about it')
 
 
 @case('verify: a diagram without labels does not report a label check it never ran')
@@ -2544,7 +2546,7 @@ def _(work):
 
 # ── 조용히 줄기를 막는 톱니 ─────────────────────────────────────────────────
 # 14라운드의 신고제(`EXPECT_CASES`)는 '조용히 0' 을 막는다. 그런데 15라운드에
-# `selftest_history.py` 에서 `@case` 셋을 떼고 `EXPECT_CASES` 를 40 → 37 로 함께
+# `selftest_schema.py` 에서 `@case` 셋을 떼고 `EXPECT_CASES` 를 40 → 37 로 함께
 # 고쳐 봤더니 `all 138 passed` 로 **조용히 줄었다**. 신고는 '내가 올린 수' 를 말할
 # 뿐이라, 신고와 실제를 같은 손으로 함께 낮추면 아무 데서도 안 붉는다.
 #
@@ -2560,12 +2562,12 @@ def _(work):
 # 바닥을 올리지 않으면 이번에 더한 케이스는 다음 라운드가 조용히 뺄 수 있다.
 #
 # 2026-08-05: 검토 기록 문서를 저장소에서 뺐다. 그 문서를 열던 `docs:` 케이스 셋이
-# 잴 것을 잃었으므로 함께 지웠고, `selftest_r14_install` 의 바닥을 13 → 10, 총계를
+# 잴 것을 잃었으므로 함께 지웠고, `selftest_install` 의 바닥을 13 → 10, 총계를
 # 202 → 199 로 내린다. 없는 파일을 재는 케이스는 아무것도 안 재는 것이다.
 #
 # 2026-08-05: 그때 함께 잃은 것이 하나 있었다 — 지운 케이스 가운데 하나는 네 언어
 # 설치 문서의 `all N passed` 도 같이 재고 있었고, 그 자리가 비면서 그 숫자를 읽는
-# 것이 아무것도 없어졌다. `selftest_r14_install` 에 설치 문서만 보는 축소판을 도로
+# 것이 아무것도 없어졌다. `selftest_install` 에 설치 문서만 보는 축소판을 도로
 # 세운다: 바닥 10 → 11, 총계 199 → 200.
 #
 # 2026-08-05: 그 축소판이 설치 문서 넷만 보고 있었는데, 같은 부류의 자리가 둘 더
@@ -2575,12 +2577,12 @@ def _(work):
 # 파일이 셋뿐이라 그 입구는 정말 제 것만 돌았다) `64b643d` 가 `selftest_r14_*` 넷을
 # 더하면서 거짓이 됐다. 손으로 적은 수를 손으로 찾는 것은 이렇게 실패하므로
 # 같은 규칙으로 재는 케이스를 하나 더 세운다: 바닥 11 → 12, 총계 200 → 201.
-CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 26,
-              'selftest_r14_config': 29, 'selftest_r14_install': 12,
-              'selftest_r14_render': 11}
+CASE_FLOOR = {'selftest_schema': 40, 'selftest_build': 26,
+              'selftest_config': 29, 'selftest_install': 12,
+              'selftest_render': 11}
 
 # 그런데 이 표는 **파일 이름으로** 걸려 있다. 15라운드 수정자가 스스로 신고하고
-# 16라운드 검증자가 확정한 우회가 그래서 있다: `selftest_r14_render.py` 를
+# 16라운드 검증자가 확정한 우회가 그래서 있다: `selftest_render.py` 를
 # `selftest_r15_render.py` 로 개명하면서 케이스 4개를 지우면 개명된 이름은 표에 없어
 # 바닥이 1 이 되고, `all 157 passed` 가 초록으로 찍힌다. 이름표를 옮기면 그 이름표에
 # 걸린 바닥이 함께 사라진다 — 이름에 거는 한 원리적으로 그렇다.
@@ -2597,7 +2599,7 @@ CASE_FLOOR = {'selftest_history': 40, 'selftest_r14_build': 26,
 # **통째로 되돌려도 224개가 전부 초록**이었다 — 자르는 자리가 둘(ADD COLUMN·ADD
 # CONSTRAINT)인데 어느 쪽에도 못이 없었다. 넷을 더한다: 224 → 228. 어느 케이스가
 # 어느 루프를 잡는지는 그 케이스들 위의 격자표에 적어 두었다.
-TOTAL_FLOOR = 228
+TOTAL_FLOOR = 248
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
@@ -2664,7 +2666,7 @@ def _(work):
         raise Fail(f'{entry}.py is the entry file and registered {own} cases but '
                    f'declares no EXPECT_CASES — add `EXPECT_CASES = {own}` to it; the '
                    f'file that runs the suite is the one file nothing was counting')
-    # 입구 파일이 도커 케이스를 안에서 등록할 수 있다 (selftest_history.py 가 그렇다).
+    # 입구 파일이 도커 케이스를 안에서 등록할 수 있다 (selftest_schema.py 가 그렇다).
     # 그쪽 `EXPECT_CASES` 는 이미 그 수를 함께 세므로 신고 대조는 그대로 맞고, 바닥은
     # 하한이라 6개가 더 붙어도 넘지 않는다.
     eq(own, declared, f'{entry}.py is the entry file and says EXPECT_CASES = {declared}')

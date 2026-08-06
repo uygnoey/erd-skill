@@ -198,9 +198,12 @@ M = {
     'err.font_none': 'No se encontró ninguna fuente {kind}. Ejecute install.sh o defina '
                      '{env} manualmente.\n  Rutas revisadas: {looked}',
     'err.merge_usage': 'uso: python3 merge_schemas.py <etiqueta> <etiqueta> …',
+    'err.merge_label': 'etiqueta de base de datos no válida: {label!r}. Use una etiqueta simple y segura para nombres de archivo.',
+    'err.merge_collision': 'la etiqueta de base de datos {label!r} produce claves de tabla duplicadas: {tables}',
     'err.merge_missing': '{path} no existe. Ejecute antes introspect.py con '
                          'ERD_LABEL={label}.',
     'err.no_sql_dir': 'no existe el directorio de DDL: {path}  (defínalo con ERD_SQL_DIR)',
+    'err.sql_file_outside': '{env} contiene una ruta fuera de {path}: {value}',
     'err.spec_no_area': 'las áreas de {path} no nombran ninguna tabla existente.',
     'err.spec_dup_code': '{path}: dos áreas usan el mismo código de área {code} (la otra se escribe {other}).\n'
                          '  Los códigos de área se convierten en nombres de archivo ({file}) y, en macOS y\n'
@@ -209,6 +212,9 @@ M = {
     'err.spec_layer': 'la capa {key} está mal formada: {value}\n'
                       '  se espera [relleno, cabecera, borde, etiqueta] con colores #rrggbb',
     'err.spec_json': '{path} no es JSON válido: {err}',
+    'err.schema_shape': '{path} debe contener un objeto JSON cuyos valores sean objetos de tabla.',
+    'err.schema_field': '{path}: el campo {field} de la tabla {table!r} debe ser {want}, no {got}.',
+    'err.schema_key_collision': 'las claves de tabla se duplican al limpiar caracteres no seguros: {tables}',
     'err.fig_unregistered': 'el diagrama {stem} no tiene número de figura — fig_numbers() de '
                             'build_erd.py no lo incluye.\n'
                             '  Cada diagrama que dibuja este script toma su número de esa lista, y ese '
@@ -229,6 +235,8 @@ M = {
                         '  No se escribió nada. Una ejecución que solo leyó parte del '
                         'esquema produce un documento que parece completo y no lo está.',
     'err.query_truncated': 'el resultado se cortó en medio de una fila',
+    'err.query_timeout': 'la consulta de la base de datos superó {seconds} segundos',
+    'err.timeout_number': 'use cero o un número positivo de segundos',
     'err.env_not_dir': '{env}: {path} no es un directorio — ya hay otra cosa ahí.',
     'err.env_not_file': '{env}: {path} no es un archivo legible.',
     'err.env_bad': 'no se puede usar {env}: {why}\n  valor: {value}',
@@ -244,6 +252,7 @@ M = {
     'log.query_fail': '  [aviso] falló la consulta a la base de datos: {err}',
     'log.query_incomplete': '  [aviso] no se pudo leer: {list} — al documento le faltan '
                             'exactamente esas partes',
+    'log.ddl_alter_unsupported': '  [aviso] cláusula ALTER TABLE no admitida en {table}: {clause}',
     'log.psql_undecodable': '  [aviso] la respuesta de la base de datos no era UTF-8 válido — '
                             'esos caracteres quedan como � en el documento.\n'
                             '          PGCLIENTENCODING={enc} se define para el psql que lanzamos, '
@@ -296,7 +305,7 @@ M = {
     'log.png_full': 'PNG  ERD completo → {name} {size}',
     'log.png_area': 'PNG  área {code} {name} ({n} + {ext} refs) → {file}  {size}',
     'log.scale_down': '    [nota] {name}: diagrama demasiado grande, escala reducida a {s}×',
-    'log.overlap_at': '      solape: en {a}  [{s0}~{s1}] vs [{t0}~{t1}]',
+    'log.overlap_at': '      solape: en {a}  [{s0}~{s1}] {ea} vs [{t0}~{t1}] {eb}',
     'log.verify': '    verificación {name}: {report}',
     'log.verify_log_fail': '  [aviso] no se pudo escribir ERD_VERIFY_LOG, las figuras siguen '
                            'ahí: {path} — {err}',

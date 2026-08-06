@@ -2,7 +2,7 @@
 """회귀 시험이 함께 쓰는 것 — 항목 목록, 도우미, 실행기.
 
 시험 항목은 `selftest.py` 와 `selftest_*.py` 들에 나뉘어 있고, 목록(CASES)은 여기
-하나뿐이다. 예전엔 목록이 `selftest.py` 안에 있어서 `selftest_history.py` 가
+하나뿐이다. 예전엔 목록이 `selftest.py` 안에 있어서 `selftest_schema.py` 가
 `from selftest import CASES` 로 가져다 썼는데, 그러면 **`selftest.py` 를 직접 돌릴 때
 등록이 조용히 실패한다** — 그때 그 파일은 `__main__` 이라는 이름으로 이미 올라와 있고
 `import selftest` 는 같은 파일을 **두 번째 모듈**로 다시 올린다. 항목은 그 사본의
@@ -97,11 +97,11 @@ _keep_console_alive(sys.stderr)
 # 값은 16라운드가 끝나는 자리의 실측이다. 케이스를 더하는 것은 자유다(바닥은 하한이다).
 #
 # 표는 '어느 파일이 입구인가' 로 찾는다. 오늘 이 검사를 하는 케이스는 `selftest.py`
-# 안에 있고, `selftest_history.py` 를 직접 돌리면 `selftest.py` 는 글로브에 안 걸려
-# 아예 안 올라온다 — 그러니 `'selftest_history'` 행은 **오늘은 안 걸린다.** 지워도
+# 안에 있고, `selftest_schema.py` 를 직접 돌리면 `selftest.py` 는 글로브에 안 걸려
+# 아예 안 올라온다 — 그러니 `'selftest_schema'` 행은 **오늘은 안 걸린다.** 지워도
 # 오늘의 동작은 같지만, 입구가 바뀌었을 때 바닥이 조용히 1 로 떨어지는 쪽보다
 # 적혀 있는 쪽이 낫다고 보고 남겨 둔다.
-ENTRY_FLOOR = {'selftest': 110, 'selftest_history': 40}
+ENTRY_FLOOR = {'selftest': 110, 'selftest_schema': 40}
 
 # ── 한 케이스가 그린 것과 남긴 것 ────────────────────────────────────────────
 # erd.py 는 `ERD_VERIFY_LOG` 를 **프로세스마다** 처음부터 다시 쓴다(_LOG_STARTED 가
@@ -381,11 +381,10 @@ def verify_clean(work, name='', what='the diagram must be clean', allow=None):
     return recs
 
 
-# 일부러 어지러운 그림을 그리는 케이스는 여기에 숫자로 적는다. 어느 파일의 케이스든
-# 이름으로 여기 적는다 — 지금은 같은 허브 fixture(자식 24개)를 쓰는 둘뿐이다. 전체도는
-# 노드 진출 y 가 고정이라 그 모양에서 가로선이 다섯 번 스친다.
+# 일부러 어지러운 그림의 기대치를 여기에 적는다. 현재 라우터는 허브 fixture의
+# 가로선 중첩도 제거하므로 이 값은 0이다.
 #
-# **이 숫자는 상한이 아니라 정확값이다.** 상한으로 두었을 때, 5 를 50 으로 벌리는
+# **이 숫자는 상한이 아니라 정확값이다.** 상한으로 두었을 때, 값을 크게 벌리는
 # 한 줄이면 그 케이스의 그림 품질 보증이 통째로 조용해졌다 (실제로 그 뮤턴트에
 # 11라운드의 '같은 선 두 번' 회귀를 함께 넣어도 101개가 전부 통과했다). 봐주는 수를
 # 늘리는 것과 그 자리에 회귀가 들어오는 것이 구분되지 않는 셈이다. 그래서 훑기는
@@ -393,11 +392,11 @@ def verify_clean(work, name='', what='the diagram must be clean', allow=None):
 # 넓힌 만큼 빨강이고, 그림이 좋아져 수가 줄어도 빨강이다(그때는 줄여 적으면 된다).
 RENDER_ALLOW = {
     'render: a hub with many children keeps lines out of the tables':
-        {'h_overlap': 5},
+        {'h_overlap': 0},
     # 같은 허브 fixture 를 (허용)·[경고] 서식을 지나가게 하는 데 쓴다 — 그 케이스는
     # 일부러 '봐주기 없이' 한 번 더 그려서 경고 줄을 만든다.
     'verify: the printed line and the machine record say the same thing':
-        {'h_overlap': 5},
+        {'h_overlap': 0},
 }
 
 
@@ -470,7 +469,7 @@ def load_extras():
     """
     if str(HERE) not in sys.path:
         sys.path.insert(0, str(HERE))   # 어디서 불러도 옆 파일을 찾게
-    # 돌고 있는 파일 자신은 뺀다. `python3 selftest_history.py` 처럼 곁가지 파일을
+    # 돌고 있는 파일 자신은 뺀다. `python3 selftest_schema.py` 처럼 곁가지 파일을
     # 직접 부르면 그 파일은 이미 `__main__` 으로 올라와 있고, 여기서 제 이름으로 한 번
     # 더 import 하면 **같은 파일이 두 번째 모듈**이 되어 케이스 이름이 통째로 겹친다.
     _self = getattr(sys.modules.get('__main__'), '__file__', None)
@@ -500,21 +499,37 @@ def load_extras():
     return LOADED
 
 
-def main():
+def main(load_all=True):
     # 등록은 여기서 한 번 더 확인한다. 예전엔 `selftest.py` 의 `__main__` 한 줄만이
     # 39개를 불러왔고, 그 줄이 사라져도 초록 `all 62 passed` 였다. import 는 두 번
     # 불러도 sys.modules 에서 그대로 돌아오므로 이 줄은 안전하고, 부르는 자리가
     # 하나 없어져도 개수가 조용히 줄지 않는다.
-    load_extras()
+    if load_all:
+        load_extras()
     only = sys.argv[1] if len(sys.argv) > 1 else ''
     cases = [(n, f) for n, f in CASES if only in n]
     if not cases:
         print(f'no case matches {only!r}')
         return 2
+    order = ('selftest', 'config', 'i18n', 'parse', 'introspect', 'merge_desc',
+             'merge_schemas', 'spec', 'erd', 'render', 'verify', 'html', 'docx',
+             'build', 'artifacts', 'install', 'errors', 'clean')
+    rank = {name: i for i, name in enumerate(order)}
+
+    def section(name):
+        return name.partition(':')[0]
+
+    # 안정 정렬이므로 같은 기능 영역 안의 기존 순서는 유지된다.
+    cases.sort(key=lambda item: rank.get(section(item[0]), len(rank)))
     width = max(len(n) for n, _ in cases)
     passed = 0
     before_sweep = _SWEPT[0]
+    current = None
     for name, fn in cases:
+        group = section(name)
+        if group != current:
+            current = group
+            print(f'\n[{group}]')
         tmp = Path(tempfile.mkdtemp(prefix='erd-selftest-'))
         new_case()
         try:

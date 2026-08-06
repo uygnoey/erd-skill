@@ -28,6 +28,7 @@ import json
 import sys
 
 import config
+from config import atomic_write_text, safe_name, validate_schema
 from i18n import t as T
 
 
@@ -81,6 +82,8 @@ def main():
     # 부분 줄을 두 번 찍은 뒤 합계는 한 번만 세서, 여기서도 1+1 이 1 로 보였다.
     labels = []
     for a in sys.argv[1:]:
+        if not a or safe_name(a) != a or a in ('.', '..'):
+            raise SystemExit(T('err.merge_label', label=a))
         if a not in labels:
             labels.append(a)
     if not labels:
@@ -98,7 +101,12 @@ def main():
             part = json.loads(path.read_text(encoding='utf-8'))
         except json.JSONDecodeError as e:
             raise SystemExit(T('err.spec_json', path=path, err=e))
+        validate_schema(part, path, required=('columns',))
         part = label_part(label, part)
+        collisions = sorted(merged.keys() & part.keys())
+        if collisions:
+            raise SystemExit(T('err.merge_collision', label=label,
+                               tables=', '.join(collisions[:4])))
         merged.update(part)
         n_col = sum(len(t['columns']) for t in part.values())
         print(T('log.merge_part', label=f'{label:8}', tables=f'{len(part):3}',
@@ -114,8 +122,7 @@ def main():
     schema_json = config.SCHEMA_JSON
     # `ensure_ascii=False` 라 결과에 한글이 그대로 들어간다 — 로케일이 ascii 면
     # 쓰는 자리에서 UnicodeEncodeError 로 죽는다. 인코딩을 값으로 못 박는다.
-    schema_json.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
-                           encoding='utf-8')
+    atomic_write_text(schema_json, json.dumps(merged, ensure_ascii=False, indent=2))
     n_col = sum(len(t['columns']) for t in merged.values())
     n_fk = sum(len(t['fks']) for t in merged.values())
     print(T('log.merge_total', tables=len(merged), columns=n_col, fks=n_fk,

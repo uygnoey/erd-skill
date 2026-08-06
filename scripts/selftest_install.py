@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""회귀 시험 (4) — 14라운드가 `install.sh` 쪽에서 고친 것.
+"""설치 스크립트·의존성·문서 계약 회귀 시험.
 
-    python3 selftest_r14_install.py          여기 있는 것 전부
-    python3 selftest_r14_install.py cwd      이름에 'cwd' 가 든 것만
+    python3 selftest_install.py          여기 있는 것 전부
+    python3 selftest_install.py cwd      이름에 'cwd' 가 든 것만
 
 `selftest_kit.CASES` 에 등록된다 — `selftest.py` 를 돌리면 `load_extras()` 가 옆에
 놓인 `selftest_*.py` 를 글로브로 찾아 오므로 네 파일이 한 벌로 돈다.
@@ -518,7 +518,7 @@ def case_defs(path):
     """파일 하나에 `@case(...)` 가 붙은 함수가 몇 개인지 — 소스를 AST 로 센다.
 
     등록된 목록을 세는 것과 **다른 근거**다. 세는 쪽과 세어지는 쪽이 같은 값을 보면
-    어긋나도 자기일관이라 조용하다(`selftest_history` 의 도커 개수가 그 자리였다).
+    어긋나도 자기일관이라 조용하다(`selftest_schema` 의 도커 개수가 그 자리였다).
     """
     import ast
     tree = ast.parse(path.read_text(encoding='utf-8'))
@@ -529,10 +529,10 @@ def case_defs(path):
 
 
 def _history_module():
-    """`selftest_history` 의 모듈 객체 — 어느 입구로 들어왔든 같은 것을 집는다.
+    """`selftest_schema` 의 모듈 객체 — 어느 입구로 들어왔든 같은 것을 집는다.
 
-    여기가 `import selftest_history as hist` 였고, 그 한 줄이 `python3
-    selftest_history.py` 를 통째로 빨갛게 만들었다. 그 입구로 들어오면 그 파일은
+    여기가 `import selftest_schema as hist` 였고, 그 한 줄이 `python3
+    selftest_schema.py` 를 통째로 빨갛게 만들었다. 그 입구로 들어오면 그 파일은
     이미 `__main__` 으로 40개를 등록한 상태인데, 제 이름으로 다시 import 하면 **같은
     파일이 두 번째 모듈**이 되어 40개를 또 올리고 이름 중복 검사가 죽인다.
     `selftest_kit.load_extras()` 가 `p.resolve() != _self` 로 일부러 피하는 자리를
@@ -542,10 +542,10 @@ def _history_module():
     `6` 으로 적지 않는 이유는 그 수가 `_register_db_cases()` 를 세어 나오는 값이라,
     도커 케이스가 늘면 여기만 조용히 틀리기 때문이다.
     """
-    for mod in (sys.modules.get('selftest_history'), sys.modules.get('__main__')):
+    for mod in (sys.modules.get('selftest_schema'), sys.modules.get('__main__')):
         if hasattr(mod, '_DB_CASES'):
             return mod
-    raise Fail('neither selftest_history nor __main__ holds _DB_CASES — the number of '
+    raise Fail('neither selftest_schema nor __main__ holds _DB_CASES — the number of '
                'cases that need a real server could not be read, so this case measured '
                'nothing')
 
@@ -558,7 +558,7 @@ def suite_counts():
     `selftest.py` 의 `TOTAL_FLOOR` 가 쓰는 규칙과 같다. 여섯은 집계 **윗줄**에 따로
     찍히고 문서도 그 줄을 따로 적으므로, 두 수를 따로 돌려준다.
 
-    셋째는 `python3 selftest_history.py` 로 들어왔을 때 도는 수다. 그 입구는 제 파일
+    셋째는 `python3 selftest_schema.py` 로 들어왔을 때 도는 수다. 그 입구는 제 파일
     것만 도는 것이 아니라 글로브에 걸리는 옆 파일을 전부 함께 올린다 — 걸리지 않는
     것은 입구 파일 `selftest.py` 하나뿐이라, 총계에서 그 몫을 뺀 값이다.
     """
@@ -628,8 +628,8 @@ def doc_numbers(name, pattern, what):
     if not got:
         loose = re.search(pattern, body)
         raise Fail(f'{name} no longer shows {what} inside a code block' +
-                   (f' (the text is still in the file, but outside every fence — a '
-                    f'number in prose is not the example output this measures)'
+                   (' (the text is still in the file, but outside every fence — a '
+                    'number in prose is not the example output this measures)'
                     if loose else ''))
     return got
 
@@ -711,7 +711,7 @@ def _(work):
 @case('install: the case counts SKILL.md and SKILL.ko.md state are the counts a run produces')
 def _(work):
     """`SKILL*.md` 의 실행법이 주석으로 적는 세 수를 잰다 — `python3 selftest.py`
-    옆의 전체 개수, `python3 selftest_history.py` 옆의 개수, 그리고
+    옆의 전체 개수, `python3 selftest_schema.py` 옆의 개수, 그리고
     `ERD_SELFTEST_DOCKER=1 python3 selftest.py` 옆의 도커 개수.
 
     바로 위 케이스가 설치 문서 넷을 지키게 된 뒤에도 이 자리는 아무도 안 보고
@@ -721,7 +721,7 @@ def _(work):
 
     `39` 쪽은 수만 낡은 것이 아니었다. `그 파일 것 39개만` 이라는 문장은 적힐 당시
     (`c391783`) 에는 **참이었다** — 그때 `scripts/` 에 있던 시험 파일은
-    `selftest.py`·`selftest_history.py`·`selftest_kit.py` 셋뿐이라 글로브에 걸려
+    `selftest.py`·`selftest_schema.py`·`selftest_kit.py` 셋뿐이라 글로브에 걸려
     함께 올라올 옆 파일이 없었다(`git ls-tree` 로 확인). `64b643d` 가
     `selftest_r14_*` 넷을 더하면서 그 입구가 옆 파일까지 돌게 되어 문장이 거짓이 됐고
     아무도 안 고쳤다. 그래서 고칠 때 수만 바꾸지 않고 문장을 함께 바꿨다.
@@ -746,6 +746,7 @@ def _(work):
     세 줄에 `same_block()` 은 걸지 않는다. 각 줄이 명령 자체를 달고 있어 어느 블록에
     있든 뜻이 서고, 실제로 도커 줄은 앞의 둘과 다른 블록에 있다(실측 확인)."""
     ran, db, outside = suite_counts()
+    from selftest_schema import BASE_CASES as schema_cases
     if ran < 100 or db < 1 or outside < 50:
         raise Fail(f'the counts came out as {ran}/{db}/{outside} — this case could not '
                    f'read the registry, so it measured nothing')
@@ -757,10 +758,10 @@ def _(work):
                                  'its comment'):
             eq(n, ran, f'{name} 의 실행법 (python3 selftest.py)')
         for n, _b in doc_numbers(name,
-                                 r'(?m)^python3 selftest_history\.py[ \t]+#[^\n]*?(\d+)',
-                                 'the `python3 selftest_history.py` line with the case '
+                                 r'(?m)^python3 selftest_schema\.py[ \t]+#[^\n]*?(\d+)',
+                                 'the `python3 selftest_schema.py` line with the case '
                                  'count in its comment'):
-            eq(n, outside, f'{name} 의 실행법 (python3 selftest_history.py)')
+            eq(n, schema_cases, f'{name} 의 실행법 (python3 selftest_schema.py)')
         for n, _b in doc_numbers(
                 name,
                 r'(?m)^ERD_SELFTEST_DOCKER=1 python3 selftest\.py[ \t]+#[^\n]*?(\d+)',
@@ -776,4 +777,4 @@ def _(work):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main(load_all=False))

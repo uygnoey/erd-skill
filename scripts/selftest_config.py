@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""회귀 시험 (3) — 14라운드가 config·spec·환경변수 쪽에서 고친 것.
+"""config·spec·i18n·환경변수 회귀 시험.
 
-    python3 selftest_r14_config.py           여기 있는 것 전부
-    python3 selftest_r14_config.py spec:      이름에 'spec:' 이 든 것만
+    python3 selftest_config.py           여기 있는 것 전부
+    python3 selftest_config.py spec:      이름에 'spec:' 이 든 것만
 
 `selftest_kit.CASES` 에 등록된다 — `selftest.py` 를 돌리면 `load_extras()` 가 옆에
 놓인 `selftest_*.py` 를 글로브로 찾아 오므로 세 파일이 한 벌로 돈다.
@@ -25,11 +25,11 @@ import subprocess
 import sys
 import unicodedata
 
-from selftest_kit import (Fail, HERE, case, col, ddl, eq, has, main, run, table,
+from selftest_kit import (Fail, HERE, case, col, eq, has, main, run, table,
                           write_schema)
 
 
-EXPECT_CASES = 29       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
+EXPECT_CASES = 31       # 등록 개수를 파일이 스스로 못박는다 (selftest_kit.load_extras)
 
 
 def env_without_erd(**extra):
@@ -121,7 +121,10 @@ def _(work):
     three(work)
     for key, bad in (('roles', 'users'), ('layer_of', ['orders']),
                      ('doc', [1, 2]), ('derives', 'ab'),
-                     ('areas', 'orders'), ('layers', 'TX')):
+                     ('areas', 'orders'), ('layers', 'TX'),
+                     ('roles', {'users': ['not', 'a role']}),
+                     ('layer_of', {'users': ['not', 'a code']}),
+                     ('layer_labels', {'TX': 42})):
         spec(work, {key: bad})
         r = run('build_erd.py', work, expect_ok=False)
         no_traceback(r, f'a {key} of the wrong type must be a message, not a traceback')
@@ -441,6 +444,41 @@ def areas_drawn(work):
     return len(list((work / 'out').glob('erd_area_*.png')))
 
 
+@case('spec: a doc value of the wrong shape names its field')
+def _(work):
+    write_schema(work, {'t': table('t', [col('id')])})
+    for value, key in (({'scope': 'one line'}, 'doc.scope'),
+                       ({'sources': 'information_schema'}, 'doc.sources'),
+                       ({'scope': [['a']]}, 'doc.scope'),
+                       ({'meta': ['label']}, 'doc.meta'),
+                       ({'mapping': [['1', 2]]}, 'doc.mapping'),
+                       ({'open_items': [['high'], {'bad': 'row'}]}, 'doc.open_items'),
+                       ({'title': 123}, 'doc.title'),
+                       ({'area_desc': ['x']}, 'doc.area_desc'),
+                       ({'area_desc': {'A': 1}}, 'doc.area_desc'),
+                       ({'db_names': {'shop': 1}}, 'doc.db_names')):
+        (work / 'erd.spec.json').write_text(json.dumps({'doc': value}), encoding='utf-8')
+        r = run('build_erd.py', work, expect_ok=False)
+        no_traceback(r, f'malformed {key}')
+        has(r.stdout + r.stderr, key, f'the error names {key}')
+
+    (work / 'erd.spec.json').write_text(
+        json.dumps({'doc': {'scpoe': ['misspelled scope']}}), encoding='utf-8')
+    r = run('build_erd.py', work)
+    has(r.stdout + r.stderr, 'doc.scpoe',
+        'an unknown nested doc key is named instead of silently using the default')
+
+
+@case('config: ERD_QUERY_TIMEOUT rejects non-finite numbers')
+def _(work):
+    code = 'import config; print(config.query_timeout())'
+    for raw in ('nan', 'inf', '1e309'):
+        r = py(code, env=env_without_erd(ERD_QUERY_TIMEOUT=raw))
+        if r.returncode == 0:
+            raise Fail(f'ERD_QUERY_TIMEOUT={raw} was accepted as {r.stdout.strip()!r}')
+        has(r.stdout + r.stderr, 'ERD_QUERY_TIMEOUT', 'the invalid variable is named')
+
+
 @case('config: an ERD_MAX_AREAS that is not a number says so instead of silently meaning 12')
 def _(work):
     # `int(raw) if raw.strip().lstrip('-').isdigit() else 12` 하나에 셋이 걸려 있었다.
@@ -551,7 +589,7 @@ def _(work):
 def _(work):
     # 15R — 14라운드부터 있던 것을 검증자가 os.mkdir 후킹으로 잡았다:
     #   selftest_kit.py:445  main → fn(tmp/'work')
-    #   selftest_history.py:858 → import parse_ddl
+    #   selftest_schema.py:858 → import parse_ddl
     #   parse_ddl.py:24      → from config import RS, SCHEMA_JSON, …
     #   config.py:92         → PROJ = as_dir(_p('ERD_PROJ', Path.cwd()), 'ERD_PROJ')
     #   config.py:76         → path.mkdir(parents=True, exist_ok=True)
@@ -690,6 +728,21 @@ def _(work):
         r = run(script, work, env=env, expect_ok=False)
         no_traceback(r, f'{name} pointed at the wrong kind of node tracebacked')
         has(r.stdout + r.stderr, name, f'the message names {name}')
+
+    sql_dir = work / 'sql'
+    sql_dir.mkdir(exist_ok=True)
+    (work / 'outside.sql').write_text('CREATE TABLE escaped (id bigint);', encoding='utf-8')
+    r = run('parse_ddl.py', work, env={'ERD_SQL_FILES': '../outside.sql'},
+            expect_ok=False)
+    no_traceback(r, 'ERD_SQL_FILES outside ERD_SQL_DIR must be rejected at the boundary')
+    has(r.stdout + r.stderr, '../outside.sql', 'the path that escaped the SQL directory is named')
+
+    (sql_dir / 'once.sql').write_text(
+        'CREATE TABLE once (id bigint PRIMARY KEY);', encoding='utf-8')
+    run('parse_ddl.py', work, env={'ERD_SQL_FILES': 'once.sql, ./once.sql, once.sql'})
+    parsed = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    eq([c['name'] for c in parsed['once']['columns']], ['id'],
+       'the same named DDL file is parsed once, not once per list occurrence')
     # ERD_LABEL 은 쓸 수 있는 값이면 그대로 지나가야 한다 — 막기만 하는 검사는 기능을
     # 없앤 것이지 고친 것이 아니다.
     r = run('introspect.py', work, env={'ERD_LABEL': 'shop'}, expect_ok=False)
@@ -855,7 +908,7 @@ def _(work):
     # 접속이 있으면 예전처럼 채운다 — 말만 하고 안 채우면 그것도 고친 것이 아니다.
     # 17R: parse_ddl 이 config.psql_rows() 로 옮겨 **행마다 JSON 한 줄**을 받고,
     # 기존 테이블 컬럼 조회는 맨 앞에 table_schema 가 붙어 5필드가 됐다.
-    # (selftest_history.py 의 _FAKE_PSQL_JSON 과 같은 프로토콜이다.)
+    # (selftest_schema.py 의 _FAKE_PSQL_JSON 과 같은 프로토콜이다.)
     fake = work / 'fake_psql.py'
     fake.write_text(
         "import json\n"
@@ -1127,4 +1180,4 @@ def _(work):
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(main(load_all=False))

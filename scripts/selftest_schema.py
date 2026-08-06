@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""회귀 시험 (2) — 아홉 라운드가 낸 결함 중 `selftest.py` 가 아직 안 짚은 자리.
+"""스키마 영역 회귀 시험 — DDL 파싱·DB 인트로스펙션·병합·ERD 구조.
 
-    python3 selftest_history.py            여기 있는 것 전부
-    python3 selftest_history.py introspect  이름에 'introspect' 가 든 것만
+    python3 selftest_schema.py            여기 있는 것 전부
+    python3 selftest_schema.py introspect  이름에 'introspect' 가 든 것만
 
 `selftest_kit.CASES` 에 등록된다 — `selftest.py` 를 돌리면 `load_extras()` 가 이 파일을
 끌어오므로 두 파일이 한 벌로 돈다. 이 파일만 따로 돌리면 여기 것만 목록에 올라와
@@ -94,6 +94,310 @@ def schema_of(work):
 
 # ── 1. 문서를 틀리게 만든 것 ─────────────────────────────────────────────────
 
+@case('parse: destructive ALTER COLUMN changes the final schema instead of being ignored')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE t (
+  id bigint PRIMARY KEY,
+  obsolete text,
+  amount integer DEFAULT 1,
+  code text NOT NULL,
+  UNIQUE (code, amount)
+);
+ALTER TABLE t ALTER COLUMN amount TYPE numeric(12,2);
+ALTER TABLE t ALTER COLUMN amount SET DEFAULT 0.00;
+ALTER TABLE t ALTER COLUMN code DROP NOT NULL;
+ALTER TABLE t DROP COLUMN obsolete;
+''')
+    t = s['t']
+    eq([(c['name'], c['type'], c['not_null'], c['default']) for c in t['columns']],
+       [('id', 'bigint', True, ''), ('amount', 'numeric(12,2)', False, '0.00'),
+        ('code', 'text', False, '')],
+       'DROP/TYPE/DEFAULT/NULL changes must describe the final table')
+
+
+@case('parse: CREATE ALTER DROP and recreate follow SQL statement order')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE gone (id bigint PRIMARY KEY);
+CREATE TABLE extra (id bigint PRIMARY KEY);
+CREATE TABLE parent (id bigint PRIMARY KEY);
+CREATE TABLE child (parent_id bigint REFERENCES parent(id));
+DROP TABLE gone, extra;
+DROP TABLE parent CASCADE;
+CREATE TABLE parent (new_id bigint PRIMARY KEY);
+ALTER TABLE parent ADD COLUMN note text;
+''')
+    eq(sorted(s), ['child', 'parent'], 'a dropped table leaves no ghost behind')
+    eq([c['name'] for c in s['parent']['columns']], ['new_id', 'note'],
+       'a recreated table starts fresh before later ALTER statements')
+    eq(s['child']['fks'], [], 'DROP TABLE CASCADE removes inbound relationships')
+
+
+@case('parse: NULL inside an unparenthesized CASE stays in the default expression')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE t (
+  amount integer DEFAULT CASE WHEN 1 = 1 THEN 10 ELSE NULL END NOT NULL
+);
+''')
+    c = s['t']['columns'][0]
+    eq((c['default'], c['not_null']),
+       ('CASE WHEN 1 = 1 THEN 10 ELSE NULL END', True),
+       'CASE expression keywords must not be mistaken for following column constraints')
+
+
+@case('parse: column and table renames move every dependent relationship')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE parent (old_id bigint PRIMARY KEY);
+CREATE TABLE child (
+  parent_id bigint REFERENCES parent(old_id),
+  UNIQUE (parent_id)
+);
+ALTER TABLE parent RENAME COLUMN old_id TO id;
+ALTER TABLE child RENAME COLUMN parent_id TO owner_id;
+ALTER TABLE parent RENAME TO accounts;
+''')
+    eq(sorted(s), ['accounts', 'child'], 'a renamed table keeps no ghost under its old name')
+    eq(s['accounts']['pk'], ['id'], 'a column rename updates its primary key')
+    eq(s['child']['uniques'], [['owner_id']], 'a column rename updates unique constraints')
+    fk = s['child']['fks'][0]
+    eq((fk['column'], fk['ref_table'], fk['ref_column']),
+       ('owner_id', 'accounts', 'id'),
+       'both ends of an FK follow column and table renames')
+
+
+@case('parse: COMMENT IS NULL removes an earlier description')
+def _(work):
+    s = ddl(work, '''
+-- old table note
+CREATE TABLE t (
+  -- old column note
+  id bigint PRIMARY KEY
+);
+COMMENT ON TABLE t IS NULL;
+COMMENT ON COLUMN t.id IS NULL;
+''')
+    eq((s['t']['note'], s['t']['columns'][0]['comment']), ('', ''),
+       'NULL means remove the comment, not ignore the statement')
+
+
+@case('parse: PostgreSQL extended and dollar-quoted comments keep their text')
+def _(work):
+    s = ddl(work, r'''
+CREATE TABLE t (id bigint PRIMARY KEY, note text);
+COMMENT ON TABLE t IS E'owner\'s\nrecord';
+COMMENT ON COLUMN t.note IS $doc$line one's
+line two$doc$;
+COMMENT ON COLUMN t.id IS E'\x41\101\u0042';
+''')
+    eq(s['t']['note'], "owner's\nrecord", 'E strings decode escaped quote and newline')
+    eq(s['t']['columns'][1]['comment'], "line one's\nline two",
+       'dollar quotes preserve quotes and newlines')
+    eq(s['t']['columns'][0]['comment'], 'AAB',
+       'E strings decode hexadecimal, octal, and Unicode escapes')
+
+
+@case('parse: DROP CONSTRAINT removes named PK, unique and foreign keys')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p (id bigint PRIMARY KEY);
+CREATE TABLE q (id bigint PRIMARY KEY);
+CREATE TABLE c (id bigint, parent_id bigint);
+CREATE TABLE d (code text);
+ALTER TABLE c ADD CONSTRAINT c_pk PRIMARY KEY (id);
+ALTER TABLE c ADD CONSTRAINT c_uq UNIQUE (parent_id);
+ALTER TABLE c ADD CONSTRAINT c_fk FOREIGN KEY (parent_id) REFERENCES p(id);
+ALTER TABLE c DROP CONSTRAINT c_pk, DROP CONSTRAINT c_uq, DROP CONSTRAINT c_fk;
+ALTER TABLE d ADD CONSTRAINT d_uq1 UNIQUE (code), ADD CONSTRAINT d_uq2 UNIQUE (code);
+ALTER TABLE d DROP CONSTRAINT d_uq1;
+''')
+    eq((s['c']['pk'], s['c']['uniques'], s['c']['fks']), ([], [], []),
+       'a dropped named constraint must not survive in the final schema')
+    eq(s['d']['uniques'], [['code']],
+       'dropping one of two named unique constraints keeps the one still declared')
+
+
+@case('parse: DROP CONSTRAINT recognizes PostgreSQL default constraint names')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p (id bigint PRIMARY KEY);
+CREATE TABLE c (
+  id bigint PRIMARY KEY,
+  code text UNIQUE,
+  parent_id bigint REFERENCES p(id)
+);
+CREATE TABLE e (
+  id bigint CONSTRAINT e_named_pk PRIMARY KEY,
+  code text CONSTRAINT e_named_uq UNIQUE,
+  parent_id bigint CONSTRAINT e_named_fk REFERENCES p(id)
+);
+CREATE TABLE f (seed text);
+CREATE TABLE g (
+  keep_code text CONSTRAINT g_keep1 UNIQUE CONSTRAINT g_keep2 UNIQUE,
+  gone_code text CONSTRAINT g_gone1 UNIQUE CONSTRAINT g_gone2 UNIQUE
+);
+CREATE TABLE h (
+  parent_id bigint
+    CONSTRAINT h_p_fk REFERENCES p(id)
+    CONSTRAINT h_q_fk REFERENCES q(id) ON DELETE CASCADE
+);
+ALTER TABLE c DROP CONSTRAINT c_pkey;
+ALTER TABLE c DROP CONSTRAINT c_code_key;
+ALTER TABLE c DROP CONSTRAINT c_parent_id_fkey;
+ALTER TABLE e DROP CONSTRAINT e_named_pk;
+ALTER TABLE e DROP CONSTRAINT e_named_uq;
+ALTER TABLE e DROP CONSTRAINT e_named_fk;
+ALTER TABLE f ADD COLUMN id bigint CONSTRAINT f_named_pk PRIMARY KEY;
+ALTER TABLE f ADD COLUMN code text CONSTRAINT f_named_uq UNIQUE;
+ALTER TABLE f ADD COLUMN parent_id bigint CONSTRAINT f_named_fk REFERENCES p(id);
+ALTER TABLE f DROP CONSTRAINT f_named_pk;
+ALTER TABLE f DROP CONSTRAINT f_named_uq;
+ALTER TABLE f DROP CONSTRAINT f_named_fk;
+ALTER TABLE g DROP CONSTRAINT g_keep1;
+ALTER TABLE g DROP CONSTRAINT g_gone1;
+ALTER TABLE g DROP CONSTRAINT g_gone2;
+ALTER TABLE h DROP CONSTRAINT h_p_fk;
+''')
+    eq((s['c']['pk'], s['c']['uniques'], s['c']['fks']), ([], [], []),
+       'unnamed constraints use the names PostgreSQL assigns to them')
+    eq((s['e']['pk'], s['e']['uniques'], s['e']['fks']), ([], [], []),
+       'inline CONSTRAINT names survive until a later DROP names them')
+    eq((s['f']['pk'], s['f']['uniques'], s['f']['fks']), ([], [], []),
+       'ADD COLUMN preserves inline constraint names by the same rule')
+    eq(s['g']['uniques'], [['keep_code']],
+       'one column may retain another named UNIQUE after its sibling is dropped')
+    eq([(fk['ref_table'], fk['on_delete']) for fk in s['h']['fks']],
+       [('q', 'CASCADE')],
+       'multiple inline references keep separate names and deletion rules')
+
+
+@case('parse: a rename may create the same table name in another schema')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE public.account (id bigint PRIMARY KEY);
+CREATE TABLE audit.event (id bigint PRIMARY KEY);
+CREATE TABLE audit.log (account_id bigint);
+ALTER TABLE audit.event RENAME TO account;
+ALTER TABLE audit.log ADD CONSTRAINT log_account_fk
+  FOREIGN KEY (account_id) REFERENCES audit.account(id);
+''')
+    eq(sorted(s), ['audit.account', 'log', 'public.account'],
+       'same basenames in different schemas must remain distinct after rename')
+    eq(s['log']['fks'][0]['ref_table'], 'audit.account',
+       'a later FK uses the duplicate-name index produced by the rename')
+
+
+@case('parse: a malformed composite FK is not invented by repeating a parent column')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p (x bigint PRIMARY KEY);
+CREATE TABLE c (a bigint, b bigint,
+  CONSTRAINT bad_fk FOREIGN KEY (a, b) REFERENCES p(x));
+''')
+    eq(s['c']['fks'], [], 'mismatched FK arity must not create fictional pairs')
+
+
+@case('parse: a parent name in REFERENCES is not this column own key')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p ("PRIMARY KEY" bigint, "UNIQUE" text);
+CREATE TABLE t (id bigint PRIMARY KEY,
+  x int REFERENCES p ("PRIMARY KEY"),
+  y int REFERENCES p ("UNIQUE"));
+''')
+    eq(s['t']['pk'], ['id'], 'a referenced parent name cannot invent a local PK')
+    eq(s['t']['uniques'], [], 'a referenced parent name cannot invent a local UNIQUE')
+
+
+@case('parse: the same unique index written twice is one constraint')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE t (id bigint PRIMARY KEY, code text UNIQUE, a int, b int);
+CREATE UNIQUE INDEX i1 ON t (code);
+CREATE UNIQUE INDEX IF NOT EXISTS i1 ON t (code);
+CREATE UNIQUE INDEX i2 ON t (a, b);
+''')
+    eq(s['t']['uniques'], [['code'], ['a', 'b']], 'unique column lists are de-duplicated')
+
+
+@case('introspect: a primary key join includes its table identity')
+def _(work):
+    sys.path.insert(0, str(HERE))
+    import introspect
+    query = ' '.join(introspect.Q_PK.split())
+    join = query[query.index('key_column_usage'):query.index('where')]
+    for pair in ('kcu.constraint_schema=tc.constraint_schema',
+                 'kcu.constraint_name=tc.constraint_name',
+                 'kcu.table_schema=tc.table_schema',
+                 'kcu.table_name=tc.table_name'):
+        has(join, pair, f'PK join contains {pair}')
+
+
+@case('parse: an unsupported ALTER clause is reported instead of silently ignored')
+def _(work):
+    (work / 'sql').mkdir(parents=True, exist_ok=True)
+    (work / 'sql' / 'schema.sql').write_text(
+        'CREATE TABLE t (id bigint); ALTER TABLE t SET SCHEMA audit;', encoding='utf-8')
+    r = run('parse_ddl.py', work)
+    has(r.stdout + r.stderr, 'SET SCHEMA audit', 'the unsupported state change is named')
+    has(r.stdout + r.stderr, 't', 'the affected table is named')
+
+
+@case('spec: every derives row has exactly two endpoints and one label')
+def _(work):
+    write_schema(work, {'a': table('a', [col('id')], pk=['id']),
+                        'b': table('b', [col('id')], pk=['id'])})
+    (work / 'erd.spec.json').write_text(json.dumps({'derives': [['a', 'b']]}),
+                                             encoding='utf-8')
+    r = run('build_erd.py', work, expect_ok=False)
+    if 'Traceback' in r.stderr or 'ValueError' in r.stderr:
+        raise Fail('a short derives row reached tuple unpacking instead of spec validation')
+    has(r.stdout + r.stderr, 'derives', 'the error names the malformed spec key')
+
+
+@case('introspect: an unresponsive database query stops at ERD_QUERY_TIMEOUT')
+def _(work):
+    fake = work / 'slow_psql.py'
+    work.mkdir(parents=True, exist_ok=True)
+    fake.write_text('import time\ntime.sleep(2)\n', encoding='utf-8')
+    env = {'ERD_PSQL': f'{shlex.quote(sys.executable)} {shlex.quote(str(fake))}',
+           'ERD_QUERY_TIMEOUT': '0.05'}
+    r = run('introspect.py', work, env=env, expect_ok=False)
+    text = r.stdout + r.stderr
+    has(text, '0.05', 'the failure states the limit that stopped the query')
+    if 'Traceback' in text:
+        raise Fail('a database timeout escaped as a raw traceback')
+
+
+@case('artifacts: a failed atomic write leaves the last good file intact')
+def _(work):
+    sys.path.insert(0, str(HERE))
+    import config
+    real_os_name = config.os.name
+    try:
+        config.os.name = 'nt'
+        config._fsync_directory(work)
+    finally:
+        config.os.name = real_os_name
+
+    from config import atomic_output
+    target = work / 'schema.json'
+    work.mkdir(parents=True, exist_ok=True)
+    target.write_text('last-good', encoding='utf-8')
+    try:
+        with atomic_output(target) as tmp:
+            tmp.write_text('partial-new', encoding='utf-8')
+            raise RuntimeError('simulated build failure')
+    except RuntimeError:
+        pass
+    eq(target.read_text(encoding='utf-8'), 'last-good',
+       'the canonical output changes only after its producer succeeds')
+    eq([p.name for p in work.iterdir()], ['schema.json'],
+       'a failed write also cleans its same-directory temporary file')
+
+
 @case('introspect: the same table name in two schemas stays two tables')
 def _(work):
     # 3라운드. 테이블 키가 이름뿐이라 public.events 와 analytics.events 가 한
@@ -118,6 +422,23 @@ def _(work):
     eq((s['s1.events']['pk'], s['s2.events']['pk']), (['id'], ['id']),
        "the primary key must not become ['id','id']")
     has(r.stdout, 'events', 'the summary names the table whose name collides')
+
+
+@case('introspect: a comma inside a quoted unique column name stays one column')
+def _(work):
+    sys.path.insert(0, str(HERE))
+    import introspect
+    has(introspect.q_unique(160000), 'i.indisvalid',
+        'an invalid leftover index is not presented as an enforced unique rule')
+    env = db_rows(work, [
+        (COLQ, [['s1', 'contacts', 'last,first', 'text', 'NO', '', 'NO', '']]),
+        ('i.indisunique', [['s1', 'contacts', 'contacts_name_key', 'last,first'],
+                           ['s1', 'contacts', 'contacts_name_uq2', 'last,first']]),
+    ])
+    run('introspect.py', work, env=env)
+    eq(schema_of(work)['contacts']['uniques'], [['last,first']],
+       'catalog attnums, not commas in rendered SQL, define unique columns; duplicate '
+       'indexes on the same set still describe one structural uniqueness rule')
 
 
 @case('introspect: a composite FK is not multiplied into pairs that do not exist')
@@ -693,7 +1014,7 @@ def _(work):
 
     def merge(labels, ok=True):
         # 라벨은 argv 로 받는다. run() 은 인자를 붙일 자리가 없으니 작은 실행기를 둔다.
-        drv = work / f'merge_{"_".join(labels)}.py'
+        drv = work / f'merge_{len(list(work.glob("merge_*.py")))}.py'
         drv.write_text(f'import sys\nsys.path.insert(0, {str(HERE)!r})\n'
                        f'sys.argv = ["merge_schemas.py"] + {labels!r}\n'
                        'import merge_schemas\nmerge_schemas.main()\n', encoding='utf-8')
@@ -703,6 +1024,11 @@ def _(work):
     if 'Traceback' in r.stderr:
         raise Fail(f'no argument should be a usage message:\n{r.stderr[-300:]}')
     has(r.stdout + r.stderr, 'merge_schemas', 'the message says how to call it')
+
+    r = merge(['../../outside'], ok=False)                 # 경로가 되는 라벨
+    if 'Traceback' in r.stderr:
+        raise Fail(f'an unsafe label should be a message:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, '../../outside', 'the message names the invalid label')
 
     r = merge(['shop', 'nosuch'], ok=False)                # 없는 라벨
     if 'Traceback' in r.stderr:
@@ -714,6 +1040,27 @@ def _(work):
         raise Fail(f'a truncated schema.*.json must not traceback:\n{r.stderr[-300:]}')
     has(r.stdout + r.stderr, 'schema.mart.json', 'the message names the file that is broken')
 
+    (work / 'schema.mart.json').write_text('[]', encoding='utf-8')
+    r = merge(['mart'], ok=False)                          # JSON 이지만 스키마 객체가 아님
+    if 'Traceback' in r.stderr:
+        raise Fail(f'a non-object schema must not traceback:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'schema.mart.json', 'the message names the malformed schema')
+
+    (work / 'schema.mart.json').write_text('{"missing_columns": {}}', encoding='utf-8')
+    r = merge(['mart'], ok=False)
+    if 'Traceback' in r.stderr:
+        raise Fail(f'a part without columns must not traceback:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'columns', 'the missing required part field is named')
+
+    (work / 'schema.a.json').write_text(json.dumps(
+        {'b.orders': table('orders', [col('id')])}), encoding='utf-8')
+    (work / 'schema.a.b.json').write_text(json.dumps(
+        {'orders': table('orders', [col('id')])}), encoding='utf-8')
+    r = merge(['a', 'a.b'], ok=False)                      # 둘 다 a.b.orders 가 됨
+    if 'Traceback' in r.stderr:
+        raise Fail(f'colliding labelled keys must not traceback:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'a.b.orders', 'the message names the colliding table key')
+
     (work / 'schema.mart.json').write_text(json.dumps(
         {'gone': table('gone', [col('id')])}), encoding='utf-8')
     out = merge(['shop', 'mart']).stdout
@@ -724,7 +1071,7 @@ def _(work):
     # 파일의 docstring·README·SKILL 은 셋 다 "테이블 키는 `<라벨>.<테이블명>`" 이라고
     # 적고 있었다. 라벨을 붙이는 쪽으로 고쳤으므로 기대값도 문서가 약속하는 값으로
     # 옮긴다 — 이 케이스가 재는 것(깨진 part 를 역추적 없이 설명하는가, 갈 곳 없는
-    # FK 를 버리는가)은 그대로다. 새 동작 자체는 selftest_r14_build.py 의
+    # FK 를 버리는가)은 그대로다. 새 동작 자체는 selftest_build.py 의
     # `merge_schemas: two databases that share a table name stay two tables` 가 잰다.
     eq(sorted(s), ['mart.gone', 'shop.orders'], 'both parts land in one schema')
     eq(s['shop.orders']['fks'], [],
@@ -1121,6 +1468,45 @@ def _(work):
                        'yEd and browsers reject the file')
     if not (work / 'T.docx').exists():
         raise Fail('the docx was never written')
+
+    # 두 위험한 키를 같은 안전한 키로 바꿀 수는 없다. 예전에는 충돌을 알아챈 뒤에도
+    # 원래 제어문자 키를 그대로 렌더러에 넘겨, 조용한 유실 대신 뒤 단계의 크래시가 났다.
+    write_schema(work, {
+        'same\nkey': table('same\nkey', [col('id')]),
+        'same key': table('same key', [col('id')]),
+    })
+    r = run('build_erd.py', work, expect_ok=False)
+    if 'Traceback' in r.stderr:
+        raise Fail(f'clean-key collision must be a message:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'same key', 'the collision message names the resulting key')
+
+    # JSON 문법만 맞고 최상위가 배열인 파일도 입력 스키마는 아니다. 설명 병합과
+    # 렌더러 어느 쪽을 먼저 실행하든 같은 파일 이름을 대고 멈춰야 한다.
+    (work / 'schema.json').write_text('[]', encoding='utf-8')
+    for script in ('merge_desc.py', 'build_erd.py'):
+        r = run(script, work, expect_ok=False)
+        if 'Traceback' in r.stderr:
+            raise Fail(f'{script} must explain a non-object schema:\n{r.stderr[-300:]}')
+        has(r.stdout + r.stderr, 'schema.json', 'the malformed schema is named')
+
+    malformed = (
+        {'t': {'columns': 'id'}},
+        {'t': {'columns': [{'name': 1}]}},
+        {'t': {'columns': [], 'pk': [1]}},
+        {'t': {'columns': [], 'fks': [{}]}},
+        {'t': {'columns': [], 'uniques': ['id']}},
+        {'t': {'schema': 1, 'columns': []}},
+        {'t': {'columns': [{'name': 'id', 'not_null': 'NO'}]}},
+        {'t': {'columns': [], 'indexes': [{'name': 'i', 'def': 1}]}},
+    )
+    for i, schema in enumerate(malformed):
+        (work / 'schema.json').write_text(json.dumps(schema), encoding='utf-8')
+        for script in ('merge_desc.py', 'build_erd.py'):
+            r = run(script, work, expect_ok=False)
+            if 'Traceback' in r.stderr:
+                raise Fail(f'{script} tracebacked on malformed schema field {i}: '
+                           f'{r.stderr[-300:]}')
+            has(r.stdout + r.stderr, 't', 'the malformed table is named')
 
 
 # ── 그린 것을 픽셀로 되짚는 자리 ─────────────────────────────────────────────
@@ -1578,6 +1964,8 @@ def _register_db_cases():
         _r, s = introspect_live(work, DB_NEW)
         eq(fks_of(s, 'readings'), [('dev_serial', 'devices', 'serial', 'CASCADE')],
            'an FK whose parent is unique only by index must still be a relationship')
+        eq(s['devices']['uniques'], [['serial']],
+           'the standalone unique index is also documented as a unique key')
 
     @case('db: a composite FK pairs its columns by position')
     def _(work):
@@ -1694,10 +2082,10 @@ def _(work):
     # 두 수가 어긋나면 어느 쪽이 틀렸든 여기서 죽는다.
     import ast
     fn = next((n for n in ast.walk(ast.parse(
-                   (HERE / 'selftest_history.py').read_text(encoding='utf-8')))
+                   (HERE / 'selftest_schema.py').read_text(encoding='utf-8')))
                if isinstance(n, ast.FunctionDef) and n.name == '_register_db_cases'), None)
     if fn is None:
-        raise Fail('selftest_history.py no longer defines _register_db_cases()')
+        raise Fail('selftest_schema.py no longer defines _register_db_cases()')
     by_ast = sum(1 for n in ast.walk(fn)
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not fn
                  and any(isinstance(d, ast.Call) and getattr(d.func, 'id', '') == 'case'
@@ -1740,10 +2128,9 @@ def _(work):
 
 # 이 파일이 올리는 케이스 수. 등록이 조용히 반만 되는 자리를 `load_extras()` 가 여기서
 # 막는다 — 숫자가 어긋나면 그 자리에서 죽는다. 케이스를 더하면 이 수도 함께 고친다.
-EXPECT_CASES = 40 + (_DB_CASES if _DB_RAN else 0)
+BASE_CASES = 58
+EXPECT_CASES = BASE_CASES + (_DB_CASES if _DB_RAN else 0)
 
 
 if __name__ == '__main__':
-    # 이 파일을 직접 부르면 이 파일 것 + 옆에 있는 다른 `selftest_*.py` 것이 돈다
-    # (`selftest.py` 는 글로브에 안 걸리므로 그쪽 항목은 올라오지 않는다).
-    sys.exit(main())
+    sys.exit(main(load_all=False))

@@ -16,7 +16,6 @@ docx 와 같은 재료로 만들지만 쓰임이 다르다. docx 는 제출·인
 """
 import base64
 import hashlib
-import json
 import os
 import re
 from html import escape
@@ -39,8 +38,9 @@ from build_erd import (doc_tables, doc_text, fig_caption, meta_cells,
 # 부르는 사람의 cwd 에 `erd-build/out` 을 만들었다. 15라운드가 config·i18n·parse_ddl·
 # introspect 에 세운 '**import 는 아무것도 안 만든다**' 를 이 파일도 지킨다.
 import config
-from config import DOCNAME, as_file, env_flag
-from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, SCHEMA, SPEC, layer
+from config import DOCNAME, as_file, atomic_write_text, env_flag
+from erd import (AREAS, AREA_NAME, LAYERS, SCHEMA, SPEC,
+                 is_single_unique, layer)
 from i18n import LANG, t as T
 # 폰트 폴백 체인도 한 벌만 둔다. 예전엔 여기와 `svg_canvas.py` 가 같은 두 갈래
 # (`ja` 냐 아니냐)를 따로 적고 있었다 — 한쪽만 고치면 같은 문서의 그림과 본문이
@@ -245,7 +245,7 @@ def col_flags(t, c):
             body = (f'<a href="#{anchor(fk["ref_table"])}">{ref_txt}</a>'
                     if fk['ref_table'] in LISTED_SET else ref_txt)
             out.append(f'<span class="fk">→ {body}</span>{tail}')
-    if any(c['name'] in u for u in t.get('uniques', [])):
+    if is_single_unique(t, c['name']):
         out.append('<span class="uq">UQ</span>')
     return '<br>'.join(out) or '-'
 
@@ -507,7 +507,7 @@ def main():
     out = as_file(out, 'ERD_HTML_OUT')
     out.parent.mkdir(parents=True, exist_ok=True)
     html = build()
-    out.write_text(html, encoding='utf-8')
+    atomic_write_text(out, html)
     n_fig = _FIG_N[0]
     # 세는 것은 문서가 싣는 것이다 (len(SCHEMA) 는 문서에 없는 절까지 셌다).
     print(T('log.html_done', tables=len(LISTED), areas=len(AREAS), figs=n_fig,
