@@ -108,7 +108,7 @@ Una ejecución sana se ve así:
   ✓ mono:   …/Menlo.ttc
 
 6. Prueba de regresión
-  ✓ all 257 passed
+  ✓ all 258 passed
   ! 6 cases need a real server and were NOT run (ERD_SELFTEST_DOCKER=1 …)
 
 Resultado
