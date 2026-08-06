@@ -3290,33 +3290,58 @@ def _(work):
 
 @case('merge: the ORM net catches both spellings and nothing else')
 def _(work):
-    # Exercise the real merge_desc.py subprocess, both SQLAlchemy spellings,
-    # and the negative cases that must not become phantom columns.
+    # SQLAlchemy 1.x 선언형은 여전히 흔하다. `(\w+):\s*Mapped\[` 하나만 읽던 동안
+    # `id = Column(...)` 으로 쓴 모델은 한 건도 안 나왔고, 0 건인 것보다 나쁜 것은
+    # **왜 0 인지 알 길이 없다**는 것이다 — SKILL.md 는 어느 표기를 읽는지 말하지
+    # 않으므로 경로가 틀렸는지 주석이 틀렸는지 기능이 안 도는지 구별할 수 없다.
+    #
+    # 재는 것이 셋이다. 앞의 둘은 **그물을 넓힌 변경에서 서로 반대 방향**이다.
+    #   ① 넓힌 만큼 잡는가  — 1.x · 모듈 접두어가 붙은 1.x · 2.0, 선행 주석과 inline
+    #      주석 양쪽.
+    #   ② 넓힌 만큼 **새지는 않는가** — 호출 괄호를 요구하지 않으면 평범한 대입이
+    #      컬럼이 된다. 그때 생기는 것은 빠진 설명이 아니라 **없는 컬럼의 설명**이라,
+    #      이 저장소가 '짓는 쪽' 이라 부르며 가장 싫어하는 모양이다.
+    #   ③ 2.0 표기가 살아 있는가 — 1.x 를 더하면서 그쪽을 깨뜨리지 않았는지.
+    #      한때 `Mapped[` 는 이 파일을 통틀어 **주석에만** 있었다. 그 갈래를 통째로
+    #      지워도 전부 초록이었다는 뜻이다.
+    #
+    # `parse_orm()` 을 직접 부르지 않고 실제 파이프라인을 지난다 — `run()` 이 세워 둔
+    # '별도 프로세스로 돌린다, import 시점 상태가 섞이지 않게' 를 여기서도 지키고,
+    # 그 김에 설명이 `desc_src='orm'` 으로 세어지는지까지 본다.
+    # ②를 재려면 오탐 미끼가 **스키마에 있는 컬럼 이름**이어야 한다. 스키마에 없는
+    # 이름으로 새면 그 항목은 아무 컬럼에도 안 붙어 파이프라인 끝에서 안 보인다 —
+    # 그런 미끼로는 그물이 열려도 초록이 나온다(실제로 한 번 그렇게 만들었다가 잡았다).
+    # `memo` 는 아래 DDL 의 진짜 컬럼이고, 모델에서는 컬럼이 **아닌** 것에 묶여 있다.
     (work / 'models').mkdir(parents=True, exist_ok=True)
     (work / 'models' / 'm.py').write_text(
-        'column_names = ["not", "a", "column"]\n'
         'class User(Base):\n'
         "    __tablename__ = 'users'\n"
         '    id = Column(BigInteger, primary_key=True)   # the member number\n'
         '    email = sqlalchemy.Column(Text)             # login e-mail\n'
         '    # the display name\n'
-        '    nick: Mapped[str] = mapped_column()\n'
-        '    helper = some_helper_value\n', encoding='utf-8')
+        '    nick: Mapped[str] = mapped_column()\n'       # 2.0 표기 + 선행 주석
+        '    memo = ColumnHelper(Text)                   # not a column at all\n',
+        encoding='utf-8')
     s = ddl(work, 'CREATE TABLE users (id bigint PRIMARY KEY, email text, '
                   'nick text, memo text);\n')
-    for t in s.values():
+    for t in s.values():                     # DDL 주석을 비워 ORM 만 남긴다
         for c in t['columns']:
             c['comment'] = ''
     write_schema(work, s)
     run('merge_desc.py', work, env={'ERD_MODEL_DIR': str(work / 'models')})
+
     got = {c['name']: c for c in json.loads(
         (work / 'schema.json').read_text(encoding='utf-8'))['users']['columns']}
-    for cname, want in (('id', 'the member number'),
-                        ('email', 'login e-mail'),
-                        ('nick', 'the display name')):
+    for cname, want in (('id', 'the member number'),      # 1.x · inline 주석
+                        ('email', 'login e-mail'),        # 모듈 접두어가 붙은 1.x
+                        ('nick', 'the display name')):    # 2.0 · 선행 주석
         eq(got[cname]['comment'], want, f'{cname} came from the ORM model')
         eq(got[cname]['desc_src'], 'orm', f'{cname} is counted as an ORM description')
-    eq(got['memo']['desc_src'], 'none', 'a column the model never mentions stays empty')
+    # `memo` 는 모델에 이름이 **있지만** 컬럼 선언이 아니다. 호출 괄호를 요구하지
+    # 않으면 `ColumnHelper(` 의 앞부분이 `Column` 으로 물려 이 줄이 컬럼이 되고,
+    # 그러면 memo 에 없는 설명이 붙는다 — 빠지는 것이 아니라 **생기는** 쪽이다.
+    eq(got['memo']['comment'], '', 'a name that only starts like Column is not a column')
+    eq(got['memo']['desc_src'], 'none', 'so that column stays without a description')
 
 
 @case('svg: every font erd calls monospace is recognised as monospace here')
