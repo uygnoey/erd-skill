@@ -2604,12 +2604,12 @@ CASE_FLOOR = {'selftest_schema': 40, 'selftest_build': 26,
 # 통째로 되돌려도 228개가 전부 초록이던 자리다 — PK 조회의 조인(제약 이름이 스키마
 # 안에서 유일하다고 본 것), 인라인 PK·UNIQUE 판정에 새는 부모 이름, 두 번 적은 유니크
 # 인덱스, 그리고 `doc` 안쪽의 모양(한 줄짜리 문자열이 글자마다 문단이 됐다).
-TOTAL_FLOOR = 252
+TOTAL_FLOOR = 257
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 118
+EXPECT_CASES = 119
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -3215,7 +3215,8 @@ def _(work):
     # 받아 주기로 이미 정해 둔 동작이라 여기서 더 엄하게 굴지 않는다.
     (work / 'erd.spec.json').write_text(json.dumps(
         {'doc': {'title': 'T', 'scope': ['a', 'b'], 'sources': [['x', 'y']],
-                 'meta': [['a', 'b', 'c', 'd']], 'mapping': ['a whole row as one string']}}),
+                 'meta': [['a', 'b', 'c', 'd']],
+                 'mapping': [['a whole row as one string']]}}),
         encoding='utf-8')
     run('build_erd.py', work)
     run('build_docx.py', work)
@@ -3285,6 +3286,33 @@ def _(work):
     sys.path.insert(0, str(HERE))
     import lang.en as en
     has(said, en.M['docx.ch7_intro'], 'without the key, chapter 7 keeps the catalogue text')
+
+
+@case('merge: SQLAlchemy 1.x Column comments are inherited like Mapped comments')
+def _(work):
+    # SQLAlchemy 1.x declarative models are still widespread.  They assign
+    # Column(...) rather than annotating Mapped[...]; both forms must preserve
+    # the same preceding/inline comment semantics.
+    import config
+    import merge_desc
+    models = work / 'models'
+    models.mkdir(parents=True)
+    (models / 'models.py').write_text(
+        "class User(Base):\n"
+        "    __tablename__ = 'users'\n"
+        "    # 회원 번호\n"
+        "    id = Column(BigInteger, primary_key=True)\n"
+        "    email = sqlalchemy.Column(Text)  # 로그인 이메일\n"
+        "    name = mapped_column(String)  # 표시 이름\n", encoding='utf-8')
+    old = config.MODEL_DIR
+    try:
+        config.MODEL_DIR = models
+        got = merge_desc.parse_orm()
+    finally:
+        config.MODEL_DIR = old
+    eq(got, {'users.id': '회원 번호', 'users.email': '로그인 이메일',
+             'users.name': '표시 이름'},
+       'both SQLAlchemy declarative assignment forms keep their comments')
 
 
 @case('svg: every font erd calls monospace is recognised as monospace here')

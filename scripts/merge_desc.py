@@ -68,7 +68,14 @@ def parse_orm():
             if line.startswith('#'):
                 pending.append(line.lstrip('# ').strip())
                 continue
+            # SQLAlchemy 2.x uses ``name: Mapped[...]``; the still-common 1.x
+            # declarative style assigns ``name = Column(...)`` (or
+            # ``mapped_column(...)``).  Both forms carry the same inline or
+            # preceding comment and must feed the same description map.
             cm = re.match(r'(\w+):\s*Mapped\[', line)
+            if not cm:
+                cm = re.match(r'(\w+)\s*=\s*(?:[\w.]+\.)?'
+                              r'(?:mapped_column|Column)\s*\(', line)
             if cm and table:
                 inline = re.search(r'#\s*(.+)$', raw)
                 desc = inline.group(1).strip() if inline else ' '.join(pending)
