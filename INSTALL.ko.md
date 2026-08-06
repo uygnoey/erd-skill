@@ -16,6 +16,9 @@ unzip erd-skill.zip && bash erd/install.sh
 4. `psql` / `docker` 유무 확인
 5. **Pretendard 폰트**가 없으면 받아서 설치 (물어본 뒤 진행)
 
+"물어본 뒤" 는 말 그대로다. 물어볼 터미널이 없으면(CI·파이프) 받지 않고, 이미 있는
+파일도 덮어쓰지 않는다. 그렇게 했다고 말하고 넘어간다.
+
 끝나면 **Claude Code를 새로 띄운다.** 스킬은 시작할 때 읽으므로 실행 중이던 세션은
 스킬을 못 본다. 그다음 "ERD 그려줘" 라고 하면 된다.
 
@@ -30,6 +33,9 @@ unzip erd-skill.zip && bash erd/install.sh
 | `bash install.sh --project` | 현재 프로젝트 `./.claude/skills/erd` 에 설치 |
 | `bash install.sh --here` | 복사 없이 지금 자리에서 의존성만 설치 |
 | `bash install.sh --check` | 아무것도 바꾸지 않고 점검만 — 문제 생겼을 때 |
+
+넷은 함께 쓸 수 없다. 두 개를 주면 조용히 하나로 정리하지 않고 거부한다 —
+`--check --project` 가 `--project` 로 끝나 파일 38개를 쓰던 자리다.
 
 ## 손으로 설치할 때
 
@@ -84,8 +90,9 @@ bash ~/.claude/skills/erd/install.sh --check
   ✓ SKILL.md 확인  (~/.claude/skills/erd)
 
 3. 파이썬 패키지
-  ✓ python-docx
-  ✓ pillow
+  ✓ requirements.txt  (~/.claude/skills/erd/requirements.txt)
+  ✓ python-docx 1.2.0  (>= 1.1.0)
+  ✓ pillow 12.3.0  (>= 10.0.0)
 
 4. DB 접속 수단 (둘 중 하나)
   ✓ psql   psql (PostgreSQL) 16.2
@@ -94,12 +101,33 @@ bash ~/.claude/skills/erd/install.sh --check
   ✓ 본문:   …/Pretendard-Regular.otf
   ✓ 고정폭: …/Menlo.ttc
 
+6. 회귀 시험
+  ✓ all 258 passed
+  ! 6 cases need a real server and were NOT run (ERD_SELFTEST_DOCKER=1 …)
+
 결과
   ✓ 설치 완료
 ```
 
-`--check` 는 아무것도 바꾸지 않으므로 배치는 건너뛴다. 다만 설치됐어야 할 자리에
-`SKILL.md` 가 있는지는 본다 — `/erd` 가 안 뜰 때 제일 먼저 볼 것이 그것이기 때문이다.
+`--check` 는 아무것도 바꾸지 않으므로 배치는 건너뛴다. 다만 설치됐어야 할 자리는
+읽는다 — `/erd` 가 안 뜰 때 제일 먼저 볼 것이 그것이기 때문이다.
+
+**트리를 하나 골라 그 트리를 끝까지 잰다.** 후보는 `~/.claude/skills/erd`,
+`./.claude/skills/erd`, `install.sh` 가 놓인 디렉터리 순이고, 그중 **있는** 첫 자리가
+이긴다. 고른 자리는 `SKILL.md` 줄에 경로로 찍히고, 6번 절의 회귀 시험도 같은 자리에서
+돈다. 그래서 스킬이 설치된 상태에서 갓 clone 한 자리의 `install.sh --check` 를 불러도
+보고하는 대상은 **설치본**이다 — Claude Code 가 실제로 읽는 그 사본이다.
+
+6번 절은 선택이 아니다. 고른 트리에 읽을 수 있는 `scripts/selftest.py` 가 없으면 건너뛴
+것이 아니라 실패다. **아무도 재지 않은 설치는 도는 설치가 아니다.** 집계 윗줄에는 진짜
+DB 서버가 있어야 해서 안 돌린 개수가 찍히고, 그 줄은 여기서 버려지지 않는다.
+
+`SKILL.md` 는 있기만 해서는 안 되고 스킬 파일이어야 한다 — 첫 줄이 `---`, frontmatter 가
+두 번째 `---` 로 닫혀 있고, 그 안에 `name: erd` 가 있어야 한다. 0바이트거나 잘린
+`SKILL.md` 는 고장으로 보고한다.
+
+패키지 버전은 `requirements.txt` 가 선언한 하한과 대조한다. 깔려 있어도 선언한 하한보다
+낮으면 실패다 — 그 숫자는 장식이 아니라 재는 숫자다.
 
 ## 첫 실행
 
@@ -150,10 +178,19 @@ PNG는 파일 경로, docx는 폰트 이름이다 — docx는 여는 PC에 그 �
 **`/erd` 가 목록에 없다**
 ① `ls ~/.claude/skills/erd/SKILL.md` 가 나오는지 ② Claude Code를 재시작했는지
 ③ `SKILL.md` 첫 줄이 `---` 로 시작하고 `name: erd` 가 있는지 — 이 순서로 본다.
+`install.sh --check` 가 ①과 ③을 대신 해 주고, 무엇을 들여다봤는지 경로로 찍는다.
 
 **`[경고] DB 조회 실패`**
 `ERD_PSQL` / `ERD_DB` 값을 확인한다. 같은 명령을 셸에서 직접 쳐서 붙는지 먼저 본다.
 둘 다 설정되어 있으면 `ERD_PSQL` 이 이긴다.
+
+**`그림 N장이 …/schema.json 보다 오래됐다` 며 문서가 안 나온다**
+고장이 아니라 **일부러 막는 것**이다. 옛 스키마로 그린 그림을 문서에 넣으면 표와 그림이
+서로 다른 말을 하므로 `build_html.py`·`build_docx.py`·`build_erd.py` 가 멈춘다.
+`python3 build_erd.py` 를 다시 돌리면 된다. 문구만 고쳐 그림이 정말 그대로여도 되는
+경우라면 `ERD_STALE=warn`(또는 `ERD_STALE=1`)으로 지날 수 있고, 그때도 지났다는 한 줄이
+찍힌다. `ERD_STALE` 은 다른 스위치와 같은 켜짐/꺼짐 규칙을 따른다 — `true`·`on`·`y` 도
+켜짐이고, 빈 값 `ERD_STALE=` 은 **꺼짐**이며, 오타는 조용히 켜지지 않고 이름이 찍힌다.
 
 **PNG 한글이 □ 로 나온다**
 한글 폰트가 없다. `install.sh` 를 다시 돌려 Pretendard를 설치하거나 `ERD_FONT` 로 지정한다.

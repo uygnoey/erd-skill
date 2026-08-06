@@ -18,10 +18,20 @@ import json
 import os
 
 from i18n import t as T
-from config import (EXCLUDE, SCHEMA_JSON, SCHEMAS, QueryFailed, clean, excluded,
-                    psql_rows)
+# ERD_SCHEMAS 와 경로 상수는 **부를 때** 묻는다 (config.py 의 '늦춰 두는 값' 참고) —
+# import 만으로 cwd 에 erd-build 를 만들지 않게, 그리고 이 파일을 읽기만 하는 쪽이
+# 남의 ERD_SCHEMAS 판정에 걸리지 않게.
+import config
+from config import (EXCLUDE, QueryFailed, atomic_write_text, clean, excluded,
+                    psql_rows, safe_name)
 
-LABEL = os.environ.get('ERD_LABEL', '')
+# ERD_LABEL 은 파일명(schema.<label>.json)과 테이블 키에 그대로 들어간다. `a/b` 를
+# 주면 조회를 **전부 끝낸 뒤** 마지막 쓰기에서 `ValueError: Invalid name` 으로 죽어
+# 왕복이 통째로 버려졌다. 그래서 아무것도 묻기 전에 여기서 본다.
+LABEL = os.environ.get('ERD_LABEL', '').strip()
+if LABEL and safe_name(LABEL) != LABEL:
+    raise SystemExit(T('err.env_name', env='ERD_LABEL', value=LABEL,
+                       safe=safe_name(LABEL) or 'db1'))
 
 
 DUP = set()      # 이름이 두 스키마 이상에 걸쳐 있는 테이블
@@ -62,13 +72,40 @@ left join pg_attribute a
 where c.table_schema in ({schemas})
 order by c.table_schema, c.table_name, c.ordinal_position"""
 
+# PK 는 **제약 이름과 테이블을 함께** 맞춰 잇는다.
+#
+# 예전엔 `constraint_name` 과 `table_schema` 둘만 맞췄다. 제약 이름이 스키마 안에서
+# 유일하다고 본 셈인데 Postgres 는 그렇지 않다 — 유일한 것은 (테이블, 이름) 쌍이다.
+# PK·UNIQUE 는 같은 이름의 **인덱스**를 만들어 저희끼리는 못 겹치지만, FK·CHECK 는
+# 인덱스를 안 만들므로 남의 테이블에서 같은 이름을 그대로 쓸 수 있다:
+#
+#     create table a (id bigint, x text, constraint foo primary key (id));
+#     create table b (x bigint, constraint foo foreign key (x) references a(id));
+#
+# 그러면 `foo` 로 이은 key_column_usage 에 **b 의 FK 컬럼까지** 딸려 와서
+# `a.pk = ['id', 'x']` 가 됐다. 실측(PG16): 정의서의 a 표에서 x 가 `● PK` 로,
+# 이름은 굵게 실렸다 — a 의 PK 가 아닌 컬럼이다. 이름이 겹치는 두 테이블에 같은
+# 컬럼명이 없으면 없는 컬럼이 pk 목록에만 남아 눈에 안 띄고, 겹치면 이렇게 문서가
+# 조용히 틀린다. 어느 쪽이든 경고는 한 줄도 없었다.
+#
+# `constraint_schema` 도 함께 맞춘다. 제약은 제 테이블의 스키마에 속하므로 오늘
+# 이 술어가 걷어내는 행은 없지만, 이 조인이 재는 것은 '같은 제약인가' 이고 제약을
+# 가리키는 이름은 (카탈로그, 스키마, 이름) 셋이다 — 둘만 보면 규칙이 반쪽이다.
+#
+# `order by` 에 테이블을 앞세우는 것도 같은 이유다. 컬럼 차례(ordinal_position)만
+# 두면 여러 테이블의 행이 섞여 오고, 그때 순서가 지켜지는 것은 '테이블마다 따로
+# 담으니 상대 순서는 남는다' 는 **부르는 쪽 사정**에 기댄 것이다. 조회가 제 순서를
+# 스스로 말하게 둔다.
 Q_PK = """
 select tc.table_schema, tc.table_name, kcu.column_name
 from information_schema.table_constraints tc
 join information_schema.key_column_usage kcu
-  on kcu.constraint_name=tc.constraint_name and kcu.table_schema=tc.table_schema
+  on kcu.constraint_schema=tc.constraint_schema
+ and kcu.constraint_name=tc.constraint_name
+ and kcu.table_schema=tc.table_schema
+ and kcu.table_name=tc.table_name
 where tc.constraint_type='PRIMARY KEY' and tc.table_schema in ({schemas})
-order by kcu.ordinal_position"""
+order by tc.table_schema, tc.table_name, kcu.ordinal_position"""
 
 # FK 는 pg_catalog 에서 읽는다.
 #
@@ -127,13 +164,18 @@ where con.contype='c' and n.nspname in ({schemas})
 order by rel.relname, con.conname"""
 
 Q_UNIQUE = """
-select n.nspname, rel.relname, con.conname,
-       replace(pg_get_constraintdef(con.oid), chr(10), ' ')
-from pg_constraint con
-join pg_class rel on rel.oid=con.conrelid
+select n.nspname, rel.relname, idx.relname, att.attname
+from pg_index i
+join pg_class rel on rel.oid=i.indrelid
 join pg_namespace n on n.oid=rel.relnamespace
-where con.contype='u' and n.nspname in ({schemas})
-order by rel.relname, con.conname"""
+join pg_class idx on idx.oid=i.indexrelid
+join lateral unnest(i.indkey::smallint[]) with ordinality as k(attnum, ord)
+  on k.attnum>0 KEY_FILTER
+join pg_attribute att on att.attrelid=i.indrelid and att.attnum=k.attnum
+where i.indisunique and i.indisvalid and not i.indisprimary
+  and i.indpred is null and i.indexprs is null
+  and n.nspname in ({schemas})
+order by rel.relname, idx.relname, k.ord"""
 
 
 def q_fk(ver):
@@ -145,6 +187,12 @@ def q_fk(ver):
     술어를 빼면 그만이다 — 거를 것이 없어서 거르지 않는 것이다.
     """
     return Q_FK if ver >= 110000 else Q_FK.replace('con.conparentid=0 and ', '')
+
+
+def q_unique(ver):
+    """Exclude INCLUDE columns where PostgreSQL exposes indnkeyatts (11+)."""
+    key_filter = 'and k.ord<=i.indnkeyatts' if ver >= 110000 else ''
+    return Q_UNIQUE.replace('KEY_FILTER', key_filter)
 
 
 MIN_PG = 90400        # PostgreSQL 9.4 — WITH ORDINALITY 와 별칭이 붙는 row_to_json 의 하한
@@ -188,8 +236,12 @@ def server_version():
 
 
 def main():
-    schemas = ', '.join(f"'{s}'" for s in SCHEMAS)
-    q = lambda tpl: tpl.format(schemas=schemas)
+    # 스키마 이름은 SQL 리터럴로 박히므로 따옴표를 escape 한다. 예전엔
+    # ERD_SCHEMAS="s1','s2" 가 `in ('s1'', ''s2')` 라는 남의 문법이 됐다.
+    # (빈 목록 — `in ()` — 은 config 가 시작 자리에서 이름을 대고 막는다.)
+    schemas = ', '.join("'" + s.replace("'", "''") + "'" for s in config.SCHEMAS)
+    def q(template):
+        return template.format(schemas=schemas)
     tables = {}
 
     # 버전을 먼저 본다 — 조회문이 서버마다 다르고(q_fk), 너무 낮으면 무엇을 물어도
@@ -267,11 +319,15 @@ def main():
         if t and cdef:
             t['checks'].append({'name': cname, 'def': cdef})
 
-    for sch, tname, cname, cdef in rows('unique constraints', q(Q_UNIQUE), 4, core=False):
+    unique_groups = {}
+    for sch, tname, cname, column in rows('unique constraints', q(q_unique(ver)), 4,
+                                          core=False):
         t = tables.get(key(tname, sch))
-        if t and cdef:
-            cols = cdef[cdef.find('(') + 1:cdef.rfind(')')]
-            t['uniques'].append([c.strip() for c in cols.split(',')])
+        if t and column:
+            unique_groups.setdefault((key(tname, sch), cname), []).append(column)
+    for (tkey, _cname), columns in unique_groups.items():
+        if columns not in tables[tkey]['uniques']:
+            tables[tkey]['uniques'].append(columns)
 
     for t in tables.values():                 # 제외된 테이블을 가리키는 FK 는 버린다
         keep = [fk for fk in t['fks'] if fk['ref_table'] in tables]
@@ -281,8 +337,13 @@ def main():
     if not tables:
         raise SystemExit(T('err.no_tables'))
 
-    out_path = SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL else SCHEMA_JSON
-    out_path.write_text(json.dumps(tables, ensure_ascii=False, indent=2))
+    out_path = (config.SCHEMA_JSON.with_name(f'schema.{LABEL}.json') if LABEL
+                else config.SCHEMA_JSON)
+    # `ensure_ascii=False` 라 한글 코멘트가 그대로 들어간다 — 인코딩을 안 주면 무엇으로
+    # 쓸지는 로케일이 정하고, ascii 로케일(LC_ALL=C)에서는 UnicodeEncodeError 로
+    # **조회를 다 마친 왕복이 마지막 한 줄에서 통째로 버려졌다**(cp949 는 죽는 대신
+    # 읽는 쪽에서 깨진다). 읽는 쪽은 전부 utf-8 로 못 박혀 있다 — 쓰는 쪽도 맞춘다.
+    atomic_write_text(out_path, json.dumps(tables, ensure_ascii=False, indent=2))
     n_col = sum(len(t['columns']) for t in tables.values())
     n_fk = sum(len(t['fks']) for t in tables.values())  # noqa: E501  (dropped 반영 후)
     n_desc = sum(1 for t in tables.values() for c in t['columns'] if c['comment'])

@@ -121,6 +121,13 @@ python3 build_docx.py    # ⑤ documento docx (opcional)
 Para una base de datos dentro de docker, usar `export ERD_DB='container:user:db'` en lugar
 de `ERD_PSQL`.
 
+**Los pasos ④ y ⑤ se niegan a ejecutarse sobre figuras más antiguas que `schema.json`.**
+Se detienen con `N diagramas son más antiguos que …` en vez de entregar un documento cuyas
+tablas y cuyas imágenes describen dos esquemas distintos; vuelva a ejecutar ③. Cuando sólo
+cambió la redacción y las figuras siguen siendo correctas, `ERD_STALE=warn` las incrusta y
+lo dice en cada ejecución (`ERD_STALE=` vacío significa desactivado, como el resto de los
+interruptores).
+
 **Funciona sin archivo de configuración.** Las áreas se clasifican automáticamente a
 partir de los nombres de esquema y los prefijos de los nombres de tabla, y se asignan los
 colores.

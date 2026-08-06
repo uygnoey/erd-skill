@@ -48,6 +48,7 @@ M = {
     # ── 컬럼표 ────────────────────────────────────────────────────────────
     'col.name': '컬럼',
     'col.type': '타입',
+    'col.null': 'Null',
     'col.default': '기본값',
     'col.key': '키/참조',
     'col.desc': '설명',
@@ -61,6 +62,8 @@ M = {
     'html.rows_note': 'rows ≈ 는 통계 기반 추정치',
     'html.toc': '목차',
     'html.db_tables': 'DB: {db} · 테이블 {n}개',
+    'html.badge_cols': '컬럼 {n}',
+    'html.badge_tables': '테이블 {n}개',
     'html.overall': '전체 구조',
     'html.overview_cap': '{title} — 전체 구조 개요도 (테이블 {n}개 · 관계만 표시)',
     'html.area_cap': '{name} — 영역 상세 ERD',
@@ -184,12 +187,28 @@ M = {
     'err.font_none': '{kind} 폰트를 찾지 못했다. install.sh 를 돌리거나 {env} 로 직접 '
                      '지정한다.\n  찾아본 곳: {looked}',
     'err.merge_usage': '사용법: python3 merge_schemas.py <라벨> <라벨> …',
+    'err.merge_label': '올바르지 않은 DB 라벨이다: {label!r}. 파일명에 안전한 단순 라벨을 쓸 것.',
+    'err.merge_collision': 'DB 라벨 {label!r} 때문에 테이블 키가 겹친다: {tables}',
     'err.merge_missing': '{path} 가 없다. ERD_LABEL={label} 로 introspect.py 를 먼저 돌릴 것.',
     'err.no_sql_dir': 'DDL 디렉토리가 없다: {path}  (ERD_SQL_DIR 로 지정)',
+    'err.sql_file_outside': '{env} 에 {path} 밖을 가리키는 경로가 있다: {value}',
     'err.spec_no_area': '{path} 의 areas 에 실제로 있는 테이블이 하나도 없다.',
+    'err.spec_dup_code': '{path}: 두 영역이 같은 영역 코드 {code} 를 쓴다 (다른 쪽은 {other}).\n'
+                         '  영역 코드는 파일 이름이 된다({file}). macOS·Windows 에서는 대소문자나\n'
+                         '  유니코드 형태만 다른 코드가 같은 파일이라, 한 영역 그림이 다른 영역\n'
+                         '  그림을 조용히 덮어쓴다. 서로 다른 코드를 준다.',
     'err.spec_layer': '레이어 {key} 의 형식이 잘못됐다: {value}\n'
                       '  [채움, 헤더, 테두리, 라벨] 이어야 하고 색은 #rrggbb 다',
     'err.spec_json': '{path} 가 올바른 JSON 이 아니다: {err}',
+    'err.schema_shape': '{path} 의 최상위는 테이블 객체들을 담은 JSON 객체여야 한다.',
+    'err.schema_field': '{path}: 테이블 {table!r} 의 {field} 필드는 {want} 여야 한다. 현재 {got}.',
+    'err.schema_key_collision': '안전하지 않은 문자를 정리하면 테이블 키가 겹친다: {tables}',
+    'err.fig_unregistered': '그림 {stem} 에 도판 번호가 없다 — build_erd.py 의 fig_numbers() 가 '
+                            '그 이름을 적어 두지 않았다.\n'
+                            '  이 스크립트가 그리는 그림은 모두 그 목록에서 번호를 받고, 그 번호는 '
+                            '캡션만이 아니라 그림 안에도 그려진다 — 등록 안 된 그림은 캡션과 다른 '
+                            '번호를 달고 나간다.\n'
+                            '  등록된 이름: {known}',
     'err.stale_figs': '그림 {n}장이 {path} 보다 오래됐다: {list}\n'
                       '  옛 스키마를 그린 그림이다 — 표와 그림이 서로 다른 스키마를 '
                       '말하는 문서가 된다.\n'
@@ -201,18 +220,51 @@ M = {
                         '  아무것도 쓰지 않았다. 스키마를 반만 읽은 실행은 완성된 것처럼 '
                         '보이는 문서를 만든다.',
     'err.query_truncated': '결과가 행 도중에 끊겼다',
+    'err.query_timeout': 'DB 조회가 {seconds}초를 넘겼다',
+    'err.timeout_number': '0 또는 0보다 큰 초 단위 숫자를 쓴다',
+    'err.env_not_dir': '{env}: {path} 는 디렉토리가 아니다 — 그 자리에 이미 다른 것이 있다.',
+    'err.env_not_file': '{env}: {path} 는 읽을 수 있는 파일이 아니다.',
+    'err.env_bad': '{env} 를 쓸 수 없다: {why}\n  값: {value}',
+    'err.env_empty': '{env} 가 빈 값으로 설정돼 있다. 값을 주거나, 기본값을 쓰려면 아예 지운다.',
+    'err.env_name': '{env}={value} 는 파일명에 쓸 수 없다. {safe} 처럼 적는다.',
+    'err.spec_type': '{path}: "{key}" 는 {want} 모양이어야 한다 — 받은 것은 {got}.',
+    'err.spec_root': '{path} 는 "areas" 같은 키를 담은 JSON 객체여야 한다 — 받은 것은 {got}.',
 
     # ── 진행 출력 ─────────────────────────────────────────────────────────
     'log.query_fail': '  [경고] DB 조회 실패: {err}',
     'log.query_incomplete': '  [경고] 읽지 못한 것: {list} — 문서에서 딱 그만큼이 빠진다',
+    'log.ddl_alter_unsupported': '  [경고] 지원하지 않는 ALTER TABLE 절 ({table}): {clause}',
+    'log.psql_undecodable': '  [경고] DB 가 보낸 답이 UTF-8 이 아니다 — 그 글자들은 문서에 '
+                            '� 로 남는다.\n'
+                            '          우리가 띄우는 psql 에는 PGCLIENTENCODING={enc} 를 주지만, '
+                            'docker·ssh 로 감싸면 그 경계를 넘지 못한다.\n'
+                            '          ERD_PSQL 명령 안에 직접 넣을 것: '
+                            'docker exec -e PGCLIENTENCODING={enc} … / '
+                            'ssh host PGCLIENTENCODING={enc} psql …',
+    'log.ddl_not_in_db': '  [경고] 찾은 스키마 ({schemas})에 없는 테이블 {n}개 — 이름만 있는 '
+                         '상자로 그린다: {list}',
     'log.spec_empty': '  [경고] 쓸 테이블이 없는 영역을 건너뛴다: {list}',
     'log.spec_dup': '  [경고] 테이블 {n}개가 여러 영역에 겹친다 — 처음 영역에만 둔다: {list}',
     'log.spec_missing': '  [경고] spec 이 가리키는 테이블 {n}개가 스키마에 없다: {list}',
+    'log.max_areas_spec': '  [경고] {env}={value} 이지만 {path} 가 영역을 직접 적었다 — {n}개를 그대로 그린다\n'
+                          '          (상한은 자동 분류에만 건다. spec 이 이긴다)',
+    'log.spec_orphan': '  [경고] 어느 영역에도 없는 테이블 {n}개 — 별도 영역으로 묶어 그린다: {list}',
+    'log.spec_unknown': '  [경고] spec 의 최상위 키 {n}개는 모르는 이름이라 무시했다: {list}\n'
+                        '    아는 키: {known}  (_ 로 시작하는 키는 주석이다)',
+    'log.env_not_flag': '  [경고] {env}={value} 는 켜짐/꺼짐 값이 아니다 — {used} 로 둔다 '
+                        '(끄는 값: 0 false no off n, 빈 값)',
+    'log.env_not_number': '  [경고] {env}={value} 는 숫자가 아니다 — {default} 을 쓴다',
+    'log.env_clamped': '  [경고] {env}={value} 는 최솟값보다 작다 — {used} 로 올린다',
+    'log.default_pk_skipped': '  [경고] ERD_DEFAULT_PK={column} 이지만 그 이름의 컬럼이 없어 '
+                              '테이블 {n}개는 PK 없이 둔다: {list}',
+    'log.ref_tables_ignored': '  [경고] ERD_REF_TABLES 는 있는데 ERD_REF_SCHEMA 가 없다 — '
+                              '테이블 {n}개를 가져오지 않았다: {list}',
     'log.introspected': '테이블 {tables} · 컬럼 {columns} · FK {fks} → {path}',
     'log.desc_from_db': '  DB 코멘트로 채워진 컬럼 설명 {n}/{total}',
     'log.desc_rest': '  → merge_desc.py 로 나머지를 채울 것',
     'log.dup_names': '  이름이 여러 스키마에 걸친 테이블 {n}개 — 키를 스키마.테이블 로 둔다: {list}',
     'log.exclude_rule': '  제외 규칙: {rule}',
+    'log.exclude_dropped': '  제외 규칙이 걷어낸 테이블 {n}개: {list}',
     'log.fk_dropped': '  대상 밖 테이블을 가리키는 FK {n}건 제외',
     'log.per_schema': '  [{schema}] {n}개',
     'log.doc_missing': '  [경고] ERD_DOC_HTML 문서가 없다: {path}',
@@ -232,17 +284,17 @@ M = {
     'log.png_full': 'PNG  전체 ERD → {name} {size}',
     'log.png_area': 'PNG  영역 {code} {name} ({n}개 + 참조 {ext}) → {file}  {size}',
     'log.scale_down': '    [알림] {name}: 그림이 커서 배율을 {s}배로 낮춤',
-    'log.overlap_at': '      겹침: 좌표{a}  [{s0}~{s1}] vs [{t0}~{t1}]',
+    'log.overlap_at': '      겹침: 좌표{a}  [{s0}~{s1}] {ea} vs [{t0}~{t1}] {eb}',
     'log.verify': '    검증 {name}: {report}',
     'log.verify_log_fail': '  [경고] ERD_VERIFY_LOG 를 쓰지 못했다. 그림은 그대로 있다: '
                            '{path} — {err}',
     'log.html_done': 'HTML  테이블 {tables} · 영역 {areas} · 도판 {figs}장  '
                      '{mb}MB → {name}',
-    'log.html_missing': '  [경고] 그림이 없는 영역 {n}개: {list}  '
-                        '→ build_erd.py 를 먼저 돌릴 것',
     'log.stale_figs': '  [경고] 스키마보다 오래된 그림 {n}장을 그대로 넣는다 '
                       '(ERD_STALE): {list}',
     'log.docx_saved': '저장: {name} ({kb} KB)',
     'log.figs_missing': '  [경고] 그림 파일이 없어 문서에서 뺀 도판 {n}장: '
                         '{list}  → build_erd.py 를 먼저 돌린다',
+    'log.row_truncated': '  [경고] {where}: {n}개 행이 이 표가 가진 칸 수({width})보다 '
+                         '많은 칸을 담고 있어 넘치는 칸을 버렸다: {list}',
 }

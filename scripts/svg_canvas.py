@@ -16,6 +16,89 @@ from i18n import LANG
 
 _ANCHOR = {'l': 'start', 'm': 'middle', 'r': 'end'}
 
+# ── 폰트 폴백 체인 ──────────────────────────────────────────────────────────
+# 보는 PC 에 그 폰트가 없을 때를 대비한 목록이다. SVG 도판(이 파일)과 HTML 본문
+# (`build_html.py` 의 CSS)이 **같은 규칙을 한 벌로** 쓴다 — 두 벌이면 한쪽만 고쳐서
+# 같은 문서의 그림과 본문이 다른 폰트로 나온다.
+#
+# 예전엔 `ja` 냐 아니냐 둘로만 갈려서, 영어·스페인어 문서도 한글 폰트를 첫 후보로
+# 삼았다. 브라우저·뷰어는 이 목록을 **글자마다** 훑으므로(앞엣것에 그 글리프가
+# 없으면 다음으로 넘어간다) 문서의 말에 맞는 폰트를 앞에 세우면 된다. 다만 다른
+# 문자 체계를 **빼지는** 않는다 — 문서의 말이 영어여도 컬럼 설명은 그 DB 를 쓰는
+# 사람의 말로 적혀 있다. 앞뒤 순서만 바꾼다.
+#
+# (`erd.py` 의 `_SANS_CANDIDATES` 는 같은 것을 반대로 정한다: PIL 은 그림 하나를
+#  **폰트 하나**로 그리므로 라틴 전용 폰트가 앞서면 한글·한자가 통째로 □ 가 된다.
+#  그래서 거기서는 라틴 후보를 맨 뒤에만 붙이고, ko·ja 에는 아예 안 붙인다. 고르는
+#  방식이 다르니 순서도 다르다 — 두 판단이 지키는 것은 같다. '그 문서의 글자가 다
+#  보이게'.)
+_JA_FONTS = "'Hiragino Sans','Yu Gothic','Noto Sans JP','Meiryo'"
+_KO_FONTS = "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR'"
+_LATIN_FONTS = "'Helvetica Neue','Segoe UI',Arial"
+
+# 한자를 쓰는 말이면 그 글리프를 가진 폰트를 앞에 세운다. 한국어 문서에서 일본어
+# 폰트가 **앞서면** 한자가 일본식 자형으로 나오므로(骨·直 등이 다르게 보인다) ko 는
+# 그것을 맨 뒤에 둔다.
+#
+# 빼지 않고 맨 뒤에라도 두는 것은 **동작 변경**이다 — 예전 ko 체인에는 일본어 폰트가
+# 하나도 없었다. 근거는 `erd.py` 의 `_JA_CANDIDATES` 마지막 줄이 이미 내린 판단과 같다:
+# 자형이 남의 나라 것이어도 **□ 보다는 읽을 수 있다.** 이 자리가 실제로 쓰이는 때는 앞의
+# 넷(Pretendard·Apple SD Gothic Neo·Malgun Gothic·Noto Sans KR)이 하나도 없거나 그 넷이
+# 다 그 한자를 못 덮을 때뿐이고, 그때 예전 판이 하던 일은 generic sans-serif 로 떨어지는
+# 것 — 곧 두부다. '제 말 먼저, 나머지 문자 체계는 뒤에 남긴다' 는 **한 규칙**을 세 갈래에
+# 똑같이 대는 것이기도 하다 (en·es 가 KO·JA 를 뒤에 남기는 것과 같은 이유).
+_STACKS = {
+    'ja': (_JA_FONTS, _KO_FONTS, _LATIN_FONTS),
+    'ko': (_KO_FONTS, _LATIN_FONTS, _JA_FONTS),
+}
+_LATIN_STACK = (_LATIN_FONTS, _KO_FONTS, _JA_FONTS)
+
+
+def font_stack(lang=None):
+    """그 언어 문서가 쓸 폰트 폴백 체인. 모르는 말은 라틴 우선으로 친다."""
+    code = LANG if lang is None else lang
+    return ','.join(_STACKS.get(code, _LATIN_STACK)) + ',sans-serif'
+
+
+FONT_STACK = font_stack()
+MONO_STACK = "'Menlo','D2Coding','DejaVu Sans Mono','Consolas',monospace"
+
+# 이름에 'mono' 가 안 든 고정폭 글꼴들. 여기 없으면 그 글자는 **본문 스택**으로 나간다.
+#
+# 판정이 `'mono' in 이름` + `('Menlo','D2Coding')` 둘뿐이던 때, `erd.py` 가
+# `_MONO_CANDIDATES` 에 적어 둔 후보 넷 중 하나가 그 그물을 빠져나갔다 — Windows 의
+# `C:/Windows/Fonts/consola.ttf` 다. PIL 이 그 파일에서 읽는 이름은 `Consolas` 이고,
+# 거기엔 'mono' 가 없다. 그러면 컬럼 이름·타입이 PNG 에서는 고정폭인데 SVG 에서는
+# 본문 글꼴로 나가, 같은 그림을 두 벌 낸다는 이 파일의 전제가 그 자리에서 깨진다.
+# (`textLength` 가 폭은 붙들어 두므로 칸을 넘지는 않는다 — 대신 자간이 벌어진다.)
+#
+# 나머지 후보는 그물에 걸린다: `DejaVu Sans Mono`·`Liberation Mono` 는 이름에 'mono'
+# 가 있고 `Menlo` 는 목록에 있었다. 그래서 이 자리가 오래 조용했다 — 리눅스·macOS 에서
+# 도는 시험은 넷 중 셋만 밟는다.
+#
+# 목록은 후보에 있는 것(Consolas)에서 출발해, 사람이 `ERD_MONO` 로 직접 고를 만한
+# 흔한 고정폭 글꼴까지 담는다. 여기 없는 글꼴을 `ERD_MONO` 로 주면 예전처럼 본문
+# 스택으로 나가지만, 그때도 `MONO_STACK` 이 아니라 그 글꼴 이름이 맨 앞에 서므로
+# 그 글꼴이 깔린 PC 에서는 제대로 보인다.
+_MONO_NAMES = frozenset((
+    'menlo', 'monaco', 'consolas', 'd2coding', 'courier', 'courier new',
+    'sf mono', 'cascadia code', 'cascadia mono', 'fira code', 'jetbrains mono',
+    'source code pro', 'ibm plex mono', 'ubuntu mono', 'hack', 'inconsolata',
+))
+
+
+def is_mono(family):
+    """이 글꼴 이름이 고정폭인가 — 이름만 보고 정한다.
+
+    이름으로 짐작하는 것이 이 판정의 약점이지만, 여기서 손에 쥔 것이 이름뿐이다.
+    `erd.py` 는 어느 글꼴을 고정폭으로 골랐는지 알고 있으므로 그것을 넘겨주는 편이
+    옳다 — 다만 그 신호를 받으려면 `render()` 가 쓰는 ImageDraw 흉내 인터페이스를
+    넓혀야 해서, 그 변경은 이 파일 혼자 할 수 있는 것이 아니다. 여기서는 그물의
+    구멍만 메우고, 옳은 자리는 적어 둔다.
+    """
+    f = (family or '').lower()
+    return 'mono' in f or f in _MONO_NAMES
+
 
 def _pairs(xy):
     """[(x,y),(x,y)] · [x0,y0,x1,y1] 둘 다 받는다 — PIL 이 둘 다 허용한다."""
@@ -43,15 +126,8 @@ class SvgCanvas:
         self.w, self.h = int(width), int(height)
         self.bg = bg
         self.parts = []
-        # 보는 PC 에 그 폰트가 없을 때를 대비한 폴백 체인.
-        # 한자를 쓰는 말이면 그 글리프를 가진 폰트를 앞에 세운다.
-        self.fallback = font_fallback or (
-            "'Hiragino Sans','Yu Gothic','Noto Sans JP','Meiryo',"
-            "'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif"
-            if LANG == 'ja' else
-            "'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',"
-            "'Helvetica Neue',sans-serif")
-        self.mono_fallback = "'Menlo','D2Coding','DejaVu Sans Mono','Consolas',monospace"
+        self.fallback = font_fallback or FONT_STACK
+        self.mono_fallback = MONO_STACK
 
     # ── 도형 ────────────────────────────────────────────────────────────────
     def _shape(self, tag, attrs, fill=None, outline=None, width=1):
@@ -124,8 +200,7 @@ class SvgCanvas:
             fam, style = font.getname()
         except Exception:
             fam, style = '', ''
-        mono = 'mono' in (fam or '').lower() or (fam or '') in ('Menlo', 'D2Coding')
-        family = (f"'{fam}',{self.mono_fallback}" if mono
+        family = (f"'{fam}',{self.mono_fallback}" if is_mono(fam)
                   else (f"'{fam}',{self.fallback}" if fam else self.fallback))
         bold = 'bold' in (style or '').lower()
 
@@ -177,6 +252,6 @@ class SvgCanvas:
         return head + t + bg + ''.join(self.parts) + '</svg>'
 
     def save(self, path, title=None):
-        from pathlib import Path
-        Path(path).write_text(self.tostring(title), encoding='utf-8')
+        from config import atomic_write_text
+        atomic_write_text(path, self.tostring(title))
         return path

@@ -9,3 +9,4 @@ schema*.json
 *.svg
 *.docx
 *.graphml
+scratchpad/

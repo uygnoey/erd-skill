@@ -48,6 +48,7 @@ M = {
     # ── カラム表 ──────────────────────────────────────────────────────────
     'col.name': 'カラム',
     'col.type': '型',
+    'col.null': 'Null',
     'col.default': '既定値',
     'col.key': 'キー/参照',
     'col.desc': '説明',
@@ -61,6 +62,8 @@ M = {
     'html.rows_note': 'rows ≈ は統計に基づく推定値',
     'html.toc': '目次',
     'html.db_tables': 'DB: {db} · テーブル {n}件',
+    'html.badge_cols': 'カラム {n}',
+    'html.badge_tables': 'テーブル {n}件',
     'html.overall': '全体構造',
     'html.overview_cap': '{title} — 全体構造の概要図 (テーブル {n}件 · 関係のみ表示)',
     'html.area_cap': '{name} — 領域詳細 ERD',
@@ -184,13 +187,29 @@ M = {
     'err.font_none': '{kind}フォントが見つからない。install.sh を実行するか、{env} で'
                      '直接指定すること。\n  探索した場所: {looked}',
     'err.merge_usage': '使い方: python3 merge_schemas.py <ラベル> <ラベル> …',
+    'err.merge_label': '無効な DB ラベル: {label!r}。ファイル名として安全な単純なラベルを使用してください。',
+    'err.merge_collision': 'DB ラベル {label!r} によりテーブルキーが重複します: {tables}',
     'err.merge_missing': '{path} が存在しない。まず ERD_LABEL={label} で '
                          'introspect.py を実行すること。',
     'err.no_sql_dir': 'DDL ディレクトリがない: {path}  (ERD_SQL_DIR で指定)',
+    'err.sql_file_outside': '{env} に {path} の外を指すパスがあります: {value}',
     'err.spec_no_area': '{path} の areas に実在するテーブルが一つもない。',
+    'err.spec_dup_code': '{path}: 二つの領域が同じ領域コード {code} を使っている (もう一方は {other})。\n'
+                         '  領域コードはファイル名になる({file})。macOS・Windows では大文字小文字や\n'
+                         '  Unicode の形だけが違うコードは同じファイルなので、一方の領域図が\n'
+                         '  もう一方を黙って上書きする。別々のコードを与えること。',
     'err.spec_layer': 'レイヤー {key} の形式が不正だ: {value}\n'
                       '  [塗り, ヘッダ, 枠, ラベル] で、色は #rrggbb でなければならない',
     'err.spec_json': '{path} が正しい JSON ではない: {err}',
+    'err.schema_shape': '{path} の最上位はテーブルオブジェクトを含む JSON オブジェクトでなければなりません。',
+    'err.schema_field': '{path}: テーブル {table!r} の {field} は {want} でなければなりません。現在は {got} です。',
+    'err.schema_key_collision': '安全でない文字を除去するとテーブルキーが重複します: {tables}',
+    'err.fig_unregistered': '図 {stem} に図番号がない — build_erd.py の fig_numbers() が'
+                            'その名前を持っていない。\n'
+                            '  このスクリプトが描く図は全てその一覧から番号を受け取り、その番号は'
+                            'キャプションだけでなく図の中にも描かれる — 登録のない図は'
+                            'キャプションと違う番号を持って出ていく。\n'
+                            '  登録済み: {known}',
     'err.stale_figs': '図 {n}枚が {path} より古い: {list}\n'
                       '  以前のスキーマを描いた図である — 表と図が別のスキーマを語る'
                       '文書になる。\n'
@@ -202,18 +221,53 @@ M = {
                         '  何も書いていない。スキーマを半分しか読めなかった実行は、'
                         '完成して見えるだけの文書を作る。',
     'err.query_truncated': '結果が行の途中で切れた',
+    'err.query_timeout': 'DB クエリが {seconds} 秒を超えた',
+    'err.timeout_number': '0 または正の秒数を指定する',
+    'err.env_not_dir': '{env}: {path} はディレクトリではない — そこにすでに別のものがある。',
+    'err.env_not_file': '{env}: {path} は読めるファイルではない。',
+    'err.env_bad': '{env} は使えない: {why}\n  値: {value}',
+    'err.env_empty': '{env} が空の値で設定されている。値を与えるか、既定値を使うなら設定を外す。',
+    'err.env_name': '{env}={value} はファイル名に使えない。{safe} のように書く。',
+    'err.spec_type': '{path}: "{key}" は {want} の形でなければならない — 受け取ったのは {got}。',
+    'err.spec_root': '{path} は "areas" のようなキーを持つ JSON オブジェクトでなければ'
+                     'ならない — 受け取ったのは {got}。',
 
     # ── 進行状況の出力 ────────────────────────────────────────────────────
     'log.query_fail': '  [警告] DB クエリ失敗: {err}',
     'log.query_incomplete': '  [警告] 読めなかったもの: {list} — 文書からちょうどその分が欠ける',
+    'log.ddl_alter_unsupported': '  [警告] 未対応の ALTER TABLE 句 ({table}): {clause}',
+    'log.psql_undecodable': '  [警告] DB の応答が UTF-8 ではなかった — その文字は文書に '
+                            '� として残る。\n'
+                            '          こちらが起動する psql には PGCLIENTENCODING={enc} を'
+                            '渡しているが、docker・ssh で包むとその境界を越えない。\n'
+                            '          ERD_PSQL のコマンドの中に直接書くこと: '
+                            'docker exec -e PGCLIENTENCODING={enc} … / '
+                            'ssh host PGCLIENTENCODING={enc} psql …',
+    'log.ddl_not_in_db': '  [警告] 探したスキーマ ({schemas}) にないテーブル {n}件 — '
+                         '名前だけの箱として描く: {list}',
     'log.spec_empty': '  [警告] 使えるテーブルがない領域を飛ばす: {list}',
     'log.spec_dup': '  [警告] テーブル {n}件が複数の領域に重複 — 最初の領域だけに置く: {list}',
     'log.spec_missing': '  [警告] spec が指すテーブル {n}件がスキーマにない: {list}',
+    'log.max_areas_spec': '  [警告] {env}={value} だが {path} が領域を自分で書いている — {n}個をそのまま描く\n'
+                          '          (上限は自動分類にのみ効く。spec が優先される)',
+    'log.spec_orphan': '  [警告] どの領域にも入っていないテーブル {n}件 — 別の領域に'
+                       'まとめて描く: {list}',
+    'log.spec_unknown': '  [警告] spec のトップレベルキー {n}件は知らない名前なので無視した: {list}\n'
+                        '    知っているキー: {known}  (_ で始まるキーはコメント)',
+    'log.env_not_flag': '  [警告] {env}={value} はオン/オフの値ではない — {used} とする '
+                        '(オフになる値: 0 false no off n、空)',
+    'log.env_not_number': '  [警告] {env}={value} は数値ではない — {default} を使う',
+    'log.env_clamped': '  [警告] {env}={value} は最小値より小さい — {used} に上げる',
+    'log.default_pk_skipped': '  [警告] ERD_DEFAULT_PK={column} だがその名前の列がなく、'
+                              '{n}件のテーブルは主キーなしのまま: {list}',
+    'log.ref_tables_ignored': '  [警告] ERD_REF_TABLES はあるが ERD_REF_SCHEMA がない — '
+                              '{n}件のテーブルを取得しなかった: {list}',
     'log.introspected': 'テーブル {tables} · カラム {columns} · FK {fks} → {path}',
     'log.desc_from_db': '  DB コメントから補完したカラム説明 {n}/{total}',
     'log.desc_rest': '  → 残りは merge_desc.py で補完すること',
     'log.dup_names': '  複数のスキーマにまたがる名前のテーブル {n}件 — キーは スキーマ.テーブル とする: {list}',
     'log.exclude_rule': '  除外規則: {rule}',
+    'log.exclude_dropped': '  除外規則が取り除いたテーブル {n}件: {list}',
     'log.fk_dropped': '  対象外テーブルを指す FK {n}件を除外',
     'log.per_schema': '  [{schema}] {n}件',
     'log.doc_missing': '  [警告] ERD_DOC_HTML 文書が見つからない: {path}',
@@ -233,17 +287,17 @@ M = {
     'log.png_full': 'PNG  全体 ERD → {name} {size}',
     'log.png_area': 'PNG  領域 {code} {name} ({n}件 + 参照 {ext}) → {file}  {size}',
     'log.scale_down': '    [注記] {name}: 図が大きいため倍率を {s}倍に下げた',
-    'log.overlap_at': '      重なり: 座標 {a}  [{s0}~{s1}] vs [{t0}~{t1}]',
+    'log.overlap_at': '      重なり: 座標 {a}  [{s0}~{s1}] {ea} vs [{t0}~{t1}] {eb}',
     'log.verify': '    検証 {name}: {report}',
     'log.verify_log_fail': '  [警告] ERD_VERIFY_LOG を書けなかった。図はそのまま残っている: '
                            '{path} — {err}',
     'log.html_done': 'HTML  テーブル {tables} · 領域 {areas} · 図版 {figs}点  '
                      '{mb}MB → {name}',
-    'log.html_missing': '  [警告] 図のない領域 {n}件: {list}  '
-                        '→ 先に build_erd.py を実行すること',
     'log.stale_figs': '  [警告] スキーマより古い図 {n}枚をそのまま埋め込む '
                       '(ERD_STALE): {list}',
     'log.docx_saved': '保存: {name} ({kb} KB)',
     'log.figs_missing': '  [警告] 画像ファイルがなく文書から除いた図 {n}点: '
                         '{list}  → 先に build_erd.py を実行する',
+    'log.row_truncated': '  [警告] {where}: {n} 行がこの表の桁数({width})より多くの'
+                         'セルを持っており、あふれたセルは捨てられた: {list}',
 }

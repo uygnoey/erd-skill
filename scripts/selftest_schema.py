@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""회귀 시험 (2) — 아홉 라운드가 낸 결함 중 `selftest.py` 가 아직 안 짚은 자리.
+"""스키마 영역 회귀 시험 — DDL 파싱·DB 인트로스펙션·병합·ERD 구조.
 
-    python3 selftest_history.py            여기 있는 것 전부
-    python3 selftest_history.py introspect  이름에 'introspect' 가 든 것만
+    python3 selftest_schema.py            여기 있는 것 전부
+    python3 selftest_schema.py introspect  이름에 'introspect' 가 든 것만
 
 `selftest_kit.CASES` 에 등록된다 — `selftest.py` 를 돌리면 `load_extras()` 가 이 파일을
 끌어오므로 두 파일이 한 벌로 돈다. 이 파일만 따로 돌리면 여기 것만 목록에 올라와
@@ -19,10 +19,11 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 
-from selftest_kit import (NOTES, Fail, HERE, case, col, ddl, eq, has, main, run,
+from selftest_kit import (CASES, NOTES, Fail, HERE, case, col, ddl, eq, has, main, run,
                           table, verify_recs, write_schema)
 
 
@@ -44,7 +45,14 @@ ver = int(os.environ.get('FAKE_PG_VER', '160000'))
 spec = json.loads(os.environ.get('FAKE_ROWS', '[]'))
 rows = []
 if 'server_version' in q:
-    if ver < 90400:
+    # 별칭을 쓸 줄 아는가. 기본값은 '9.4 부터' 인데, 그것과 introspect 의 하한(MIN_PG)
+    # 이 **같은 숫자**라 두 관문이 하나처럼 묶여 있었다 — 낮은 값을 넣으면 언제나
+    # 앞엣것(빈 값)에 먼저 걸려서 `if ver < MIN_PG` 는 한 번도 지나가지 않았고,
+    # 하한을 0 으로 내려도 시험이 전부 초록이었다. FAKE_PG_ALIAS 로 둘을 떼어 놓아
+    # '숫자로 제대로 답하는데 하한 미만인 서버' 를 만들 수 있게 한다.
+    alias = os.environ.get('FAKE_PG_ALIAS', '')
+    speaks = (alias not in ('0', 'no', 'off')) if alias else (ver >= 90400)
+    if not speaks:
         # 9.3 이하는 서브쿼리 별칭을 row_to_json 의 키로 쓰지 않는다 — 이름으로
         # 꺼내면 아무것도 안 나온다. 그 모양 그대로 흉내 낸다.
         rows = [{}]
@@ -81,10 +89,314 @@ COLQ, PKQ, FKQ = 'information_schema.columns', 'PRIMARY KEY', "contype='f'"
 
 
 def schema_of(work):
-    return json.loads((work / 'schema.json').read_text())
+    return json.loads((work / 'schema.json').read_text(encoding='utf-8'))
 
 
 # ── 1. 문서를 틀리게 만든 것 ─────────────────────────────────────────────────
+
+@case('parse: destructive ALTER COLUMN changes the final schema instead of being ignored')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE t (
+  id bigint PRIMARY KEY,
+  obsolete text,
+  amount integer DEFAULT 1,
+  code text NOT NULL,
+  UNIQUE (code, amount)
+);
+ALTER TABLE t ALTER COLUMN amount TYPE numeric(12,2);
+ALTER TABLE t ALTER COLUMN amount SET DEFAULT 0.00;
+ALTER TABLE t ALTER COLUMN code DROP NOT NULL;
+ALTER TABLE t DROP COLUMN obsolete;
+''')
+    t = s['t']
+    eq([(c['name'], c['type'], c['not_null'], c['default']) for c in t['columns']],
+       [('id', 'bigint', True, ''), ('amount', 'numeric(12,2)', False, '0.00'),
+        ('code', 'text', False, '')],
+       'DROP/TYPE/DEFAULT/NULL changes must describe the final table')
+
+
+@case('parse: CREATE ALTER DROP and recreate follow SQL statement order')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE gone (id bigint PRIMARY KEY);
+CREATE TABLE extra (id bigint PRIMARY KEY);
+CREATE TABLE parent (id bigint PRIMARY KEY);
+CREATE TABLE child (parent_id bigint REFERENCES parent(id));
+DROP TABLE gone, extra;
+DROP TABLE parent CASCADE;
+CREATE TABLE parent (new_id bigint PRIMARY KEY);
+ALTER TABLE parent ADD COLUMN note text;
+''')
+    eq(sorted(s), ['child', 'parent'], 'a dropped table leaves no ghost behind')
+    eq([c['name'] for c in s['parent']['columns']], ['new_id', 'note'],
+       'a recreated table starts fresh before later ALTER statements')
+    eq(s['child']['fks'], [], 'DROP TABLE CASCADE removes inbound relationships')
+
+
+@case('parse: NULL inside an unparenthesized CASE stays in the default expression')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE t (
+  amount integer DEFAULT CASE WHEN 1 = 1 THEN 10 ELSE NULL END NOT NULL
+);
+''')
+    c = s['t']['columns'][0]
+    eq((c['default'], c['not_null']),
+       ('CASE WHEN 1 = 1 THEN 10 ELSE NULL END', True),
+       'CASE expression keywords must not be mistaken for following column constraints')
+
+
+@case('parse: column and table renames move every dependent relationship')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE parent (old_id bigint PRIMARY KEY);
+CREATE TABLE child (
+  parent_id bigint REFERENCES parent(old_id),
+  UNIQUE (parent_id)
+);
+ALTER TABLE parent RENAME COLUMN old_id TO id;
+ALTER TABLE child RENAME COLUMN parent_id TO owner_id;
+ALTER TABLE parent RENAME TO accounts;
+''')
+    eq(sorted(s), ['accounts', 'child'], 'a renamed table keeps no ghost under its old name')
+    eq(s['accounts']['pk'], ['id'], 'a column rename updates its primary key')
+    eq(s['child']['uniques'], [['owner_id']], 'a column rename updates unique constraints')
+    fk = s['child']['fks'][0]
+    eq((fk['column'], fk['ref_table'], fk['ref_column']),
+       ('owner_id', 'accounts', 'id'),
+       'both ends of an FK follow column and table renames')
+
+
+@case('parse: COMMENT IS NULL removes an earlier description')
+def _(work):
+    s = ddl(work, '''
+-- old table note
+CREATE TABLE t (
+  -- old column note
+  id bigint PRIMARY KEY
+);
+COMMENT ON TABLE t IS NULL;
+COMMENT ON COLUMN t.id IS NULL;
+''')
+    eq((s['t']['note'], s['t']['columns'][0]['comment']), ('', ''),
+       'NULL means remove the comment, not ignore the statement')
+
+
+@case('parse: PostgreSQL extended and dollar-quoted comments keep their text')
+def _(work):
+    s = ddl(work, r'''
+CREATE TABLE t (id bigint PRIMARY KEY, note text);
+COMMENT ON TABLE t IS E'owner\'s\nrecord';
+COMMENT ON COLUMN t.note IS $doc$line one's
+line two$doc$;
+COMMENT ON COLUMN t.id IS E'\x41\101\u0042';
+''')
+    eq(s['t']['note'], "owner's\nrecord", 'E strings decode escaped quote and newline')
+    eq(s['t']['columns'][1]['comment'], "line one's\nline two",
+       'dollar quotes preserve quotes and newlines')
+    eq(s['t']['columns'][0]['comment'], 'AAB',
+       'E strings decode hexadecimal, octal, and Unicode escapes')
+
+
+@case('parse: DROP CONSTRAINT removes named PK, unique and foreign keys')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p (id bigint PRIMARY KEY);
+CREATE TABLE q (id bigint PRIMARY KEY);
+CREATE TABLE c (id bigint, parent_id bigint);
+CREATE TABLE d (code text);
+ALTER TABLE c ADD CONSTRAINT c_pk PRIMARY KEY (id);
+ALTER TABLE c ADD CONSTRAINT c_uq UNIQUE (parent_id);
+ALTER TABLE c ADD CONSTRAINT c_fk FOREIGN KEY (parent_id) REFERENCES p(id);
+ALTER TABLE c DROP CONSTRAINT c_pk, DROP CONSTRAINT c_uq, DROP CONSTRAINT c_fk;
+ALTER TABLE d ADD CONSTRAINT d_uq1 UNIQUE (code), ADD CONSTRAINT d_uq2 UNIQUE (code);
+ALTER TABLE d DROP CONSTRAINT d_uq1;
+''')
+    eq((s['c']['pk'], s['c']['uniques'], s['c']['fks']), ([], [], []),
+       'a dropped named constraint must not survive in the final schema')
+    eq(s['d']['uniques'], [['code']],
+       'dropping one of two named unique constraints keeps the one still declared')
+
+
+@case('parse: DROP CONSTRAINT recognizes PostgreSQL default constraint names')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p (id bigint PRIMARY KEY);
+CREATE TABLE c (
+  id bigint PRIMARY KEY,
+  code text UNIQUE,
+  parent_id bigint REFERENCES p(id)
+);
+CREATE TABLE e (
+  id bigint CONSTRAINT e_named_pk PRIMARY KEY,
+  code text CONSTRAINT e_named_uq UNIQUE,
+  parent_id bigint CONSTRAINT e_named_fk REFERENCES p(id)
+);
+CREATE TABLE f (seed text);
+CREATE TABLE g (
+  keep_code text CONSTRAINT g_keep1 UNIQUE CONSTRAINT g_keep2 UNIQUE,
+  gone_code text CONSTRAINT g_gone1 UNIQUE CONSTRAINT g_gone2 UNIQUE
+);
+CREATE TABLE h (
+  parent_id bigint
+    CONSTRAINT h_p_fk REFERENCES p(id)
+    CONSTRAINT h_q_fk REFERENCES q(id) ON DELETE CASCADE
+);
+ALTER TABLE c DROP CONSTRAINT c_pkey;
+ALTER TABLE c DROP CONSTRAINT c_code_key;
+ALTER TABLE c DROP CONSTRAINT c_parent_id_fkey;
+ALTER TABLE e DROP CONSTRAINT e_named_pk;
+ALTER TABLE e DROP CONSTRAINT e_named_uq;
+ALTER TABLE e DROP CONSTRAINT e_named_fk;
+ALTER TABLE f ADD COLUMN id bigint CONSTRAINT f_named_pk PRIMARY KEY;
+ALTER TABLE f ADD COLUMN code text CONSTRAINT f_named_uq UNIQUE;
+ALTER TABLE f ADD COLUMN parent_id bigint CONSTRAINT f_named_fk REFERENCES p(id);
+ALTER TABLE f DROP CONSTRAINT f_named_pk;
+ALTER TABLE f DROP CONSTRAINT f_named_uq;
+ALTER TABLE f DROP CONSTRAINT f_named_fk;
+ALTER TABLE g DROP CONSTRAINT g_keep1;
+ALTER TABLE g DROP CONSTRAINT g_gone1;
+ALTER TABLE g DROP CONSTRAINT g_gone2;
+ALTER TABLE h DROP CONSTRAINT h_p_fk;
+''')
+    eq((s['c']['pk'], s['c']['uniques'], s['c']['fks']), ([], [], []),
+       'unnamed constraints use the names PostgreSQL assigns to them')
+    eq((s['e']['pk'], s['e']['uniques'], s['e']['fks']), ([], [], []),
+       'inline CONSTRAINT names survive until a later DROP names them')
+    eq((s['f']['pk'], s['f']['uniques'], s['f']['fks']), ([], [], []),
+       'ADD COLUMN preserves inline constraint names by the same rule')
+    eq(s['g']['uniques'], [['keep_code']],
+       'one column may retain another named UNIQUE after its sibling is dropped')
+    eq([(fk['ref_table'], fk['on_delete']) for fk in s['h']['fks']],
+       [('q', 'CASCADE')],
+       'multiple inline references keep separate names and deletion rules')
+
+
+@case('parse: a rename may create the same table name in another schema')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE public.account (id bigint PRIMARY KEY);
+CREATE TABLE audit.event (id bigint PRIMARY KEY);
+CREATE TABLE audit.log (account_id bigint);
+ALTER TABLE audit.event RENAME TO account;
+ALTER TABLE audit.log ADD CONSTRAINT log_account_fk
+  FOREIGN KEY (account_id) REFERENCES audit.account(id);
+''')
+    eq(sorted(s), ['audit.account', 'log', 'public.account'],
+       'same basenames in different schemas must remain distinct after rename')
+    eq(s['log']['fks'][0]['ref_table'], 'audit.account',
+       'a later FK uses the duplicate-name index produced by the rename')
+
+
+@case('parse: a malformed composite FK is not invented by repeating a parent column')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p (x bigint PRIMARY KEY);
+CREATE TABLE c (a bigint, b bigint,
+  CONSTRAINT bad_fk FOREIGN KEY (a, b) REFERENCES p(x));
+''')
+    eq(s['c']['fks'], [], 'mismatched FK arity must not create fictional pairs')
+
+
+@case('parse: a parent name in REFERENCES is not this column own key')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE p ("PRIMARY KEY" bigint, "UNIQUE" text);
+CREATE TABLE t (id bigint PRIMARY KEY,
+  x int REFERENCES p ("PRIMARY KEY"),
+  y int REFERENCES p ("UNIQUE"));
+''')
+    eq(s['t']['pk'], ['id'], 'a referenced parent name cannot invent a local PK')
+    eq(s['t']['uniques'], [], 'a referenced parent name cannot invent a local UNIQUE')
+
+
+@case('parse: the same unique index written twice is one constraint')
+def _(work):
+    s = ddl(work, '''
+CREATE TABLE t (id bigint PRIMARY KEY, code text UNIQUE, a int, b int);
+CREATE UNIQUE INDEX i1 ON t (code);
+CREATE UNIQUE INDEX IF NOT EXISTS i1 ON t (code);
+CREATE UNIQUE INDEX i2 ON t (a, b);
+''')
+    eq(s['t']['uniques'], [['code'], ['a', 'b']], 'unique column lists are de-duplicated')
+
+
+@case('introspect: a primary key join includes its table identity')
+def _(work):
+    sys.path.insert(0, str(HERE))
+    import introspect
+    query = ' '.join(introspect.Q_PK.split())
+    join = query[query.index('key_column_usage'):query.index('where')]
+    for pair in ('kcu.constraint_schema=tc.constraint_schema',
+                 'kcu.constraint_name=tc.constraint_name',
+                 'kcu.table_schema=tc.table_schema',
+                 'kcu.table_name=tc.table_name'):
+        has(join, pair, f'PK join contains {pair}')
+
+
+@case('parse: an unsupported ALTER clause is reported instead of silently ignored')
+def _(work):
+    (work / 'sql').mkdir(parents=True, exist_ok=True)
+    (work / 'sql' / 'schema.sql').write_text(
+        'CREATE TABLE t (id bigint); ALTER TABLE t SET SCHEMA audit;', encoding='utf-8')
+    r = run('parse_ddl.py', work)
+    has(r.stdout + r.stderr, 'SET SCHEMA audit', 'the unsupported state change is named')
+    has(r.stdout + r.stderr, 't', 'the affected table is named')
+
+
+@case('spec: every derives row has exactly two endpoints and one label')
+def _(work):
+    write_schema(work, {'a': table('a', [col('id')], pk=['id']),
+                        'b': table('b', [col('id')], pk=['id'])})
+    (work / 'erd.spec.json').write_text(json.dumps({'derives': [['a', 'b']]}),
+                                             encoding='utf-8')
+    r = run('build_erd.py', work, expect_ok=False)
+    if 'Traceback' in r.stderr or 'ValueError' in r.stderr:
+        raise Fail('a short derives row reached tuple unpacking instead of spec validation')
+    has(r.stdout + r.stderr, 'derives', 'the error names the malformed spec key')
+
+
+@case('introspect: an unresponsive database query stops at ERD_QUERY_TIMEOUT')
+def _(work):
+    fake = work / 'slow_psql.py'
+    work.mkdir(parents=True, exist_ok=True)
+    fake.write_text('import time\ntime.sleep(2)\n', encoding='utf-8')
+    env = {'ERD_PSQL': f'{shlex.quote(sys.executable)} {shlex.quote(str(fake))}',
+           'ERD_QUERY_TIMEOUT': '0.05'}
+    r = run('introspect.py', work, env=env, expect_ok=False)
+    text = r.stdout + r.stderr
+    has(text, '0.05', 'the failure states the limit that stopped the query')
+    if 'Traceback' in text:
+        raise Fail('a database timeout escaped as a raw traceback')
+
+
+@case('artifacts: a failed atomic write leaves the last good file intact')
+def _(work):
+    sys.path.insert(0, str(HERE))
+    import config
+    real_os_name = config.os.name
+    try:
+        config.os.name = 'nt'
+        config._fsync_directory(work)
+    finally:
+        config.os.name = real_os_name
+
+    from config import atomic_output
+    target = work / 'schema.json'
+    work.mkdir(parents=True, exist_ok=True)
+    target.write_text('last-good', encoding='utf-8')
+    try:
+        with atomic_output(target) as tmp:
+            tmp.write_text('partial-new', encoding='utf-8')
+            raise RuntimeError('simulated build failure')
+    except RuntimeError:
+        pass
+    eq(target.read_text(encoding='utf-8'), 'last-good',
+       'the canonical output changes only after its producer succeeds')
+    eq([p.name for p in work.iterdir()], ['schema.json'],
+       'a failed write also cleans its same-directory temporary file')
+
 
 @case('introspect: the same table name in two schemas stays two tables')
 def _(work):
@@ -110,6 +422,23 @@ def _(work):
     eq((s['s1.events']['pk'], s['s2.events']['pk']), (['id'], ['id']),
        "the primary key must not become ['id','id']")
     has(r.stdout, 'events', 'the summary names the table whose name collides')
+
+
+@case('introspect: a comma inside a quoted unique column name stays one column')
+def _(work):
+    sys.path.insert(0, str(HERE))
+    import introspect
+    has(introspect.q_unique(160000), 'i.indisvalid',
+        'an invalid leftover index is not presented as an enforced unique rule')
+    env = db_rows(work, [
+        (COLQ, [['s1', 'contacts', 'last,first', 'text', 'NO', '', 'NO', '']]),
+        ('i.indisunique', [['s1', 'contacts', 'contacts_name_key', 'last,first'],
+                           ['s1', 'contacts', 'contacts_name_uq2', 'last,first']]),
+    ])
+    run('introspect.py', work, env=env)
+    eq(schema_of(work)['contacts']['uniques'], [['last,first']],
+       'catalog attnums, not commas in rendered SQL, define unique columns; duplicate '
+       'indexes on the same set still describe one structural uniqueness rule')
 
 
 @case('introspect: a composite FK is not multiplied into pairs that do not exist')
@@ -411,7 +740,7 @@ def _(work):
                         'c': table('c', [col('id')])})
     (work / 'erd.spec.json').write_text(json.dumps(
         {'areas': [['A', 'one', 'public', ['a', 'b']],
-                   ['B', 'two', 'public', ['b', 'c']]]}))
+                   ['B', 'two', 'public', ['b', 'c']]]}), encoding='utf-8')
     out = run('build_erd.py', work).stdout
     has(out, 'b', 'the table that appears twice is named')
     run('build_html.py', work)
@@ -524,13 +853,68 @@ def _(work):
         for p in (work / 'out').glob('*.png'):
             p.unlink()
         sp = work / 'erd.spec.json'
-        sp.write_text(json.dumps(spec)) if spec else sp.unlink(missing_ok=True)
+        sp.write_text(json.dumps(spec), encoding='utf-8') if spec else sp.unlink(missing_ok=True)
         run('build_erd.py', work, env={'ERD_LANG': lang})
         r = run(str(probe), work, env={'PYTHONPATH': str(HERE)}, expect_ok=False)
         if r.returncode:
             bad.append(f'{what}: {r.stderr.strip().splitlines()[-1]}')
     if bad:
         raise Fail('drawing runs off the canvas:\n      ' + '\n      '.join(bad))
+
+
+# ETL 흐름이 **그림에** 실제로 그어졌는지 세는 자. `ImageDraw` 를 감싸 칠한 것을
+# 받아 적는다 — erd.py 안에 자를 넣지 않는다(재는 코드가 재는 대상 안에 있으면 같이
+# 죽는다). 색은 erd.py 가 ETL 선에만 쓰는 값이라 소스에서 그대로 읽어 온다.
+_ETL_PROBE = '''\
+import json
+import re
+import sys
+from pathlib import Path
+
+from PIL import ImageDraw as RID
+
+import erd
+
+SRC = Path(erd.__file__).read_text(encoding='utf-8')
+m = re.search(r"pending\\.append\\(\\(src, dst, '(#[0-9A-Fa-f]{6})'", SRC)
+if not m:
+    print('the ETL colour is no longer written where this probe reads it', file=sys.stderr)
+    raise SystemExit(2)
+ETL = m.group(1)
+N = {'dashed': 0, 'labels': []}
+
+
+class Rec:
+    def __init__(self, img):
+        self._d = RID.Draw(img)
+        self._on = img.size != (1, 1)     # 1x1 은 자리를 재는 판이지 칠하는 판이 아니다
+
+    def __getattr__(self, name):
+        fn = getattr(self._d, name)
+        if not self._on:
+            return fn
+        if name == 'line':
+            def ln(xy, **kw):
+                if kw.get('fill') == ETL:
+                    N['dashed'] += 1
+                return fn(xy, **kw)
+            return ln
+        if name == 'text':
+            def txt(xy, text, **kw):
+                if 'stroke_width' in kw and text == 'nightly load':
+                    N['labels'].append(text)
+                return fn(xy, text, **kw)
+            return txt
+        return fn
+
+
+erd.ImageDraw = type('m', (), {'Draw': Rec})
+_code, _name, _schema, tables = erd.AREAS[0]
+apos, aboxes, ext = erd.layout_area(tables, with_desc=True)
+erd.draw_erd(erd.OUT / 'etl_probe.png', tables + ext, apos, aboxes, 'probe',
+             with_desc=True, scale=2, stubs=set(ext), legend=True, derives=True)
+print(json.dumps(N))
+'''
 
 
 @case('artifacts: graphml carries the ETL flows the diagram draws')
@@ -542,7 +926,7 @@ def _(work):
     write_schema(work, {'src': table('src', [col('id')]), 'dst': table('dst', [col('id')])})
     (work / 'erd.spec.json').write_text(json.dumps(
         {'areas': [['A', 'one', 'public', ['src', 'dst']]],
-         'derives': [['src', 'dst', 'nightly load'], ['src', 'nowhere', 'ghost flow']]}))
+         'derives': [['src', 'dst', 'nightly load'], ['src', 'nowhere', 'ghost flow']]}), encoding='utf-8')
     run('merge_desc.py', work)
     run('build_erd.py', work)
     run('build_docx.py', work)
@@ -557,6 +941,22 @@ def _(work):
     if 'ghost flow' in text:
         raise Fail('a flow missing from every diagram must not be listed in the docx — '
                    'a reader with only the document would take it for a real one')
+
+    # 14라운드. 이 케이스의 이름은 "the diagram draws" 인데 정작 그림 쪽은 한 번도
+    # 안 봤다 — `erd.py` 의 ETL 블록을 `if False:` 로 막아 그림에서 흐름을 통째로
+    # 지워도 101개가 전부 통과했다. GraphML 만 지우면 잡히고 그림만 지우면 안 잡히니,
+    # 이름이 주장하는 것의 절반이 검사 밖에 있었다 — 11라운드가 이름 붙인 **'안 한
+    # 검사를 통과로 적었다'** 의 축소판이다. 그래서 칠한 것을 센다: ETL 색으로 그은
+    # 점선 세그먼트가 몇 개이고, 그 라벨이 실제로 찍혔는가.
+    probe = work.parent / 'etl_probe.py'
+    probe.write_text(_ETL_PROBE, encoding='utf-8')
+    r = run(str(probe), work, env={'PYTHONPATH': str(HERE)})
+    got = json.loads(r.stdout.strip().splitlines()[-1])
+    if got['dashed'] < 2:
+        raise Fail(f'the diagram painted {got["dashed"]} ETL segment(s) — the flow this '
+                   f'case is named after is only in the GraphML, not on the picture')
+    eq(got['labels'], ['nightly load'],
+       'and the flow the diagram draws is labelled, once, with the real flow')
 
 
 @case('artifacts: html names the schema when two tables share a name')
@@ -591,7 +991,7 @@ def _(work):
         'doc': {'meta': [['name', 'v', 'k', 'v2', 'one cell too many'],
                          ['short']],
                 'mapping': [['1', 'a', 'b', 'c', 'd', 'e', 'f'], ['2', 'a']],
-                'open_items': [['x'], ['y', 'z', 'w', 'q', 'r']]}}))
+                'open_items': [['x'], ['y', 'z', 'w', 'q', 'r']]}}), encoding='utf-8')
     run('merge_desc.py', work)
     run('build_erd.py', work)
     r = run('build_docx.py', work)
@@ -614,7 +1014,7 @@ def _(work):
 
     def merge(labels, ok=True):
         # 라벨은 argv 로 받는다. run() 은 인자를 붙일 자리가 없으니 작은 실행기를 둔다.
-        drv = work / f'merge_{"_".join(labels)}.py'
+        drv = work / f'merge_{len(list(work.glob("merge_*.py")))}.py'
         drv.write_text(f'import sys\nsys.path.insert(0, {str(HERE)!r})\n'
                        f'sys.argv = ["merge_schemas.py"] + {labels!r}\n'
                        'import merge_schemas\nmerge_schemas.main()\n', encoding='utf-8')
@@ -624,6 +1024,11 @@ def _(work):
     if 'Traceback' in r.stderr:
         raise Fail(f'no argument should be a usage message:\n{r.stderr[-300:]}')
     has(r.stdout + r.stderr, 'merge_schemas', 'the message says how to call it')
+
+    r = merge(['../../outside'], ok=False)                 # 경로가 되는 라벨
+    if 'Traceback' in r.stderr:
+        raise Fail(f'an unsafe label should be a message:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, '../../outside', 'the message names the invalid label')
 
     r = merge(['shop', 'nosuch'], ok=False)                # 없는 라벨
     if 'Traceback' in r.stderr:
@@ -635,12 +1040,41 @@ def _(work):
         raise Fail(f'a truncated schema.*.json must not traceback:\n{r.stderr[-300:]}')
     has(r.stdout + r.stderr, 'schema.mart.json', 'the message names the file that is broken')
 
+    (work / 'schema.mart.json').write_text('[]', encoding='utf-8')
+    r = merge(['mart'], ok=False)                          # JSON 이지만 스키마 객체가 아님
+    if 'Traceback' in r.stderr:
+        raise Fail(f'a non-object schema must not traceback:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'schema.mart.json', 'the message names the malformed schema')
+
+    (work / 'schema.mart.json').write_text('{"missing_columns": {}}', encoding='utf-8')
+    r = merge(['mart'], ok=False)
+    if 'Traceback' in r.stderr:
+        raise Fail(f'a part without columns must not traceback:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'columns', 'the missing required part field is named')
+
+    (work / 'schema.a.json').write_text(json.dumps(
+        {'b.orders': table('orders', [col('id')])}), encoding='utf-8')
+    (work / 'schema.a.b.json').write_text(json.dumps(
+        {'orders': table('orders', [col('id')])}), encoding='utf-8')
+    r = merge(['a', 'a.b'], ok=False)                      # 둘 다 a.b.orders 가 됨
+    if 'Traceback' in r.stderr:
+        raise Fail(f'colliding labelled keys must not traceback:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'a.b.orders', 'the message names the colliding table key')
+
     (work / 'schema.mart.json').write_text(json.dumps(
         {'gone': table('gone', [col('id')])}), encoding='utf-8')
     out = merge(['shop', 'mart']).stdout
     s = schema_of(work)
-    eq(sorted(s), ['gone', 'orders'], 'both parts land in one schema')
-    eq(s['orders']['fks'], [],
+    # 16R — 기대값이 `['gone', 'orders']` 였다. merge_schemas.py 가 라벨을 안 붙이고
+    # `merged.update(part)` 만 하던 시절의 값이다. 그 한 줄 때문에 두 DB 에 같은 이름의
+    # 테이블이 있으면 하나가 **말없이 삼켜졌고**(합계까지 1+1=1 로 찍혔다), 정작 이
+    # 파일의 docstring·README·SKILL 은 셋 다 "테이블 키는 `<라벨>.<테이블명>`" 이라고
+    # 적고 있었다. 라벨을 붙이는 쪽으로 고쳤으므로 기대값도 문서가 약속하는 값으로
+    # 옮긴다 — 이 케이스가 재는 것(깨진 part 를 역추적 없이 설명하는가, 갈 곳 없는
+    # FK 를 버리는가)은 그대로다. 새 동작 자체는 selftest_build.py 의
+    # `merge_schemas: two databases that share a table name stay two tables` 가 잰다.
+    eq(sorted(s), ['mart.gone', 'shop.orders'], 'both parts land in one schema')
+    eq(s['shop.orders']['fks'], [],
        'an FK whose parent is in neither part is dropped, not left dangling')
     has(out, '1', 'and the summary counts what it dropped')
 
@@ -690,6 +1124,30 @@ def _(work):
     run('introspect.py', work, env=db_rows(work, [
         (COLQ, [['s1', 't', 'id', 'bigint', 'NO', '', 'NO', '']])], FAKE_PG_VER='90400'))
     eq(sorted(schema_of(work)), ['t'], 'PostgreSQL 9.4 is supported, not refused')
+
+    # 14라운드. 위 두 벌은 **숫자 비교 관문을 한 번도 지나가지 않는다.** 9.3 쪽은
+    # 값이 빈 문자열로 오는 바람에 `isdigit()` 분기에서 먼저 걸리고, 9.4 쪽은 통과하는
+    # 쪽이다. 그래서 `if ver < MIN_PG` 의 하한을 0 으로 내려 잡아도 101개가 전부
+    # 통과했다 — 케이스 주석은 '하한을 올려 잡지는 않는지 지킨다' 고 적어 놓고
+    # **내려** 잡는 쪽은 아무도 안 보고 있었다.
+    #
+    # 두 관문이 하필 같은 숫자(9.4)를 쓰는 탓에 가짜 서버로는 뒤엣것에 닿을 수가
+    # 없었다. FAKE_PG_ALIAS 로 '별칭은 제대로 쓰는데 버전은 하한 미만' 인 서버를
+    # 만들어 관문 자체를 지나가게 한다. 오늘의 두 숫자가 같다는 것은 우연이고,
+    # 하한이 언젠가 올라가면(MIN_PG 는 문서가 약속하는 값이다) 그때 실제로 갈린다 —
+    # 여기서 멈추지 않으면 반쯤 읽은 문서가 나온다.
+    (work / 'schema.json').unlink(missing_ok=True)
+    r = run('introspect.py', work, expect_ok=False, env=db_rows(
+        work, [(COLQ, [['s1', 't', 'id', 'bigint', 'NO', '', 'NO', '']])],
+        FAKE_PG_VER='90399', FAKE_PG_ALIAS='1'))
+    if r.returncode == 0:
+        raise Fail('a server just below the floor answered every query and was '
+                   'documented — the version gate never actually compares numbers')
+    if 'Traceback' in r.stderr:
+        raise Fail(f'the floor must be a message, not a traceback:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, '9.4', 'and the message still names the version this needs')
+    if (work / 'schema.json').exists():
+        raise Fail('a refused server must not leave a schema behind either')
 
 
 @case('config: an empty ERD_DOCNAME does not make a hidden file')
@@ -817,18 +1275,29 @@ def _(work):
 def _(work):
     # 초기 라운드. 카탈로그를 못 읽으면 조용히 영어로 떨어졌다 — 번역이 깨진 것을
     # 아무도 모른다. 지금은 그림은 계속 그리되 왜 말이 바뀌었는지 알려 준다.
-    lang_dir = HERE / 'lang'
-    broken = lang_dir / 'zz.py'
-    broken.write_text('M = {  # 일부러 깨뜨린다\n', encoding='utf-8')
-    try:
-        write_schema(work, {'t': table('t', [col('id')])})
-        r = run('build_erd.py', work, env={'ERD_LANG': 'zz'})
-        has(r.stdout + r.stderr, 'zz',
-            'a catalog that will not load must name itself, not fall through in silence')
-    finally:
-        broken.unlink(missing_ok=True)
-        for p in lang_dir.glob('__pycache__/zz.*'):
-            p.unlink(missing_ok=True)
+    #
+    # 15라운드. 이 케이스는 깨진 카탈로그를 **검사 대상 트리 안**(`scripts/lang/zz.py`)
+    # 에 쓰고 `finally` 에서 지웠다. 시험 벌 전체에서 공유 가변 상태를 쓰는 유일한
+    # 자리였고, 그래서 시험을 두 벌 동시에 돌리면 한쪽의 `unlink` 가 다른 쪽의
+    # `build_erd` 가 `lang.zz` 를 읽기 전에 파일을 지워 **이 케이스만** 간헐로 붉었다
+    # (병렬 16회 중 7회, 매번 여기). 프로세스가 중간에 죽으면 `zz.py` 가 트리에 남아
+    # 그다음 사람의 `git status` 를 더럽혔다. 14라운드 내내 수정자 둘이 본 '가끔 나는
+    # 실패' 의 정체가 이것이다.
+    #
+    # 그래서 카탈로그 트리째 임시 디렉터리에 복사해 거기서 잰다. `run()` 은 절대
+    # 경로를 그대로 받으므로(`HERE / '/abs'` 는 `/abs`), 복사본의 `build_erd.py` 를
+    # 부르면 그 프로세스의 `sys.path[0]` 이 복사본 쪽이 되어 `lang` 도 복사본 것을
+    # 읽는다. **시험은 검사 대상 트리에 아무것도 쓰지 않는다.**
+    tree = work.parent / 'scripts'
+    shutil.copytree(HERE, tree, symlinks=True,
+                    ignore=shutil.ignore_patterns('__pycache__', 'out', 'erd-build'))
+    (tree / 'lang' / 'zz.py').write_text('M = {  # 일부러 깨뜨린다\n', encoding='utf-8')
+    if (HERE / 'lang' / 'zz.py').exists():
+        raise Fail('the broken catalog was written into the tree under test, not the copy')
+    write_schema(work, {'t': table('t', [col('id')])})
+    r = run(str(tree / 'build_erd.py'), work, env={'ERD_LANG': 'zz'})
+    has(r.stdout + r.stderr, 'zz',
+        'a catalog that will not load must name itself, not fall through in silence')
 
 
 @case('verify: every check on a diagram that routes lines is a real number')
@@ -961,7 +1430,7 @@ def _(work):
     counts = []
     for _ in range(2):
         run('build_erd.py', work, env={'ERD_VERIFY_LOG': str(good)})
-        counts.append(len(good.read_text().strip().splitlines()))
+        counts.append(len(good.read_text(encoding='utf-8').strip().splitlines()))
     eq(counts[0], counts[1], 'the log holds one run, not every run ever')
 
 
@@ -972,10 +1441,18 @@ def _(work):
     # erd·html 은 넘어간 뒤 build_docx 가 lxml 에서 죽어 사용자에게 반 벌만 남는다.
     # 기본값은 아무도 안 씻어서 raw \x1f 가 HTML 까지 갔다. introspect 가 값을 있는
     # 그대로 실어 오는 것은 제 일이 맞다 — 받고도 안 무너지는 것이 쓰는 쪽 몫이다.
+    #
+    # 14라운드. 여기가 쓰던 문자는 `\n`·`\x1e`·`\x1f`·`\x0b` 넷뿐이었는데, 파이썬
+    # `str.split()` 이 그 넷을 이미 공백으로 쳐서 **`config._CTRL` 을 통째로 비워도**
+    # 이 케이스가 초록이었다. `_CTRL` 이 실제로 일하는 자리는 `split()` 이 손대지
+    # 않는 문자들이다 — `'a\x1eb\x00c\x07d'.split()` 은 `\x00`·`\x07` 를 그대로
+    # 통과시킨다. 그 셋(`\x00`·\x07`·`\x7f`)을 fixture 와 아래 검사 목록에 함께 넣는다.
     write_schema(work, {
         'ok': table('ok', [col('id')]),
         'bad\nname': table('bad\nname', [col('id')]),
-        'rs': table('rs', [col('id'), col('c\x1ed', 'text', default='x\x1fy')])})
+        'nul\x00bell\x07': table('nul\x00bell\x07', [col('id')]),
+        'rs': table('rs', [col('id'),
+                           col('c\x1ed\x00e\x07f', 'text', default='x\x1fy\x7fz')])})
     for script in ('merge_desc.py', 'build_erd.py', 'build_html.py', 'build_docx.py'):
         r = run(script, work, expect_ok=False)
         if r.returncode:
@@ -985,16 +1462,55 @@ def _(work):
         raise Fail('no diagram came out — a half set is worse than a clear failure')
     for name in ('T.html', 'T.graphml'):
         text = (work / name).read_text(encoding='utf-8')
-        stray = [repr(ch) for ch in '\x1e\x1f\x0b' if ch in text]
+        stray = [repr(ch) for ch in '\x1e\x1f\x0b\x00\x07\x7f' if ch in text]
         if stray:
             raise Fail(f'{name} carries raw control characters {", ".join(stray)} — '
                        'yEd and browsers reject the file')
     if not (work / 'T.docx').exists():
         raise Fail('the docx was never written')
 
+    # 두 위험한 키를 같은 안전한 키로 바꿀 수는 없다. 예전에는 충돌을 알아챈 뒤에도
+    # 원래 제어문자 키를 그대로 렌더러에 넘겨, 조용한 유실 대신 뒤 단계의 크래시가 났다.
+    write_schema(work, {
+        'same\nkey': table('same\nkey', [col('id')]),
+        'same key': table('same key', [col('id')]),
+    })
+    r = run('build_erd.py', work, expect_ok=False)
+    if 'Traceback' in r.stderr:
+        raise Fail(f'clean-key collision must be a message:\n{r.stderr[-300:]}')
+    has(r.stdout + r.stderr, 'same key', 'the collision message names the resulting key')
+
+    # JSON 문법만 맞고 최상위가 배열인 파일도 입력 스키마는 아니다. 설명 병합과
+    # 렌더러 어느 쪽을 먼저 실행하든 같은 파일 이름을 대고 멈춰야 한다.
+    (work / 'schema.json').write_text('[]', encoding='utf-8')
+    for script in ('merge_desc.py', 'build_erd.py'):
+        r = run(script, work, expect_ok=False)
+        if 'Traceback' in r.stderr:
+            raise Fail(f'{script} must explain a non-object schema:\n{r.stderr[-300:]}')
+        has(r.stdout + r.stderr, 'schema.json', 'the malformed schema is named')
+
+    malformed = (
+        {'t': {'columns': 'id'}},
+        {'t': {'columns': [{'name': 1}]}},
+        {'t': {'columns': [], 'pk': [1]}},
+        {'t': {'columns': [], 'fks': [{}]}},
+        {'t': {'columns': [], 'uniques': ['id']}},
+        {'t': {'schema': 1, 'columns': []}},
+        {'t': {'columns': [{'name': 'id', 'not_null': 'NO'}]}},
+        {'t': {'columns': [], 'indexes': [{'name': 'i', 'def': 1}]}},
+    )
+    for i, schema in enumerate(malformed):
+        (work / 'schema.json').write_text(json.dumps(schema), encoding='utf-8')
+        for script in ('merge_desc.py', 'build_erd.py'):
+            r = run(script, work, expect_ok=False)
+            if 'Traceback' in r.stderr:
+                raise Fail(f'{script} tracebacked on malformed schema field {i}: '
+                           f'{r.stderr[-300:]}')
+            has(r.stdout + r.stderr, 't', 'the malformed table is named')
+
 
 # ── 그린 것을 픽셀로 되짚는 자리 ─────────────────────────────────────────────
-# 15라운드. 다섯 카운터는 전부 **계획한 좌표**를 읽는다 — 어디에 그리기로 했는지.
+# 14라운드. 다섯 카운터는 전부 **계획한 좌표**를 읽는다 — 어디에 그리기로 했는지.
 # 그러니 결함이 좌표가 아니라 **칠하는 순서**에 있으면 다섯 다 0 을 찍는다. 자기참조
 # 라벨이 노드보다 먼저 칠해져 테이블에 지워지고 있었는데, 카운터는 '라벨을 거기
 # 뒀다' 만 알고 '그 라벨이 아직 보이는가' 는 아무도 묻지 않았다. 눈으로도 못 잡는다 —
@@ -1145,7 +1661,7 @@ def _long_name_fixture(work, n=9):
 
 
 def _self_ref_fixture(work, n=11, k=3):
-    """자기참조가 테이블마다 k 개 — 15라운드의 재현 스키마 그대로.
+    """자기참조가 테이블마다 k 개 — 14라운드의 재현 스키마 그대로.
 
     하나로는 안 난다. 라운드 13·14 의 퍼저가 테이블당 자기참조를 **하나만** 뒀고,
     그래서 '무작위 200판에 경고 0' 이 셋 이상에서 거짓인 것을 두 라운드가 못 봤다.
@@ -1172,7 +1688,7 @@ def _paint(work, mode):
     e.update({'ERD_WORK': str(work), 'ERD_PROJ': str(work), 'ERD_LANG': 'en',
               'ERD_DOCNAME': 'T', 'ERD_SVG': '0'})
     r = subprocess.run([sys.executable, '-c', _PAINT_PROBE, mode],
-                       capture_output=True, text=True, env=e, cwd=str(HERE))
+                       capture_output=True, text=True, encoding='utf-8', env=e, cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'the paint probe died:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -1180,7 +1696,7 @@ def _paint(work, mode):
 
 @case('render: a self-reference label is still there after the tables are painted')
 def _(work):
-    # 15라운드. README 는 '라벨은 노드 **다음에** 그린다. 안 그러면 노드가 덮는다' 고
+    # 14라운드. README 는 '라벨은 노드 **다음에** 그린다. 안 그러면 노드가 덮는다' 고
     # 못박아 두었고, 자기참조 라벨 옆 주석은 '다른 라벨과 같은 대우' 라고 적어 두었다.
     # 둘 다 거짓이었다 — 그 라벨만 노드 블록 **앞에서** 바로 그려졌고, 자리도
     # pts[1][0]-6 에 못박혀 후보 탐색이 없었다. 테이블에 걸친 라벨은 그대로 지워졌다.
@@ -1217,7 +1733,7 @@ def _(work):
 
 @case('render: a self-reference loop is not painted through a table')
 def _(work):
-    # 15라운드. `slot()` 은 **다른 선**만 피하고 테이블은 피하지 않는다. 통로 라우터는
+    # 14라운드. `slot()` 은 **다른 선**만 피하고 테이블은 피하지 않는다. 통로 라우터는
     # gutter_bounds() 로 테이블을 피하는데 자기참조 팔은 그 장치를 쓰지 않아,
     # x 가 x1-600..x1-12 라는 넓은 창 안에서 아무 데나 잡혔다 — 그 '아무 데' 가
     # 왼쪽 테이블 속이었다. 선은 노드보다 먼저 칠하므로 눈에도 안 보인다.
@@ -1255,7 +1771,7 @@ def _(work):
 
 @case('verify: the two label checks use one box and one rule')
 def _(work):
-    # 15라운드. `라벨↔라벨` 만 잉크로 재도록 고치고 `라벨↔테이블` 은 자리 잡기용 여백
+    # 14라운드. `라벨↔라벨` 만 잉크로 재도록 고치고 `라벨↔테이블` 은 자리 잡기용 여백
     # 상자를 그대로 뒀다. 게다가 맞닿음 규칙이 **서로 반대**였다 — 라벨↔테이블은
     # `b[2] < o[0]` 라 스치기만 해도 세고, 라벨↔라벨은 `<=` 라 안 셌다. 같은 것을
     # 재면서 다른 자를 쓴 것이고, 이 저장소가 다섯 번 되풀이한 '같은 버그를 반만
@@ -1300,7 +1816,7 @@ print(json.dumps({
         placed(100.0, 100.0 + (ink[3] - ink[1]) + halo), f, S)),
 }))
 '''
-    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True,
+    r = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True, encoding='utf-8',
                        env=e, cwd=str(HERE))
     if r.returncode != 0:
         raise Fail(f'the label rule probe died:\n{r.stdout}\n{r.stderr}')
@@ -1378,7 +1894,7 @@ _LIVE = {}
 
 def _sh(*argv, **kw):
     import subprocess
-    return subprocess.run(argv, capture_output=True, text=True, **kw)
+    return subprocess.run(argv, capture_output=True, text=True, encoding='utf-8', **kw)
 
 
 def pg(image, partitions=False):
@@ -1448,6 +1964,8 @@ def _register_db_cases():
         _r, s = introspect_live(work, DB_NEW)
         eq(fks_of(s, 'readings'), [('dev_serial', 'devices', 'serial', 'CASCADE')],
            'an FK whose parent is unique only by index must still be a relationship')
+        eq(s['devices']['uniques'], [['serial']],
+           'the standalone unique index is also documented as a unique key')
 
     @case('db: a composite FK pairs its columns by position')
     def _(work):
@@ -1513,13 +2031,33 @@ def _register_db_cases():
 
 
 DB_NEW, DB_OLD = 'postgres:16-alpine', 'postgres:10-alpine'
-_DB_CASES = 6
+
+
+def _db_case_count():
+    """`_register_db_cases()` 안에 `@case` 가 몇 개인지 — 손으로 적지 않는다.
+
+    14라운드. 이 수는 `_DB_CASES = 6` 이라고 손으로 적혀 있었고, 안에서 케이스를
+    하나 더하거나 지워도 아무도 몰랐다. '여섯 개는 안 돌렸다' 는 줄은 사용자가
+    보는 유일한 안내라, 그 줄의 숫자가 함수와 어긋나면 조용한 거짓말이 된다.
+    """
+    import inspect
+    src = inspect.getsource(_register_db_cases)
+    return sum(1 for ln in src.splitlines() if ln.strip().startswith('@case('))
+
+
+_DB_CASES = _db_case_count()
+_DB_RAN = False
 if DOCKER and DOCKER.lower() not in ('0', 'no', 'off'):
     if DOCKER not in ('1', 'yes', 'on'):
         DB_NEW = DOCKER.split(',')[0].strip()
         if ',' in DOCKER:
             DB_OLD = DOCKER.split(',')[1].strip()
+    _before_db = len(CASES)
     _register_db_cases()
+    if len(CASES) - _before_db != _DB_CASES:
+        raise RuntimeError(f'_register_db_cases() registered {len(CASES) - _before_db} '
+                           f'cases but its source holds {_DB_CASES} @case lines')
+    _DB_RAN = True
 else:
     # 안 돌린 것을 결과 옆에 적어 둔다. 함께 돌 때도 보여야 한다 — 그러지 않으면
     # `install.sh --check` 를 본 사람은 여섯 개가 있다는 것을 영영 모른다.
@@ -1527,6 +2065,72 @@ else:
                  f'(ERD_SELFTEST_DOCKER=1 runs them against {DB_NEW} and {DB_OLD}).')
 
 
+@case('selftest: the line that says what was skipped is itself checked')
+def _(work):
+    # 14라운드. 그 줄을 만드는 `NOTES.append(...)` 를 통째로 지워도 101개가 전부
+    # 통과했다 — 줄만 조용히 사라진다. 집계 자체는 정직하다(도커 케이스는 등록이
+    # 안 되므로 분모에 안 들어가고, 건너뜀이 통과로 세어지지 않는다). 정직하지 않은
+    # 것은 **안 돌렸다는 사실을 말하지 않게 되는 것**이라, 그 말을 여기서 지킨다.
+    #
+    # 15라운드. 그런데 세는 쪽과 확인하는 쪽이 **같은 함수**를 읽고 있었다.
+    # `_db_case_count()` 의 `ln.strip().startswith('@case(')` 에서 `.strip()` 하나만
+    # 빼면(줄이 들여쓰여 있으므로) 수가 0 이 되는데, 이 케이스도 그 0 을 읽으니
+    # 자기일관이라 초록이었다 — 사용자에게는 `0 cases need a real server and were
+    # NOT run` 이 찍힌다. 손으로 적은 `6` 의 문제를 없앤 것이 아니라 **한 겹 안으로
+    # 옮긴** 것이다. 그래서 확인하는 쪽은 **다른 근거**를 쓴다: 줄을 훑는 대신
+    # 소스를 AST 로 파싱해 `_register_db_cases()` 안의 `@case` 데코레이터를 센다.
+    # 두 수가 어긋나면 어느 쪽이 틀렸든 여기서 죽는다.
+    import ast
+    fn = next((n for n in ast.walk(ast.parse(
+                   (HERE / 'selftest_schema.py').read_text(encoding='utf-8')))
+               if isinstance(n, ast.FunctionDef) and n.name == '_register_db_cases'), None)
+    if fn is None:
+        raise Fail('selftest_schema.py no longer defines _register_db_cases()')
+    by_ast = sum(1 for n in ast.walk(fn)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not fn
+                 and any(isinstance(d, ast.Call) and getattr(d.func, 'id', '') == 'case'
+                         for d in n.decorator_list))
+    if by_ast <= 0:
+        raise Fail('no @case lives inside _register_db_cases() — then the line that '
+                   'tells the reader "N cases need a real server" is describing nothing')
+    eq(_DB_CASES, by_ast,
+       'the number the skipped-cases line prints must be read from a different place '
+       'than the one that prints it — a counter checked by itself can lie quietly')
+    mine = [n for n in NOTES if 'need a real server' in n]
+    if _DB_RAN:
+        if mine:
+            raise Fail(f'the database cases ran, so nothing may claim they did not: '
+                       f'{mine}')
+        got = sum(1 for n, _f in CASES if n.startswith('db: '))
+        eq(got, _DB_CASES, 'and every case the register function holds is on the list')
+        return
+    eq(len(mine), 1, 'exactly one line tells the reader that some cases did not run')
+    # 16라운드. 여기가 `has(mine[0], str(_DB_CASES), …)` 였다 — **부분 문자열**이다.
+    # `NOTES.append(f'{_DB_CASES - 5} …')` 로 바꾸면 화면에 `1 cases need a real
+    # server` 가 찍히는데도 초록이었다: 같은 줄에 `postgres:16-alpine` 이 있어서
+    # 바늘 `'6'` 이 그 16 안에서 찾아졌다. `_DB_CASES` 는 AST 로 지켰는데 **사용자가
+    # 읽는 문장**은 아무도 안 지키고 있었다 — 15라운드가 '자기일관적 거짓말' 이라
+    # 이름 붙인 결함이 한 겹 바깥에 그대로 남아 있었다. 문장이 말하는 수를 문장에서
+    # 도로 뽑아 수로 맞춘다.
+    said = re.match(r'\s*(\d+) cases need a real server\b', mine[0])
+    if not said:
+        raise Fail(f'the skipped-cases line no longer starts with the number of cases '
+                   f'it is talking about: {mine[0]!r}')
+    eq(int(said.group(1)), _DB_CASES,
+       'the number printed in front of the reader is the number of cases that did not '
+       'run — a count checked only as a substring is found inside "postgres:16-alpine"')
+    for piece in ('ERD_SELFTEST_DOCKER=1', DB_NEW, DB_OLD):
+        has(mine[0], piece, 'the skipped-cases line names what it takes to run them')
+    if any(n.startswith('db: ') for n, _f in CASES):
+        raise Fail('a db case is on the list although no server was asked for — then '
+                   'the tally would count a skip as a pass')
+
+
+# 이 파일이 올리는 케이스 수. 등록이 조용히 반만 되는 자리를 `load_extras()` 가 여기서
+# 막는다 — 숫자가 어긋나면 그 자리에서 죽는다. 케이스를 더하면 이 수도 함께 고친다.
+BASE_CASES = 58
+EXPECT_CASES = BASE_CASES + (_DB_CASES if _DB_RAN else 0)
+
+
 if __name__ == '__main__':
-    # 따로 돌리면 목록에 이 파일 것만 올라와 있다 (selftest.py 를 안 거쳤으므로).
-    sys.exit(main())
+    sys.exit(main(load_all=False))

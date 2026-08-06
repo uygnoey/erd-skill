@@ -48,6 +48,7 @@ M = {
     # ── tabla de columnas ─────────────────────────────────────────────────
     'col.name': 'Columna',
     'col.type': 'Tipo',
+    'col.null': 'Nulo',
     'col.default': 'Por defecto',
     'col.key': 'Clave / Ref',
     'col.desc': 'Descripción',
@@ -61,6 +62,8 @@ M = {
     'html.rows_note': 'rows ≈ es una estimación basada en estadísticas',
     'html.toc': 'Índice',
     'html.db_tables': 'BD: {db} · tablas: {n}',
+    'html.badge_cols': 'cols: {n}',
+    'html.badge_tables': '{n} tablas',
     'html.overall': 'Estructura general',
     'html.overview_cap': '{title} — vista general de la estructura (tablas: {n} · solo relaciones)',
     'html.area_cap': '{name} — ERD detallado del área',
@@ -195,13 +198,29 @@ M = {
     'err.font_none': 'No se encontró ninguna fuente {kind}. Ejecute install.sh o defina '
                      '{env} manualmente.\n  Rutas revisadas: {looked}',
     'err.merge_usage': 'uso: python3 merge_schemas.py <etiqueta> <etiqueta> …',
+    'err.merge_label': 'etiqueta de base de datos no válida: {label!r}. Use una etiqueta simple y segura para nombres de archivo.',
+    'err.merge_collision': 'la etiqueta de base de datos {label!r} produce claves de tabla duplicadas: {tables}',
     'err.merge_missing': '{path} no existe. Ejecute antes introspect.py con '
                          'ERD_LABEL={label}.',
     'err.no_sql_dir': 'no existe el directorio de DDL: {path}  (defínalo con ERD_SQL_DIR)',
+    'err.sql_file_outside': '{env} contiene una ruta fuera de {path}: {value}',
     'err.spec_no_area': 'las áreas de {path} no nombran ninguna tabla existente.',
+    'err.spec_dup_code': '{path}: dos áreas usan el mismo código de área {code} (la otra se escribe {other}).\n'
+                         '  Los códigos de área se convierten en nombres de archivo ({file}) y, en macOS y\n'
+                         '  Windows, dos códigos que solo difieren en mayúsculas o en forma Unicode son el\n'
+                         '  mismo archivo: un diagrama sobrescribiría al otro en silencio. Use códigos distintos.',
     'err.spec_layer': 'la capa {key} está mal formada: {value}\n'
                       '  se espera [relleno, cabecera, borde, etiqueta] con colores #rrggbb',
     'err.spec_json': '{path} no es JSON válido: {err}',
+    'err.schema_shape': '{path} debe contener un objeto JSON cuyos valores sean objetos de tabla.',
+    'err.schema_field': '{path}: el campo {field} de la tabla {table!r} debe ser {want}, no {got}.',
+    'err.schema_key_collision': 'las claves de tabla se duplican al limpiar caracteres no seguros: {tables}',
+    'err.fig_unregistered': 'el diagrama {stem} no tiene número de figura — fig_numbers() de '
+                            'build_erd.py no lo incluye.\n'
+                            '  Cada diagrama que dibuja este script toma su número de esa lista, y ese '
+                            'número se dibuja dentro de la propia imagen, no solo en el pie — un '
+                            'diagrama sin registrar saldría con un número distinto al de su pie.\n'
+                            '  Registrados: {known}',
     'err.stale_figs': '{n} diagramas son más antiguos que {path}: {list}\n'
                       '  Representan un esquema anterior — el documento diría una cosa '
                       'en las tablas y otra en las figuras.\n'
@@ -216,19 +235,57 @@ M = {
                         '  No se escribió nada. Una ejecución que solo leyó parte del '
                         'esquema produce un documento que parece completo y no lo está.',
     'err.query_truncated': 'el resultado se cortó en medio de una fila',
+    'err.query_timeout': 'la consulta de la base de datos superó {seconds} segundos',
+    'err.timeout_number': 'use cero o un número positivo de segundos',
+    'err.env_not_dir': '{env}: {path} no es un directorio — ya hay otra cosa ahí.',
+    'err.env_not_file': '{env}: {path} no es un archivo legible.',
+    'err.env_bad': 'no se puede usar {env}: {why}\n  valor: {value}',
+    'err.env_empty': '{env} está definido pero vacío. Dele un valor o quítelo para usar '
+                     'el predeterminado.',
+    'err.env_name': '{env}={value} no puede formar parte de un nombre de archivo. '
+                    'Pruebe {safe}.',
+    'err.spec_type': '{path}: "{key}" debe ser {want} — se recibió {got}.',
+    'err.spec_root': '{path} debe ser un objeto JSON con claves como "areas" — '
+                     'se recibió {got}.',
 
     # ── salida de progreso ────────────────────────────────────────────────
     'log.query_fail': '  [aviso] falló la consulta a la base de datos: {err}',
     'log.query_incomplete': '  [aviso] no se pudo leer: {list} — al documento le faltan '
                             'exactamente esas partes',
+    'log.ddl_alter_unsupported': '  [aviso] cláusula ALTER TABLE no admitida en {table}: {clause}',
+    'log.psql_undecodable': '  [aviso] la respuesta de la base de datos no era UTF-8 válido — '
+                            'esos caracteres quedan como � en el documento.\n'
+                            '          PGCLIENTENCODING={enc} se define para el psql que lanzamos, '
+                            'pero un envoltorio (docker, ssh) no lo cruza.\n'
+                            '          Póngalo dentro del propio comando ERD_PSQL: '
+                            'docker exec -e PGCLIENTENCODING={enc} … / '
+                            'ssh host PGCLIENTENCODING={enc} psql …',
+    'log.ddl_not_in_db': '  [aviso] {n} tablas no se encontraron en los esquemas consultados '
+                         '({schemas}) — se dibujan como cajas con solo el nombre: {list}',
     'log.spec_empty': '  [aviso] áreas sin ninguna tabla utilizable, omitidas: {list}',
     'log.spec_dup': '  [aviso] {n} tablas aparecen en más de un área — se quedan en la primera: {list}',
     'log.spec_missing': '  [aviso] el spec nombra {n} tablas que no están en el esquema: {list}',
+    'log.max_areas_spec': '  [aviso] {env}={value}, pero {path} nombra sus propias áreas — se dibujan las {n}\n'
+                          '          (el límite solo se aplica a las áreas automáticas; manda el spec)',
+    'log.spec_orphan': '  [aviso] {n} tablas no están en ninguna área del spec — se agrupan '
+                       'en un área adicional para que igual se dibujen: {list}',
+    'log.spec_unknown': '  [aviso] {n} claves de primer nivel del spec no se reconocen y se '
+                        'ignoraron: {list}\n'
+                        '    claves conocidas: {known}  (las que empiezan por _ son comentarios)',
+    'log.env_not_flag': '  [aviso] {env}={value} no es un valor sí/no — se usa {used} '
+                        '(apagan: 0 false no off n, o vacío)',
+    'log.env_not_number': '  [aviso] {env}={value} no es un número — se usa {default}',
+    'log.env_clamped': '  [aviso] {env}={value} está por debajo del mínimo — se usa {used}',
+    'log.default_pk_skipped': '  [aviso] ERD_DEFAULT_PK={column}: {n} tablas se quedan sin '
+                              'clave primaria porque no tienen esa columna: {list}',
+    'log.ref_tables_ignored': '  [aviso] ERD_REF_TABLES está definido pero ERD_REF_SCHEMA no — '
+                              'no se trajeron {n} tablas: {list}',
     'log.introspected': 'tablas: {tables} · columnas: {columns} · FK: {fks} → {path}',
     'log.desc_from_db': '  descripciones de columna tomadas de comentarios de la BD: {n}/{total}',
     'log.desc_rest': '  → complete el resto con merge_desc.py',
     'log.dup_names': '  {n} nombres de tabla existen en más de un esquema — la clave pasa a ser esquema.tabla: {list}',
     'log.exclude_rule': '  regla de exclusión: {rule}',
+    'log.exclude_dropped': '  la regla de exclusión quitó {n} tablas: {list}',
     'log.fk_dropped': '  FK descartadas por apuntar fuera del objetivo: {n}',
     'log.per_schema': '  [{schema}] {n}',
     'log.doc_missing': '  [aviso] no se encontró el documento ERD_DOC_HTML: {path}',
@@ -248,17 +305,18 @@ M = {
     'log.png_full': 'PNG  ERD completo → {name} {size}',
     'log.png_area': 'PNG  área {code} {name} ({n} + {ext} refs) → {file}  {size}',
     'log.scale_down': '    [nota] {name}: diagrama demasiado grande, escala reducida a {s}×',
-    'log.overlap_at': '      solape: en {a}  [{s0}~{s1}] vs [{t0}~{t1}]',
+    'log.overlap_at': '      solape: en {a}  [{s0}~{s1}] {ea} vs [{t0}~{t1}] {eb}',
     'log.verify': '    verificación {name}: {report}',
     'log.verify_log_fail': '  [aviso] no se pudo escribir ERD_VERIFY_LOG, las figuras siguen '
                            'ahí: {path} — {err}',
     'log.html_done': 'HTML  tablas: {tables} · áreas: {areas} · figuras: {figs}  '
                      '{mb}MB → {name}',
-    'log.html_missing': '  [aviso] áreas sin diagrama ({n}): {list}  '
-                        '→ ejecute antes build_erd.py',
     'log.stale_figs': '  [aviso] se incrustan {n} diagramas más antiguos que el esquema '
                       '(ERD_STALE): {list}',
     'log.docx_saved': 'guardado: {name} ({kb} KB)',
     'log.figs_missing': '  [aviso] diagramas no encontrados, omitidos del documento: '
                         '{n} ({list})  → ejecuta build_erd.py primero',
+    'log.row_truncated': '  [aviso] {where}: {n} fila(s) llevan más celdas de las que '
+                         'caben en esta tabla ({width}) — las celdas sobrantes se '
+                         'descartaron: {list}',
 }

@@ -9,7 +9,6 @@
   doc.open_items   [[…], …]             7장 미반영 항목 (없으면 장 생략)
   doc.mapping_note / doc.open_note      각 장 끝 보충 문단
 """
-import json
 import os
 from pathlib import Path
 
@@ -23,10 +22,15 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 import erd
-from build_erd import require_fresh
-from erd import AREAS, AREA_NAME, AREA_SCHEMA, LAYERS, ROLE, SCHEMA, layer
+from build_erd import (doc_counts, doc_tables, doc_text, fig_caption, meta_cells,
+                       require_fresh)
+from erd import AREAS, LAYERS, ROLE, SCHEMA, layer
 
-from config import DOCNAME, OUT, PROJ
+# 경로 값(OUT·PROJ)은 `config` 를 통해 **쓰는 자리에서** 묻는다 — 그 이름들은 PEP 562
+# 모듈 __getattr__ 로 늦춰져 있어, `from config import OUT` 한 줄이 import 시점에
+# mkdir 을 돌려 부르는 사람의 cwd 에 `erd-build/out` 을 남겼다.
+import config
+from config import DOCNAME, atomic_output
 from erd import SPEC
 from i18n import LANG, t as T
 
@@ -202,6 +206,14 @@ def portrait(doc):
 MAPPING_TABLE = [list(r) for r in DOC.get('mapping', [])]
 OPEN_ITEMS = [list(r) for r in DOC.get('open_items', [])]
 
+# 문서가 절을 내주는 테이블. 본문(4장)은 AREAS 를 돌면서 표지·1.2·4장 머리말은
+# len(SCHEMA) 를 세고 있었다 — 영역에 안 든 테이블이 하나라도 있으면 '11 테이블' 이라
+# 적힌 문서에 절이 10개만 실렸고, 5장 관계표에는 본문에 절이 없는 테이블의 관계가
+# 실렸다. 문서가 제 이야기를 할 때 세는 것과 싣는 것을 같은 자리에서 뽑는다.
+# (그림 캡션의 수는 그림이 그린 것을 세므로 SCHEMA 그대로다.)
+DOC_TABLES = doc_tables()
+N_TABLES, N_COLUMNS, N_FKS = doc_counts(DOC_TABLES)
+
 
 def build():
     # 문서에 박히는 그림은 PNG 뿐이다. 스키마보다 오래된 것이 하나라도 있으면
@@ -227,16 +239,19 @@ def build():
 
     t = table(doc, [T('word.kind'), T('word.content'), T('word.kind'), T('word.content')],
               [2.6, 5.6, 2.4, 5.4], font_size=9.5)
-    meta = [list(r) + [''] * (4 - len(r)) for r in DOC.get('meta', [
-        [T('docx.doc_name'), DOC.get('title', DOCNAME), T('word.tables'), str(len(SCHEMA))],
-        [T('word.columns'), str(sum(len(t['columns']) for t in SCHEMA.values())),
-         T('word.fkeys'), str(sum(len(t['fks']) for t in SCHEMA.values()))],
-    ])]
+    meta = meta_cells(DOC.get('meta', [
+        [T('docx.doc_name'), DOC.get('title', DOCNAME), T('word.tables'), str(N_TABLES)],
+        [T('word.columns'), str(N_COLUMNS), T('word.fkeys'), str(N_FKS)],
+    ]))
     for r in meta:
         cells = row(t, r, [2.6, 5.6, 2.4, 5.4], font_size=9.5, bold_cols=(0, 2))
         shade(cells[0], 'F2F2F2')
         shade(cells[2], 'F2F2F2')
-    if True:  # 마지막 행 병합 (요청 근거)
+    # 마지막 행의 오른쪽 쌍이 비어 있을 때만 왼쪽 내용이 그 자리까지 쓰게 편다.
+    # 예전엔 `if True:` 라 **늘** 폈고, 그래서 spec 이 doc.meta 를 안 준 기본 표지에서
+    # 마지막 행이 `Columns | 5 | FKs | 0` 인데 셋을 하나로 합쳐 한 칸이 `5 FKs 0` 이
+    # 됐다 — 표지가 컬럼 수와 FK 수를 말한다면서 둘을 한 덩어리로 뭉갠 셈이다.
+    if meta and not str(meta[-1][3]).strip():
         last = t.rows[-1]
         last.cells[1].merge(last.cells[3])
 
@@ -247,7 +262,7 @@ def build():
     heading(doc, T('docx.ch1_1'), 2)
     para(doc, DOC.get('purpose', T('docx.purpose')))
     heading(doc, T('docx.ch1_2'), 2)
-    for line in DOC.get('scope', [T('docx.scope_in', n=len(SCHEMA)), T('docx.scope_out')]):
+    for line in DOC.get('scope', [T('docx.scope_in', n=N_TABLES), T('docx.scope_out')]):
         para(doc, line)
     heading(doc, T('docx.ch1_3'), 2)
     para(doc, DOC.get('sources_note', T('docx.sources_note')))
@@ -271,7 +286,8 @@ def build():
               (T('word.dashed'), T('docx.nt_dashed')),
               (T('word.semicircle'), T('docx.nt_hop')),
               (T('word.crowfoot'), T('docx.nt_card')),
-              ('NN', 'NOT NULL')]:
+              ('NN', 'NOT NULL'),
+              ('UQ', T('word.unique'))]:
         row(t, r, [4.2, 12.8], font_size=9)
     para(doc, '')
 
@@ -279,27 +295,29 @@ def build():
     landscape(doc)
     heading(doc, T('docx.ch2'))
     para(doc, T('docx.ch2_intro'))
-    picture(doc, OUT / 'erd_overview.png', 26.0,
-            T('word.fig_no', n=1) + ' ' + T('docx.fig_overview', title=TITLE))
+    picture(doc, config.OUT / 'erd_overview.png', 26.0,
+            fig_caption('erd_overview', T('docx.fig_overview', title=TITLE)))
 
     heading(doc, T('docx.ch2_1'), 2)
     para(doc, T('docx.ch2_1_intro', n=len(SCHEMA)))
-    picture(doc, OUT / 'erd_full.png', 26.0,
-            T('word.fig_no', n=2) + ' ' + T('docx.fig_full', title=TITLE))
+    picture(doc, config.OUT / 'erd_full.png', 26.0,
+            fig_caption('erd_full', T('docx.fig_full', title=TITLE)))
 
     heading(doc, T('docx.ch3'))
     para(doc, T('docx.ch3_intro'))
-    for i, (code, name, schema, tables) in enumerate(AREAS, start=3):
-        heading(doc, T('docx.ch3_area', no=i - 2, code=code, name=name,
+    # 절 번호와 그림 번호가 한 카운터에 얽혀 있어서 `start=3` 에 `no=i-2` 였다.
+    # 그림 번호는 이제 build_erd 의 한 벌에서 오므로 여기 남는 것은 절 번호뿐이다.
+    for no, (code, name, schema, tables) in enumerate(AREAS, start=1):
+        heading(doc, T('docx.ch3_area', no=no, code=code, name=name,
                         schema=schema, n=len(tables)), 2)
-        picture(doc, OUT / f'erd_area_{code}.png', 26.0,
-                T('word.fig_no', n=i) + ' ' + T('docx.fig_area', code=code, name=name))
+        picture(doc, config.OUT / f'erd_area_{code}.png', 26.0,
+                fig_caption(f'erd_area_{code}',
+                            T('docx.fig_area', code=code, name=name)))
 
     # ── 4. 테이블별 역할 및 컬럼 설명 ──
     portrait(doc)
     heading(doc, T('docx.ch4'))
-    para(doc, T('docx.ch4_intro', tables=len(SCHEMA),
-                 columns=sum(len(t['columns']) for t in SCHEMA.values())))
+    para(doc, T('docx.ch4_intro', tables=N_TABLES, columns=N_COLUMNS))
     n = 0
     for ai, (code, name, schema, tables) in enumerate(AREAS, start=1):
         heading(doc, T('docx.ch4_area', no=ai, code=code, name=name), 2)
@@ -307,7 +325,11 @@ def build():
             n += 1
             t_ = SCHEMA[tname]
             bd, _c = erd.badge(tname)
-            heading(doc, f'4.{ai}.{ti} {tname} · {ROLE.get(tname, "")}', 3)
+            # 역할명이 비면 ` · ` 만 남아 '4.1.1 users · ' 로 끝났다. HTML 은 같은
+            # 값이 비면 역할 블록을 아예 안 그린다 — 같은 데이터를 두 문서가 다르게
+            # 처리하던 자리다. 구분자는 이을 것이 있을 때만 쓴다.
+            role = str(ROLE.get(tname, '') or '').strip()
+            heading(doc, f'4.{ai}.{ti} {tname}' + (f' · {role}' if role else ''), 3)
             meta = table(doc, [T('word.schema'), T('word.kind'), T('word.layer'),
                                T('word.columns'), T('word.fkeys')],
                          [2.4, 2.2, 4.6, 1.8, 1.8], font_size=8.5)
@@ -321,19 +343,26 @@ def build():
             ct = table(doc, [T('word.kind'), T('col.name'), T('col.type'), T('col.desc')],
                        [1.3, 4.2, 3.0, 8.5], font_size=8)
             for c in t_['columns']:
-                mark = erd.col_role(t_, c)
+                # UNIQUE 는 docx 어디에도 없었다 — 컬럼표에도, 따로 실리는 제약 절도
+                # 없다(HTML 은 컬럼표의 키 칸과 접힌 제약 목록 둘 다에 싣는다). 즉
+                # 제출용 문서 쪽에서만 스키마 사실 하나가 통째로 사라지고 있었다.
+                # 칸을 늘리지 않고 이미 있는 '구분' 칸에 적는다.
+                mark = erd.col_role(t_, c) or (
+                    'UQ' if erd.is_single_unique(t_, c['name']) else '')
                 desc = (T('word.added') + ' ' if c['added'] else '') + c['comment']
-                ct.rows  # noqa
                 row(ct, (mark, c['name'], c['type'] + (' NN' if c['not_null'] else ''), desc),
                     [1.3, 4.2, 3.0, 8.5], font_size=8, mono_cols=(1, 2), bold_cols=(1,),
                     aligns=[WD_ALIGN_PARAGRAPH.CENTER, None, None, None],
-                    colors={0: 'B03A2E' if mark == 'PK' else '1F618D'} if mark else None)
+                    colors={0: {'PK': 'B03A2E', 'UQ': '7A4FBF'}.get(mark, '1F618D')}
+                    if mark else None)
             para(doc, '', space_after=8)
 
     # ── 5. 관계 정의 ──
     heading(doc, T('docx.ch5'))
     heading(doc, T('docx.ch5_1'), 2)
-    fks = [(n_, fk) for n_, tb in SCHEMA.items() for fk in tb['fks']]
+    # 본문에 절이 없는 테이블의 관계는 싣지 않는다 — 5장만 보면 있는 절을 찾게 되고,
+    # 4장이 세는 것과 5장이 세는 것이 서로 다른 집합이 된다.
+    fks = [(n_, fk) for n_ in DOC_TABLES for fk in SCHEMA[n_]['fks']]
     para(doc, T('docx.ch5_1_intro', n=len(fks)))
     t = table(doc, [T('word.child_table'), T('col.name'), T('word.parent_table'),
                     T('col.name'), T('word.delete_rule')],
@@ -362,8 +391,9 @@ def build():
     if OPEN_ITEMS:
         _chapter_open(doc)
 
-    path = PROJ / f'{DOCNAME}.docx'
-    doc.save(path)
+    path = config.PROJ / f'{DOCNAME}.docx'
+    with atomic_output(path) as tmp:
+        doc.save(tmp)
     if MISSING_FIGS:
         # 조용히 빠지면 그림 없는 문서가 그림 있는 문서인 척 나간다
         print(T('log.figs_missing', n=len(MISSING_FIGS),
@@ -373,7 +403,7 @@ def build():
 
 def _chapter_mapping(doc):
     heading(doc, T('docx.ch6'))
-    para(doc, DOC.get('mapping_intro', T('docx.ch6_intro')))
+    para(doc, doc_text(DOC, 'mapping_intro', T('docx.ch6_intro')))
     t = table(doc, ['No', T('word.proposed'), T('word.actual_table'),
                     T('word.applied'), T('word.reason')],
               [1.0, 3.6, 4.6, 1.8, 6.0], font_size=8)
@@ -387,7 +417,12 @@ def _chapter_mapping(doc):
 
 def _chapter_open(doc):
     heading(doc, T('docx.ch7'))
-    para(doc, T('docx.ch7_intro'))
+    # 6장은 `doc.mapping_intro` 로 머리말을 바꿀 수 있는데 7장만 카탈로그에 못박혀
+    # 있었다. 두 장은 같은 자리(spec 의 doc)에서 재료를 받고 같은 규칙으로 실리는데
+    # 손잡이만 한쪽에 있던 셈이라, 6장을 제 말로 바꾼 사람이 7장에서는 왜 안 되는지
+    # 알 길이 없었다(문서 어디에도 그 비대칭이 적혀 있지 않다). 같은 자를 댄다 —
+    # 빈 값·공백뿐인 값은 '설정하지 않은 것' 이라는 규칙도 `doc_text` 가 함께 준다.
+    para(doc, doc_text(DOC, 'open_intro', T('docx.ch7_intro')))
     t = table(doc, [T('word.priority'), T('word.item'), T('word.target'),
                     T('word.current'), T('word.action')],
               [1.0, 3.0, 3.4, 5.4, 4.2], font_size=8)

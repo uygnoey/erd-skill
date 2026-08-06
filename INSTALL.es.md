@@ -16,6 +16,10 @@ Eso es todo. `install.sh` se ocupa de lo siguiente:
 4. Comprueba si `psql` / `docker` están presentes
 5. Descarga e instala la **fuente Pretendard** si falta (preguntando antes)
 
+Lo de *preguntando* es literal: si no hay terminal donde preguntar (CI, una tubería), no se
+descarga nada ni se sobrescribe nada de lo que ya haya en disco. El instalador lo dice y
+sigue adelante.
+
 Al terminar, **iniciar una nueva sesión de Claude Code.** Las skills se leen al arrancar,
 así que una sesión que ya estaba en marcha no la verá. Después, decir «dibuja el ERD».
 
@@ -30,6 +34,9 @@ El instalador habla inglés, coreano, japonés y español; sigue la configuraci�
 | `bash install.sh --project` | Instala en `./.claude/skills/erd` del proyecto actual |
 | `bash install.sh --here` | Instala solo las dependencias, deja los archivos donde están |
 | `bash install.sh --check` | Solo comprueba, no cambia nada — para cuando algo ha ido mal |
+
+Las cuatro son mutuamente excluyentes: dar dos se rechaza en vez de resolverse en silencio.
+`--check --project` acababa siendo `--project` y escribía 38 archivos.
 
 ## Instalación manual
 
@@ -89,8 +96,9 @@ Una ejecución sana se ve así:
   ✓ SKILL.md encontrado  (~/.claude/skills/erd)
 
 3. Paquetes de Python
-  ✓ python-docx
-  ✓ pillow
+  ✓ requirements.txt  (~/.claude/skills/erd/requirements.txt)
+  ✓ python-docx 1.2.0  (>= 1.1.0)
+  ✓ pillow 12.3.0  (>= 10.0.0)
 
 4. Cliente de base de datos (uno de los dos)
   ✓ psql   psql (PostgreSQL) 16.2
@@ -99,13 +107,36 @@ Una ejecución sana se ve así:
   ✓ texto:  …/Pretendard-Regular.otf
   ✓ mono:   …/Menlo.ttc
 
+6. Prueba de regresión
+  ✓ all 258 passed
+  ! 6 cases need a real server and were NOT run (ERD_SELFTEST_DOCKER=1 …)
+
 Resultado
   ✓ instalación completada
 ```
 
-`--check` no cambia nada, así que omite la colocación. Aun así busca `SKILL.md` en los
-sitios donde lo habría instalado: es lo primero que hay que comprobar cuando `/erd` no
-aparece.
+`--check` no cambia nada, así que omite la colocación. Aun así lee el árbol donde lo habría
+instalado: es lo primero que hay que comprobar cuando `/erd` no aparece.
+
+**Elige un árbol y mide ese árbol hasta el final.** Los candidatos, en orden, son
+`~/.claude/skills/erd`, `./.claude/skills/erd` y el directorio donde está el propio
+`install.sh`; gana el primero que *exista*, y su ruta se imprime en la línea de `SKILL.md`.
+La prueba de regresión de la sección 6 se ejecuta desde ese mismo árbol. Por eso, ejecutar
+`--check` desde un clon recién hecho teniendo la skill instalada informa sobre la copia
+**instalada**, no sobre el clon que tiene en la mano: la instalada es la que Claude Code lee.
+
+La sección 6 no es opcional. Si el árbol elegido no tiene un `scripts/selftest.py` legible,
+eso es un fallo, no un paso omitido: una instalación que nadie ha medido no es una
+instalación que funcione. La línea encima del recuento dice cuántos casos necesitaban un
+servidor real y por eso no se ejecutaron; esa línea no se descarta.
+
+`SKILL.md` tiene que *ser* un archivo de skill, no solo existir: la línea 1 debe ser `---`,
+el frontmatter debe cerrarse con un segundo `---` y debe contener `name: erd`. Un
+`SKILL.md` vacío o truncado se informa como roto.
+
+Las versiones de los paquetes se comparan con los mínimos declarados en `requirements.txt`.
+Un paquete presente pero anterior al mínimo declarado es un fallo: esos números se miden,
+no son decorativos.
 
 ## Primera ejecución
 
@@ -160,10 +191,21 @@ también indica qué Python está mirando.
 **`/erd` no aparece en la lista**
 Comprobar, en este orden: ① si `ls ~/.claude/skills/erd/SKILL.md` devuelve algo ② si se
 reinició Claude Code ③ si `SKILL.md` empieza con `---` en la línea 1 y contiene `name: erd`.
+`install.sh --check` hace ① y ③ por usted, y nombra el árbol que ha mirado.
 
 **`[aviso] falló la consulta a la base de datos`**
 Comprobar el valor de `ERD_PSQL` / `ERD_DB`. Ejecutar primero el mismo comando en la shell
 y ver si conecta. Si ambas están definidas, gana `ERD_PSQL`.
+
+**`N diagramas son más antiguos que …/schema.json` y no se escribe ningún documento**
+Es una puerta, no un fallo. `build_html.py`, `build_docx.py` y `build_erd.py` se niegan a
+meter en un documento figuras dibujadas a partir de un esquema anterior, porque las tablas
+dirían una cosa y las imágenes otra. La solución es volver a ejecutar
+`python3 build_erd.py`. Si sólo cambió la redacción y las figuras siguen siendo correctas,
+`ERD_STALE=warn` (o `ERD_STALE=1`) las deja pasar — y aun así imprime una línea diciéndolo.
+`ERD_STALE` sigue la misma regla de sí/no que los demás interruptores: `true`, `on` e `y`
+lo activan, un `ERD_STALE=` vacío significa **desactivado**, y una errata se nombra en la
+salida en lugar de tomarse como un sí.
 
 **El texto del PNG sale como □**
 Ninguna fuente cubre esos caracteres. Volver a ejecutar `install.sh` para instalar

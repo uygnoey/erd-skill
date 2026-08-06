@@ -98,8 +98,13 @@ the text survives). The images live inside the file, so **you send one HTML and 
 else.**
 
 The order follows the document: ① cover · DB summary · legend ② contents ③ overall
-structure overview ④ DB > area > table (each area's ERD before its tables) ⑤ appendix:
-full detail ERD.
+structure overview ④ DB > area > table (each area's ERD before its tables) ⑤ chapter 6
+(design vs. built) and chapter 7 (open items), each present only when the spec wrote
+`doc.mapping` / `doc.open_items` ⑥ appendix: full detail ERD.
+
+⑤ is written from the same `doc` keys as the docx and uses the same chapter names, so a
+spec that fills them gets the same chapters in both documents. Before round 15 the HTML
+dropped them and only the docx carried them.
 
 If a previous edition exists, **the column descriptions in it are inherited.** This is what
 keeps hand-polished wording from being lost on every regeneration:
@@ -119,18 +124,20 @@ ERD_DOC_HTML=previous.html python3 merge_desc.py
 | `ERD_DOCNAME` | `ERD` | output file name (without extension) |
 | `ERD_LANG` | locale, else `en` | output language: `en` · `ko` · `ja` · `es` |
 | **`ERD_PSQL`** | — | the psql command itself, e.g. `psql postgresql://u:p@h:5432/db` |
+| `ERD_QUERY_TIMEOUT` | `120` | maximum seconds for one DB query; `0` disables the limit |
 | **`ERD_DB`** | — | via docker. Format: `container:user:db` |
 | `ERD_SCHEMAS` | `public` | target schemas (comma separated) |
 | `ERD_EXCLUDE` | — | regex of tables to exclude |
-| `ERD_MAX_AREAS` | `12` | cap on the number of auto-classified areas — counted across the whole document, "other" buckets included. A schema is never dropped, so with more schemas than the cap each still gets one area. |
+| `ERD_MAX_AREAS` | `12` | cap on the number of **automatically classified** areas — counted across the whole document, "other" buckets included. A schema is never dropped, so with more schemas than the cap each still gets one area. **It is not a cap once a spec names its own `areas`** — see below. |
 | `ERD_SQL_DIR` | `$ERD_PROJ/sql` | only when parsing DDL |
 | `ERD_SQL_FILES` | — | DDL parsing: name the files directly (comma separated; default is every `*.sql` in the directory) |
 | `ERD_REF_SCHEMA` | — | DDL parsing: a read-only source schema to include as well |
 | `ERD_REF_TABLES` | — | DDL parsing: which tables to take from that schema (comma separated) |
 | `ERD_DEFAULT_PK` | — | DDL parsing: column to assume as the PK of an existing table when none is found |
 | `ERD_MODEL_DIR` | `$ERD_PROJ/models` | extract descriptions from ORM comments |
-| `ERD_LABEL` | — | label for merging several databases (`schema.<label>.json`) |
+| `ERD_LABEL` | — | label for merging several databases (`schema.<label>.json`). Read by **both** schema.json producers — `introspect.py` and `parse_ddl.py` — with the same key rule |
 | `ERD_DOC_HTML` | — | inherit column descriptions from previous editions (comma separated) |
+| `ERD_STALE` | `0` | build a document on figures older than `schema.json`. Off means **stop** and ask for `build_erd.py` to be run again — a document whose tables and figures describe different schemas is worse than no document. `warn` (or the old spelling `ok`) passes but says so on every run; every other value goes through the one yes/no rule below |
 | `ERD_SVG` | `1` | write an SVG next to each PNG |
 | `ERD_SVG_TITLE` | `0` | draw the title inside the SVG (off by default — documents add their own caption) |
 | `ERD_HTML_STATS` | `0` | show row counts and size on the HTML badges (off — they are statistics) |
@@ -147,6 +154,37 @@ and stops with a message on anything older, rather than handing back a schema it
 only half read. Verified on 9.4, 9.6, 10, 11, 12, 16 and 17; the foreign-key query drops
 its partition-copy filter on servers below 11, where `pg_constraint.conparentid` does not
 exist yet (and neither do per-partition copies).
+
+### What an empty value means
+
+`ERD_X=` is **not** the same as `unset`, and what it means depends on which kind of
+variable it is. There are three rules and they are all written here — the module header of
+`config.py` holds the same three, and nowhere else does. Guessing one from another is
+wrong.
+
+| Kind | Variables | `ERD_X=` (or whitespace only) means |
+|---|---|---|
+| path | `ERD_PROJ` · `ERD_WORK` · `ERD_SPEC` · `ERD_SQL_DIR` · `ERD_MODEL_DIR` · `ERD_DOC_HTML` … | **not set** → the default in the table above. `Path('')` is `Path('.')`, so treating it as a value scatters the output into the caller's cwd |
+| yes/no | `ERD_SVG` · `ERD_HTML_SVG` · `ERD_HTML_FULL` · `ERD_HTML_STATS` · `ERD_SVG_TITLE` · `ERD_STALE` | **off**. `ERD_SVG= python3 build_erd.py` writes no SVG and says nothing — that is the intended one-shot way to turn a switch off. To go back to the default, `unset` it |
+| list | `ERD_SCHEMAS` | **stop here.** Falling back to `public` would finish a document about a schema nobody asked for |
+
+The yes/no rule is one rule for every switch: `1` · `true` · `yes` · `on` · `y` · `t` are
+on, `0` · `false` · `no` · `off` · `n` · `f` and the empty value are off, case and
+surrounding spaces do not matter, and **anything else is not silently taken as on** — the
+variable is named on stdout and its own default is used, so `flase` cannot turn a switch
+on. A variable that needs an extra word of its own filters that word first and hands the
+rest to this rule; `ERD_STALE` is the one that does (`warn` · `ok`).
+
+### `ERD_MAX_AREAS` and a spec that names its own areas
+
+The cap applies to **automatic** classification only. When `erd.spec.json` lists `areas`,
+every area written there is drawn no matter what the cap says — quietly dropping a section
+a user named is worse than exceeding a number — and the tables that no area claimed are
+still gathered into their own "other" areas on top of that. The cap is not silent about
+it: it prints `[warn] ERD_MAX_AREAS=<n>, but <spec> names its own areas — drawing all
+<N>`. So a spec with 15 areas plus one unclaimed table under `ERD_MAX_AREAS=3` produces
+16 areas and 18 PNGs, with that one warning. To get fewer areas from a spec, write fewer
+areas in the spec.
 
 ## Column descriptions (the important part)
 
@@ -192,6 +230,23 @@ anything absent is inferred.
 
 The text in a spec is used exactly as written, in whatever language the user wrote it —
 this is how a document mixes an English UI with, say, Korean area names.
+
+**The area code becomes a file name** — `erd_area_<code>.png`. Two rules follow from that,
+and both stop the build with a message instead of losing a diagram:
+
+- A code that cannot be a file-name fragment is refused. `\ / : * ? " < > |` and control
+  characters are out; `"areas": [["x/y", …]]` used to send PIL into a directory that is not
+  there, and everything drawn after it disappeared.
+- **Two areas may not use codes that would land on the same file.** The comparison is the
+  one macOS and Windows make, not the one Python makes: `A` and `a` are the same file, and
+  so are the NFC and NFD spellings of the same accented letter. Such a spec is refused
+  outright (`two areas use the area code …`). It used to be accepted, and the second
+  diagram silently overwrote the first while the run reported drawing both.
+
+The second rule is stricter than it was: **a spec that used to build on Linux — where `A`
+and `a` really are two files — is now rejected everywhere.** Give the two areas different
+letters. Automatically generated codes obey the same comparison, so the "other" bucket
+never takes a letter a spec already spelled in another case.
 
 If `doc.mapping` / `doc.open_items` are present, chapter 6 (design vs. built) and
 chapter 7 (open items) are added; otherwise those chapters are omitted.
@@ -253,12 +308,16 @@ diagram prints as `3(tolerated)` instead of warning.
 **Tolerance is one policy for all three kinds of diagram, and that policy is "none".**
 `draw_erd(tolerate=…)` shapes only the printed line; the regression suite ignores it
 entirely and reads the raw counts. So the only thing an asymmetric `tolerate` can do is
-teach the reader that the same number means different things on different diagrams — for a
-while `build_erd.py` passed `tolerate=('h_overlap',)` for the overview and the full ERD and
-nothing for the area diagrams, so an identical overlap warned on one and went quiet on the
-other two. The reason that tolerance was introduced — entry/exit tails whose y the router
+teach the reader that the same number means different things on different diagrams.
+
+**`build_erd.py` still does exactly that, today.** It passes `tolerate=('h_overlap',)` for
+the overview and the full ERD and nothing for the area diagrams, so an identical horizontal
+overlap prints `3(tolerated)` on two of the three kinds and `[warn] must be 0` on the
+third. The reason that tolerance was introduced — entry/exit tails whose y the router
 cannot move — is now handled *inside* the counter, which does not count them at all;
-silencing it a second time only hides the part the router **can** fix. If a class of
+silencing it a second time only hides the part the router **can** fix. Removing those two
+arguments is the open item; this paragraph describes what the code does, not what it ought
+to do. If a class of
 overlap genuinely cannot be avoided, exclude it in `overlaps()` with the reason written
 down, and if a specific fixture is known to be messy, record the number in the test's
 `RENDER_ALLOW`. Both of those are places where widening the exception is visible; a
@@ -308,14 +367,13 @@ written the run says so and still produces every figure.
 ## Regression test
 
 `selftest.py` runs the whole skill against synthetic input and checks the result. No
-database, no docker — about 20 seconds. It is the one entry point: the cases live in
-`selftest.py` and in the `selftest_*.py` files beside it, and running `selftest.py` picks all
-of them up. `install.sh --check` runs exactly this.
+database, no docker — about 20 seconds. Cases are split by product area and the runner
+groups output by the prefix before `:`. `install.sh --check` runs exactly this.
 
 ```bash
-python3 selftest.py            # everything (101 cases)
+python3 selftest.py            # everything (258 cases)
 python3 selftest.py parse      # only cases whose name contains 'parse'
-python3 selftest_history.py    # just that file's own 39 (about 10 seconds)
+python3 selftest_schema.py    # 58 schema/DDL/introspection cases
 ```
 
 Six more cases need a real server and are skipped by default — the run says so on the line
@@ -361,9 +419,14 @@ INSTALL.md        installation guide (also .ko / .ja / .es)
 install.sh        automated install (placement · dependencies · fonts)
 requirements.txt  Python dependencies
 scripts/
-  selftest.py     regression test — runs the skill on synthetic input, no DB needed
-  selftest_kit.py the case list, the helpers and the runner both suites share
-  selftest_history.py  cases reconstructed from the review rounds (+6 behind docker)
+  selftest.py       full-suite entry point and core cases
+  selftest_schema.py DDL parsing · introspection · schema merge (+6 behind docker)
+  selftest_config.py config · environment · spec · i18n
+  selftest_render.py layout · routing · fonts · verification
+  selftest_build.py HTML · DOCX · GraphML · artifact consistency
+  selftest_install.py installer · dependencies · documentation contracts
+  selftest_kit.py   registration · fixtures · runner · assertions
+  SELFTESTS.md      test-area map and focused-run instructions
   i18n.py         picks the output language, resolves message keys
   lang/           message catalogs — en.py · ko.py · ja.py · es.py
   config.py       paths · DB connection · spec loading · automatic area classification
