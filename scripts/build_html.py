@@ -110,7 +110,21 @@ details .body{padding:6px 10px;background:#fbfcfe;border:1px solid #e3e9f1;borde
 #zoom svg,#zoom img{max-width:none;height:auto}
 #zoomhint{position:fixed;top:12px;right:16px;color:#9AA0A6;font-size:12px;z-index:100;display:none}
 #zoom.on+#zoomhint{display:block}
-@media print{.fig{break-inside:avoid}h4{break-after:avoid}}
+/* ── 인쇄 ──
+   `.fig{break-inside:avoid}` 는 도판이 페이지 중간에서 잘리지 않게 한다. 그런데
+   제목 쪽은 `h4` 하나만 붙들고 있어서, 도판이 다음 장으로 통째로 밀릴 때 **그 위의
+   h2·h3 만 앞 장에 남았다.** 실측(Chrome 인쇄): 1쪽이 '전체 구조' 라는 제목 한 줄만
+   남고 그 아래가 통째로 빈 채 끝났고, 개요도는 2쪽에서 시작했다. 제목과 그림이
+   갈리면 그 제목이 무엇을 가리키는지 종이에서는 알 수 없다.
+   캡션도 같은 부류라 그림 앞에서 끊기지 않게 붙든다.
+   `thead{display:table-header-group}` 는 컬럼표가 여러 쪽에 걸칠 때 머리행을 쪽마다
+   되풀이한다 — 없으면 둘째 쪽부터 어느 칸이 무엇인지 알 수 없다. */
+@media print{
+  .fig,.figcap{break-inside:avoid}
+  h2,h3,h4{break-after:avoid}
+  .figcap{break-before:avoid}
+  thead{display:table-header-group}
+}
 """
 
 CSS = CSS.replace('__FONTS__', FONT_STACK)

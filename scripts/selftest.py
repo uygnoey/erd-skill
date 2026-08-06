@@ -2604,12 +2604,12 @@ CASE_FLOOR = {'selftest_schema': 40, 'selftest_build': 26,
 # 통째로 되돌려도 228개가 전부 초록이던 자리다 — PK 조회의 조인(제약 이름이 스키마
 # 안에서 유일하다고 본 것), 인라인 PK·UNIQUE 판정에 새는 부모 이름, 두 번 적은 유니크
 # 인덱스, 그리고 `doc` 안쪽의 모양(한 줄짜리 문자열이 글자마다 문단이 됐다).
-TOTAL_FLOOR = 258
+TOTAL_FLOOR = 259
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 120
+EXPECT_CASES = 121
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -2927,6 +2927,41 @@ def _(work):
     # 그림을 실었으면 클릭할 것이 있어야 한다 — 스크립트가 매는 대상이다.
     if 'class="fig"' not in html:
         raise Fail('no diagram was embedded, so the script has nothing to bind to')
+
+
+@case('artifacts: the print stylesheet keeps a heading with what it titles')
+def _(work):
+    # 종이에서만 드러나던 자리다. `.fig{break-inside:avoid}` 가 도판을 안 자르는 것은
+    # 맞는데, 제목 쪽은 `h4` 하나만 붙들고 있었다. 그래서 도판이 다음 장으로 통째로
+    # 밀릴 때 **그 위의 h2·h3 만 앞 장에 남았다** — Chrome 인쇄로 재 보니 1쪽이
+    # '전체 구조' 라는 제목 한 줄만 남고 아래가 통째로 빈 채 끝났고, 개요도는 2쪽에서
+    # 시작했다. 제목과 그림이 갈리면 그 제목이 무엇을 가리키는지 종이에서는 알 수 없다.
+    #
+    # **이 케이스는 규칙이 있는지만 잰다.** 실제로 갈리는지는 인쇄 엔진이 있어야 알 수
+    # 있고(위 증상도 Chrome 을 띄워서 봤다), 회귀 시험에 브라우저를 요구할 수는 없다.
+    # 그러니 여기서 말하는 것은 '종이에서 안 갈린다' 가 아니라 '갈리지 말라고 적어 둔
+    # 것이 아직 거기 있다' 이다. 그 이상을 재려면 브라우저가 필요하고, 그것은 이
+    # 저장소가 아직 안 하는 일이다.
+    write_schema(work, {'t': table('t', [col('id')])})
+    run('build_erd.py', work)
+    run('build_html.py', work)
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    import re as _re
+    m = _re.search(r'@media print\s*\{(.*?)\n\}', html, _re.S)
+    if not m:
+        raise Fail('the document carries no print rules — it is meant to be printed too')
+    css = ' '.join(m.group(1).split())
+    for sel, why in (
+            ('h2', 'a chapter heading must not be orphaned from its figure'),
+            ('h3', 'an area heading must not be orphaned from its figure'),
+            ('h4', 'a table heading must not be orphaned from its columns'),
+    ):
+        if not _re.search(rf'(^|[{{;,\s]){_re.escape(sel)}\s*[,{{]', css):
+            raise Fail(f'{sel} is not held to what follows it — {why}\n      print css: {css}')
+    has(css, 'break-after:avoid', 'headings are held to the next block')
+    has(css, 'break-inside:avoid', 'a diagram is not cut across pages')
+    has(css, 'table-header-group',
+        'a column table repeats its header row on every page it spans')
 
 
 @case('artifacts: no unresolved message keys anywhere')

@@ -371,7 +371,7 @@ database, no docker — about 20 seconds. Cases are split by product area and th
 groups output by the prefix before `:`. `install.sh --check` runs exactly this.
 
 ```bash
-python3 selftest.py            # everything (258 cases)
+python3 selftest.py            # everything (259 cases)
 python3 selftest.py parse      # only cases whose name contains 'parse'
 python3 selftest_schema.py    # 58 schema/DDL/introspection cases
 ```
