@@ -91,7 +91,7 @@ _t_en() { case "$1" in
   st_skip)    echo 'NOT run — fix the ✗ above first' ;;
   s_result)   echo 'Result' ;;
   done_ok)    echo 'installation complete' ;;
-  next)       echo '\n  Next\n    1) start a new Claude Code session (skills are read at startup)\n    2) say "draw the ERD", or call /erd\n\n  Running it yourself\n    cd %s/scripts\n    export ERD_PROJ=/where/documents/go\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'Our Service ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
+  next)       echo '\n  Next\n    1) start a new Claude Code session (skills are read at startup)\n    2) say "draw the ERD", or call /erd\n\n  Running it yourself\n    cd %s/scripts\n    export ERD_PROJ=/where/documents/go\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'Our Service ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_html.py && %s build_docx.py\n' ;;
   done_bad)   echo 'fix the ✗ items above and run it again:  bash install.sh --check' ;;
 esac; }
 
@@ -149,7 +149,7 @@ _t_ko() { case "$1" in
   st_skip)    echo '돌리지 않았다 — 위의 ✗ 를 먼저 고친다' ;;
   s_result)   echo '결과' ;;
   done_ok)    echo '설치 완료' ;;
-  next)       echo '\n  다음 단계\n    1) Claude Code 를 새로 띄운다 (스킬은 시작할 때 읽는다)\n    2) "ERD 그려줘" 라고 하거나 /erd 를 부른다\n\n  직접 돌릴 때\n    cd %s/scripts\n    export ERD_PROJ=/문서/저장/위치\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'우리서비스 ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
+  next)       echo '\n  다음 단계\n    1) Claude Code 를 새로 띄운다 (스킬은 시작할 때 읽는다)\n    2) "ERD 그려줘" 라고 하거나 /erd 를 부른다\n\n  직접 돌릴 때\n    cd %s/scripts\n    export ERD_PROJ=/문서/저장/위치\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'우리서비스 ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_html.py && %s build_docx.py\n' ;;
   done_bad)   echo '위의 ✗ 항목을 해결하고 다시 실행한다:  bash install.sh --check' ;;
 esac; }
 
@@ -207,7 +207,7 @@ _t_ja() { case "$1" in
   st_skip)    echo '実行しなかった — 上の ✗ を先に直す' ;;
   s_result)   echo '結果' ;;
   done_ok)    echo 'インストール完了' ;;
-  next)       echo '\n  次にすること\n    1) Claude Code を起動し直す (スキルは起動時に読まれる)\n    2)「ERD を描いて」と言うか、/erd を呼ぶ\n\n  自分で動かすとき\n    cd %s/scripts\n    export ERD_PROJ=/ドキュメントの/保存先\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'自社サービス ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
+  next)       echo '\n  次にすること\n    1) Claude Code を起動し直す (スキルは起動時に読まれる)\n    2)「ERD を描いて」と言うか、/erd を呼ぶ\n\n  自分で動かすとき\n    cd %s/scripts\n    export ERD_PROJ=/ドキュメントの/保存先\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'自社サービス ERD'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_html.py && %s build_docx.py\n' ;;
   done_bad)   echo '上の ✗ を解消してから実行し直す:  bash install.sh --check' ;;
 esac; }
 
@@ -265,7 +265,7 @@ _t_es() { case "$1" in
   st_skip)    echo 'NO se ejecutó — corrija antes los ✗ de arriba' ;;
   s_result)   echo 'Resultado' ;;
   done_ok)    echo 'instalación completada' ;;
-  next)       echo '\n  Siguiente paso\n    1) abra una sesión nueva de Claude Code (las skills se leen al arrancar)\n    2) diga «dibuja el ERD», o invoque /erd\n\n  Para ejecutarlo a mano\n    cd %s/scripts\n    export ERD_PROJ=/donde/van/los/documentos\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'ERD de nuestro servicio'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_docx.py\n' ;;
+  next)       echo '\n  Siguiente paso\n    1) abra una sesión nueva de Claude Code (las skills se leen al arrancar)\n    2) diga «dibuja el ERD», o invoque /erd\n\n  Para ejecutarlo a mano\n    cd %s/scripts\n    export ERD_PROJ=/donde/van/los/documentos\n    export ERD_PSQL='"'"'psql postgresql://user:pass@localhost:5432/mydb'"'"'\n    export ERD_DOCNAME='"'"'ERD de nuestro servicio'"'"'\n    %s introspect.py && %s merge_desc.py && %s build_erd.py && %s build_html.py && %s build_docx.py\n' ;;
   done_bad)   echo 'resuelva los ✗ de arriba y vuelva a ejecutar:  bash install.sh --check' ;;
 esac; }
 
@@ -723,7 +723,7 @@ fi
 step "$(t s_result)"
 if [ "$FAIL" = 0 ]; then
   ok "$(t done_ok)"
-  t next "$DEST" "$PY" "$PY" "$PY" "$PY"
+  t next "$DEST" "$PY" "$PY" "$PY" "$PY" "$PY"
 else
   bad "$(t done_bad)"
   exit 1

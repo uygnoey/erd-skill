@@ -2604,12 +2604,12 @@ CASE_FLOOR = {'selftest_schema': 40, 'selftest_build': 26,
 # 통째로 되돌려도 228개가 전부 초록이던 자리다 — PK 조회의 조인(제약 이름이 스키마
 # 안에서 유일하다고 본 것), 인라인 PK·UNIQUE 판정에 새는 부모 이름, 두 번 적은 유니크
 # 인덱스, 그리고 `doc` 안쪽의 모양(한 줄짜리 문자열이 글자마다 문단이 됐다).
-TOTAL_FLOOR = 251
+TOTAL_FLOOR = 252
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 117
+EXPECT_CASES = 118
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -3309,6 +3309,43 @@ def _(work):
     svg = (work / 'out' / 'erd_full.svg').read_text(encoding='utf-8')
     if svg_canvas.MONO_STACK not in svg:
         raise Fail('no text in the diagram carries the monospace stack')
+
+
+@case('install: the run-it-yourself line names every script the quick start does')
+def _(work):
+    # 설치가 끝나고 마지막에 찍는 그 줄은 **사람이 그대로 복사해 치는 줄**이다. 그런데
+    # 네 말 전부 `build_html.py` 가 빠져 있었다 — SKILL.md 의 빠른 시작은 다섯 단계인데
+    # 안내는 넷이었다. 그 줄만 따르면 HTML 스키마 정의서가 안 나오고, SKILL.md 가
+    # '한 개만 보내면 된다' 고 크게 다루는 산출물이 있는 줄도 모른다.
+    #
+    # 이 저장소는 문서가 약속한 것을 도구가 하는지 이미 여러 자리에서 잰다(케이스 수·
+    # 도커 개수). 실행 순서도 그 부류다 — 두 자리에 적힌 같은 목록이 갈리면 조용하다.
+    root = HERE.parent
+    quick = {}
+    for name, head in (('SKILL.md', '## Quick start'), ('SKILL.ko.md', '## 빠른 시작')):
+        text = (root / name).read_text(encoding='utf-8')
+        i = text.index(head)
+        j = text.index('\n## ', i + len(head))
+        # 그 절의 **첫** 코드블록만 본다 — 뒤에 오는 다중 DB 예시는 다른 이야기다.
+        block = text[i:j].split('```')[1]
+        quick[name] = re.findall(r'^python3 (\w+\.py)', block, re.M)
+        if len(quick[name]) < 4:
+            raise Fail(f'{name}: the quick start block reads as {quick[name]} — '
+                       f'the case is measuring the wrong block')
+    eq(quick['SKILL.ko.md'], quick['SKILL.md'], 'both SKILL documents run the same order')
+
+    sh = (root / 'install.sh').read_text(encoding='utf-8')
+    lines = [ln for ln in sh.splitlines() if ln.lstrip().startswith('next)')]
+    eq(len(lines), 4, 'install.sh carries a closing note in four languages')
+    for ln in lines:
+        eq(re.findall(r'%s (\w+\.py)', ln), quick['SKILL.md'],
+           f'the closing note runs what the quick start runs\n      note: {ln[:80]}…')
+    # 자리표시자 수와 넘기는 인자 수가 어긋나면 printf 가 빈 칸을 찍는다.
+    call = re.search(r't next "\$DEST"((?: "\$PY")+)', sh)
+    if not call:
+        raise Fail('install.sh no longer calls `t next` the way this case reads it')
+    eq(call.group(1).count('$PY'), len(quick['SKILL.md']),
+       'every script in the note gets an interpreter argument')
 
 
 if __name__ == '__main__':
