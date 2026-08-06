@@ -2604,12 +2604,12 @@ CASE_FLOOR = {'selftest_schema': 40, 'selftest_build': 26,
 # 통째로 되돌려도 228개가 전부 초록이던 자리다 — PK 조회의 조인(제약 이름이 스키마
 # 안에서 유일하다고 본 것), 인라인 PK·UNIQUE 판정에 새는 부모 이름, 두 번 적은 유니크
 # 인덱스, 그리고 `doc` 안쪽의 모양(한 줄짜리 문자열이 글자마다 문단이 됐다).
-TOTAL_FLOOR = 257
+TOTAL_FLOOR = 258
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 119
+EXPECT_CASES = 120
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -2853,6 +2853,80 @@ def _(work):
     html = (work / 'T.html').read_text(encoding='utf-8')
     if '<script>alert(1)</script>' in html:
         raise Fail('a comment must not become live markup')
+
+
+@case('artifacts: the html document is well-formed and keeps its zoom script')
+def _(work):
+    # GraphML 과 SVG 는 바로 위에서 `ET.parse` 로 well-formed 인지 재는데 **HTML 만
+    # 안 쟀다.** 셋 중 사람이 가장 많이 여는 것이 HTML 이고(SKILL.md 가 절을 따로 내어
+    # '한 개만 보내면 된다' 고 적은 산출물이다), 태그를 하나 빠뜨려도 브라우저가 관대해
+    # 눈으로는 안 보인다 — 목차가 통째로 남의 절 안에 들어가는 식으로 나타난다.
+    #
+    # 스크립트 쪽은 **줄이 살아 있는지**만 잰다. 처음엔 '파이썬 문자열 안의 역슬래시가
+    # 한 겹으로 줄면 조용히 깨진다' 를 재려 했는데, 재 보니 그 일은 안 일어난다 —
+    # `\s` 는 파이썬이 모르는 이스케이프라 그대로 남아서, `'\\s+'` 를 `'\s+'` 로
+    # 고쳐도 나가는 글자가 같다(뮤턴트로 확인: 초록). 지키는 것 없는 검사를 근거만
+    # 그럴듯하게 적어 두면 다음 사람이 그것을 믿는다. 그래서 근거를 실제로 잡히는
+    # 것으로 낮춰 적는다: 확대가 viewBox 를 되돌리는 그 줄과, 클릭·키보드를 매는
+    # 줄들이 문서에 실제로 실려 나가는가.
+    write_schema(work, {'t': table('t', [col('id'), col('x', 'text', comment='설명')]),
+                        'u': table('u', [col('id')])})
+    run('build_erd.py', work)
+    run('build_html.py', work)
+    html = (work / 'T.html').read_text(encoding='utf-8')
+
+    # ── 태그 균형 ──
+    from html.parser import HTMLParser
+    void = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+            'meta', 'source', 'track', 'wbr'}
+
+    class Balance(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.stack, self.bad = [], []
+
+        def handle_startendtag(self, tag, attrs):
+            # `<rect …/>` 는 제 자리에서 열고 닫는다. 이것을 넘기지 않으면 기본 구현이
+            # start + end 로 쪼개 부르는데, 여는 쪽을 세지 않으면 닫는 쪽이 남의 태그를
+            # 닫는 것으로 보인다 — 인라인 SVG 가 든 문서에서는 그 오해가 수십 건이다.
+            pass
+
+        def handle_starttag(self, tag, attrs):
+            if tag not in void:
+                self.stack.append((tag, self.getpos()))
+
+        def handle_endtag(self, tag):
+            if tag in void:
+                return
+            if not self.stack:
+                self.bad.append(f'</{tag}> at {self.getpos()} closes nothing')
+                return
+            if self.stack[-1][0] != tag:
+                self.bad.append(f'</{tag}> at {self.getpos()} closes '
+                                f'<{self.stack[-1][0]}> opened at {self.stack[-1][1]}')
+                while self.stack and self.stack[-1][0] != tag:
+                    self.stack.pop()
+            if self.stack:
+                self.stack.pop()
+
+    b = Balance()
+    b.feed(html)
+    eq(b.bad, [], 'the document closes what it opens')
+    eq([t for t, _p in b.stack], [], 'nothing is left open at the end')
+
+    # ── 확대 스크립트가 문서까지 실려 나왔는가 ──
+    import re as _re
+    js = _re.search(r'<script>(.*?)</script>', html, _re.S)
+    if not js:
+        raise Fail('the document carries no script — zooming a diagram is dead')
+    js = js.group(1)
+    for piece, what in ((r'split(/\s+/)', 'splits the viewBox back to full size'),
+                        ('addEventListener', 'binds the click and the key'),
+                        ('classList', 'opens and closes the overlay')):
+        has(js, piece, f'the zoom script still {what}')
+    # 그림을 실었으면 클릭할 것이 있어야 한다 — 스크립트가 매는 대상이다.
+    if 'class="fig"' not in html:
+        raise Fail('no diagram was embedded, so the script has nothing to bind to')
 
 
 @case('artifacts: no unresolved message keys anywhere')
