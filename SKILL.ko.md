@@ -340,7 +340,7 @@ DB 도 docker 도 필요 없고 20초쯤 걸린다. 항목은 기능 영역별 �
 출력도 `:` 앞의 영역명으로 묶여 나온다. `install.sh --check` 가 돌리는 것도 이것이다.
 
 ```bash
-python3 selftest.py            # 전부 (248개)
+python3 selftest.py            # 전부 (251개)
 python3 selftest.py parse      # 이름에 'parse' 가 든 항목만
 python3 selftest_schema.py    # 스키마·DDL·인트로스펙션 58개
 ```

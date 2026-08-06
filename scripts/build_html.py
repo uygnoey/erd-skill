@@ -457,7 +457,8 @@ def build():
              DOC.get('mapping_note'),
              ['No', T('word.proposed'), T('word.actual_table'), T('word.applied'),
               T('word.reason')]),
-            (OPEN_ITEMS, 'docx.ch7', T('docx.ch7_intro'), DOC.get('open_note'),
+            (OPEN_ITEMS, 'docx.ch7', doc_text(DOC, 'open_intro', T('docx.ch7_intro')),
+             DOC.get('open_note'),
              [T('word.priority'), T('word.item'), T('word.target'), T('word.current'),
               T('word.action')])):
         if not rows:

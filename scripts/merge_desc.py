@@ -81,6 +81,28 @@ def parse_orm():
     return out
 
 
+# HTML 에서 긁은 글자가 **이름인지** 거르는 그물. 표가 아닌 h4·설명문이 키가 되는 것을
+# 막는 자리라 그물 자체는 있어야 하지만, 코가 ASCII 로만 짜여 있었다:
+# `[A-Za-z_][A-Za-z0-9_.]*`. 그래서 따옴표로 지은 한글 이름이 통째로 걸러졌다.
+#
+#   CREATE TABLE "주문" (id bigint primary key, amt numeric(10,2));
+#   → 이전 판 문서에 손으로 다듬어 둔 설명 2건이 하나도 안 넘어온다(실측).
+#     같은 문서의 `orders` 는 2건 다 넘어온다.
+#
+# 이 기능이 있는 이유가 **사람이 다듬은 설명을 다시 뽑을 때 잃지 않는 것**인데, 그
+# 설명을 잃는다. 게다가 조용하다 — '2건 인계' 라고 찍히니 넘어온 줄 알고, 빠진 것은
+# '아직 설명 없는 컬럼' 목록에 섞여 처음 만든 컬럼처럼 보인다. 한국어·일본어로 쓰는
+# 스킬(ERD_LANG 이 네 말을 받는다)에서 하필 그 말로 지은 이름만 못 받아 왔다.
+#
+# `\w` 는 파이썬3 에서 유니코드를 기본으로 매칭하므로 한글·한자·키릴이 다 든다.
+# 첫 글자에서 숫자만 빼는 것(`[^\W\d]`)은 예전 규칙(`[A-Za-z_]` 는 숫자로 시작하지
+# 않는다)을 그대로 옮긴 것이다. 넓히는 것은 거기까지다 — 공백·따옴표·괄호가 든 이름은
+# 여전히 안 받는다. 그런 것까지 받으면 표 없는 h4 의 문장이 키가 되고, 이 그물이
+# 막으라고 있던 자리가 열린다.
+_NAME = re.compile(r'[^\W\d]\w*')            # 컬럼 이름
+_NAME_DOT = re.compile(r'[^\W\d][\w.]*')     # 테이블 키 (라벨·스키마가 점으로 붙는다)
+
+
 def parse_doc_html():
     """이전 판 문서(HTML)의 컬럼 설명을 {table.column: comment} 로 물려받는다.
 
@@ -122,7 +144,7 @@ def parse_doc_html():
             block = tbl.group(1)
             tname = re.sub(r'<[^>]+>.*', '', head)          # 배지 앞의 순수 텍스트
             tname = re.sub(r'<[^>]+>', '', tname).strip()
-            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]*', tname):
+            if not _NAME_DOT.fullmatch(tname):
                 continue
             for row in re.findall(r'<tr>(.*?)</tr>', block, re.S):
                 cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)
@@ -131,7 +153,7 @@ def parse_doc_html():
                 col = unescape(re.sub(r'<[^>]+>', '', cells[1])).strip()
                 desc = unescape(re.sub(r'<[^>]+>', ' ', cells[-1]))
                 desc = re.sub(r'\s+', ' ', desc).strip()
-                if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', col) and desc and desc != '-':
+                if _NAME.fullmatch(col) and desc and desc != '-':
                     out.setdefault(f'{tname}.{col}', desc)
         print(T('log.doc_inherited', n=len(out) - n0, name=path.name))
     return out

@@ -2599,12 +2599,17 @@ CASE_FLOOR = {'selftest_schema': 40, 'selftest_build': 26,
 # **통째로 되돌려도 224개가 전부 초록**이었다 — 자르는 자리가 둘(ADD COLUMN·ADD
 # CONSTRAINT)인데 어느 쪽에도 못이 없었다. 넷을 더한다: 224 → 228. 어느 케이스가
 # 어느 루프를 잡는지는 그 케이스들 위의 격자표에 적어 두었다.
-TOTAL_FLOOR = 248
+#
+# 2026-08-06: '같은 이름이 두 자리를 가리킬 때' 넷을 더한다: 228 → 232. 넷 다 고침을
+# 통째로 되돌려도 228개가 전부 초록이던 자리다 — PK 조회의 조인(제약 이름이 스키마
+# 안에서 유일하다고 본 것), 인라인 PK·UNIQUE 판정에 새는 부모 이름, 두 번 적은 유니크
+# 인덱스, 그리고 `doc` 안쪽의 모양(한 줄짜리 문자열이 글자마다 문단이 됐다).
+TOTAL_FLOOR = 251
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 114
+EXPECT_CASES = 117
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -3214,6 +3219,96 @@ def _(work):
         encoding='utf-8')
     run('build_erd.py', work)
     run('build_docx.py', work)
+
+
+# ── 제 말로 지은 이름·제 말로 쓴 문서 ────────────────────────────────────────
+# 이 스킬은 네 말(en·ko·ja·es)로 문서를 내고 그 말로 지은 이름을 받는다. 그런데 세
+# 자리가 영어 기준으로만 짜여 있었다 — 이름의 글자, 장(章)의 손잡이, 글꼴 이름.
+@case('merge: a quoted non-ASCII table name inherits its polished descriptions')
+def _(work):
+    # 이전 판 문서에서 설명을 물려받는 기능이 있는 이유는 **사람이 다듬은 말을 다시
+    # 뽑을 때 잃지 않는 것**이다. 그런데 이름을 거르는 그물이 `[A-Za-z_][A-Za-z0-9_.]*`
+    # 라, 따옴표로 지은 한글 이름은 그 말을 통째로 잃었다. 게다가 조용하다 — 인계
+    # 건수는 찍히니 넘어온 줄 알고, 빠진 것은 '아직 설명 없는 컬럼' 에 섞여 처음
+    # 만든 컬럼처럼 보인다. 한국어로 쓰는 사람이 한국어 이름에서만 손해를 봤다.
+    s = ddl(work, 'CREATE TABLE "주문" (id bigint PRIMARY KEY, "금액" numeric(10,2));\n'
+                  'CREATE TABLE orders (id bigint PRIMARY KEY, amt numeric(10,2));\n')
+    for t in s.values():
+        for c in t['columns']:
+            c['comment'] = '다듬은 설명: ' + c['name']
+    write_schema(work, s)
+    run('build_erd.py', work)
+    run('build_html.py', work)
+
+    for t in s.values():                     # 설명을 지우고 이전 판에서 받아 온다
+        for c in t['columns']:
+            c['comment'] = ''
+    write_schema(work, s)
+    run('merge_desc.py', work, env={'ERD_DOC_HTML': str(work / 'T.html')})
+
+    got = json.loads((work / 'schema.json').read_text(encoding='utf-8'))
+    for tkey, cname in (('주문', 'id'), ('주문', '금액'), ('orders', 'id'), ('orders', 'amt')):
+        c = next(c for c in got[tkey]['columns'] if c['name'] == cname)
+        eq(c['comment'], '다듬은 설명: ' + cname,
+           f'{tkey}.{cname} came back from the previous edition')
+
+
+@case('doc: chapter 7 takes its lead paragraph from the spec, like chapter 6')
+def _(work):
+    # 6장은 `doc.mapping_intro` 로 머리말을 바꿀 수 있는데 7장만 카탈로그에 못박혀
+    # 있었다. 두 장이 같은 자리에서 재료를 받고 같은 규칙으로 실리는데 손잡이만
+    # 한쪽에 있었고, 그 비대칭은 어느 문서에도 적혀 있지 않다.
+    write_schema(work, {'t': table('t', [col('id')])})
+    (work / 'erd.spec.json').write_text(json.dumps({'doc': {
+        'title': 'T',
+        'mapping': [['1', 'a', 'b', 'O', 'c']], 'mapping_intro': 'MY SIXTH',
+        'open_items': [['P1', 'x', 'y', 'z', 'w']], 'open_intro': 'MY SEVENTH',
+    }}), encoding='utf-8')
+    run('build_erd.py', work)
+    run('build_docx.py', work)
+    run('build_html.py', work)
+
+    from docx import Document
+    said = [p.text for p in Document(str(work / 'T.docx')).paragraphs]
+    for want in ('MY SIXTH', 'MY SEVENTH'):
+        if want not in said:
+            raise Fail(f'{want} never reached the docx — the spec wrote it')
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    for want in ('MY SIXTH', 'MY SEVENTH'):
+        has(html, want, f'{want} reached the html too')
+    # 안 적으면 카탈로그 문구로 돌아간다 — 손잡이를 다는 것과 기본값을 바꾸는 것은 다르다
+    (work / 'erd.spec.json').write_text(json.dumps({'doc': {
+        'title': 'T', 'open_items': [['P1', 'x', 'y', 'z', 'w']]}}), encoding='utf-8')
+    run('build_erd.py', work)
+    run('build_docx.py', work)
+    said = '\n'.join(p.text for p in Document(str(work / 'T.docx')).paragraphs)
+    sys.path.insert(0, str(HERE))
+    import lang.en as en
+    has(said, en.M['docx.ch7_intro'], 'without the key, chapter 7 keeps the catalogue text')
+
+
+@case('svg: every font erd calls monospace is recognised as monospace here')
+def _(work):
+    # `svg_canvas` 는 글꼴 **이름**으로 고정폭인지 짐작한다. 그 그물이 `'mono' in 이름`
+    # + `('Menlo','D2Coding')` 뿐이던 때 `erd._MONO_CANDIDATES` 의 후보 하나가 빠져
+    # 나갔다 — Windows 의 `consola.ttf`, 곧 `Consolas` 다. 그러면 컬럼 이름·타입이
+    # PNG 에서는 고정폭인데 SVG 에서는 본문 글꼴로 나가, 두 그림이 같다는 이 저장소의
+    # 전제가 거기서 깨진다. 리눅스·macOS 에서 도는 시험은 후보 넷 중 셋만 밟으므로
+    # 파일이 있는지로 재면 이 자리는 영영 안 걸린다 — **이름으로 잰다.**
+    import svg_canvas
+    for fam in ('Menlo', 'Consolas', 'DejaVu Sans Mono', 'Liberation Mono', 'D2Coding'):
+        if not svg_canvas.is_mono(fam):
+            raise Fail(f'{fam} is a monospace face erd may pick, but svg_canvas would '
+                       f'send it out with the body stack')
+    for fam in ('Pretendard', 'Helvetica', 'Apple SD Gothic Neo', '', None):
+        if svg_canvas.is_mono(fam):
+            raise Fail(f'{fam!r} is not monospace — the column tables would lose their grid')
+    # 그림에서도 그렇다: 고정폭으로 그린 글자는 mono 스택을 달고 나간다.
+    write_schema(work, {'t': table('t', [col('id')])})
+    run('build_erd.py', work)
+    svg = (work / 'out' / 'erd_full.svg').read_text(encoding='utf-8')
+    if svg_canvas.MONO_STACK not in svg:
+        raise Fail('no text in the diagram carries the monospace stack')
 
 
 if __name__ == '__main__':

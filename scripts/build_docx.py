@@ -417,7 +417,12 @@ def _chapter_mapping(doc):
 
 def _chapter_open(doc):
     heading(doc, T('docx.ch7'))
-    para(doc, T('docx.ch7_intro'))
+    # 6장은 `doc.mapping_intro` 로 머리말을 바꿀 수 있는데 7장만 카탈로그에 못박혀
+    # 있었다. 두 장은 같은 자리(spec 의 doc)에서 재료를 받고 같은 규칙으로 실리는데
+    # 손잡이만 한쪽에 있던 셈이라, 6장을 제 말로 바꾼 사람이 7장에서는 왜 안 되는지
+    # 알 길이 없었다(문서 어디에도 그 비대칭이 적혀 있지 않다). 같은 자를 댄다 —
+    # 빈 값·공백뿐인 값은 '설정하지 않은 것' 이라는 규칙도 `doc_text` 가 함께 준다.
+    para(doc, doc_text(DOC, 'open_intro', T('docx.ch7_intro')))
     t = table(doc, [T('word.priority'), T('word.item'), T('word.target'),
                     T('word.current'), T('word.action')],
               [1.0, 3.0, 3.4, 5.4, 4.2], font_size=8)

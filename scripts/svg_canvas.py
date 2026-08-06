@@ -63,6 +63,42 @@ def font_stack(lang=None):
 FONT_STACK = font_stack()
 MONO_STACK = "'Menlo','D2Coding','DejaVu Sans Mono','Consolas',monospace"
 
+# 이름에 'mono' 가 안 든 고정폭 글꼴들. 여기 없으면 그 글자는 **본문 스택**으로 나간다.
+#
+# 판정이 `'mono' in 이름` + `('Menlo','D2Coding')` 둘뿐이던 때, `erd.py` 가
+# `_MONO_CANDIDATES` 에 적어 둔 후보 넷 중 하나가 그 그물을 빠져나갔다 — Windows 의
+# `C:/Windows/Fonts/consola.ttf` 다. PIL 이 그 파일에서 읽는 이름은 `Consolas` 이고,
+# 거기엔 'mono' 가 없다. 그러면 컬럼 이름·타입이 PNG 에서는 고정폭인데 SVG 에서는
+# 본문 글꼴로 나가, 같은 그림을 두 벌 낸다는 이 파일의 전제가 그 자리에서 깨진다.
+# (`textLength` 가 폭은 붙들어 두므로 칸을 넘지는 않는다 — 대신 자간이 벌어진다.)
+#
+# 나머지 후보는 그물에 걸린다: `DejaVu Sans Mono`·`Liberation Mono` 는 이름에 'mono'
+# 가 있고 `Menlo` 는 목록에 있었다. 그래서 이 자리가 오래 조용했다 — 리눅스·macOS 에서
+# 도는 시험은 넷 중 셋만 밟는다.
+#
+# 목록은 후보에 있는 것(Consolas)에서 출발해, 사람이 `ERD_MONO` 로 직접 고를 만한
+# 흔한 고정폭 글꼴까지 담는다. 여기 없는 글꼴을 `ERD_MONO` 로 주면 예전처럼 본문
+# 스택으로 나가지만, 그때도 `MONO_STACK` 이 아니라 그 글꼴 이름이 맨 앞에 서므로
+# 그 글꼴이 깔린 PC 에서는 제대로 보인다.
+_MONO_NAMES = frozenset((
+    'menlo', 'monaco', 'consolas', 'd2coding', 'courier', 'courier new',
+    'sf mono', 'cascadia code', 'cascadia mono', 'fira code', 'jetbrains mono',
+    'source code pro', 'ibm plex mono', 'ubuntu mono', 'hack', 'inconsolata',
+))
+
+
+def is_mono(family):
+    """이 글꼴 이름이 고정폭인가 — 이름만 보고 정한다.
+
+    이름으로 짐작하는 것이 이 판정의 약점이지만, 여기서 손에 쥔 것이 이름뿐이다.
+    `erd.py` 는 어느 글꼴을 고정폭으로 골랐는지 알고 있으므로 그것을 넘겨주는 편이
+    옳다 — 다만 그 신호를 받으려면 `render()` 가 쓰는 ImageDraw 흉내 인터페이스를
+    넓혀야 해서, 그 변경은 이 파일 혼자 할 수 있는 것이 아니다. 여기서는 그물의
+    구멍만 메우고, 옳은 자리는 적어 둔다.
+    """
+    f = (family or '').lower()
+    return 'mono' in f or f in _MONO_NAMES
+
 
 def _pairs(xy):
     """[(x,y),(x,y)] · [x0,y0,x1,y1] 둘 다 받는다 — PIL 이 둘 다 허용한다."""
@@ -164,8 +200,7 @@ class SvgCanvas:
             fam, style = font.getname()
         except Exception:
             fam, style = '', ''
-        mono = 'mono' in (fam or '').lower() or (fam or '') in ('Menlo', 'D2Coding')
-        family = (f"'{fam}',{self.mono_fallback}" if mono
+        family = (f"'{fam}',{self.mono_fallback}" if is_mono(fam)
                   else (f"'{fam}',{self.fallback}" if fam else self.fallback))
         bold = 'bold' in (style or '').lower()
 

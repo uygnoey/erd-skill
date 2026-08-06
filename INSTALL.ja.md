@@ -107,7 +107,7 @@ bash ~/.claude/skills/erd/install.sh --check
   ✓ 等幅:   …/Menlo.ttc
 
 6. 回帰テスト
-  ✓ all 248 passed
+  ✓ all 251 passed
   ! 6 cases need a real server and were NOT run (ERD_SELFTEST_DOCKER=1 …)
 
 結果

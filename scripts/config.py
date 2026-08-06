@@ -730,6 +730,7 @@ _DOC_SHAPE = {
     'sources_note': (str, 'a string', None),
     'mapping_intro': (str, 'a string', None),
     'mapping_note': (str, 'a string', None),
+    'open_intro': (str, 'a string', None),
     'open_note': (str, 'a string', None),
     'scope': (list, '[line, …]', str),
     'sources': (list, '[[basis, content], …]', (list, tuple)),
@@ -737,6 +738,7 @@ _DOC_SHAPE = {
     'mapping': (list, '[[no, proposed, actual, applied, reason], …]', (list, tuple)),
     'open_items': (list, '[[priority, item, target, current, action], …]', (list, tuple)),
     'area_desc': (dict, '{area code: description}', str),
+    'db_names':      (dict, '{label: display name}', None),
 }
 
 
