@@ -118,6 +118,49 @@ for _n, _t in SCHEMA.items():
         _c['type'] = clean(_c.get('type'))
         _c['default'] = clean(_c.get('default'))
 
+
+# ── 컬럼 차례: 키를 위로 (PK → FK → UQ → 나머지) ──────────────────────────────
+# 그림도 정의서도 컬럼을 DB 가 준 차례(ordinal_position) 그대로 실었다. 테이블을
+# 읽는 사람이 가장 먼저 찾는 것은 **무엇으로 이 행을 집고, 무엇으로 남과 이어지는가**
+# 인데, 그 컬럼들이 스무 개 사이에 흩어져 있으면 눈으로 훑어 모아야 한다.
+#
+# 정하는 자리를 여기 하나로 둔다. 이 아래로는 그림(erd)·GraphML·HTML·docx 가 전부
+# 같은 `_t['columns']` 를 읽으므로, 네 산출물의 차례가 갈릴 수 없다 — 소비자마다
+# 정렬하면 곧 네 규칙이 된다.
+#
+# 등급 안에서는 **원래 차례를 지킨다**(`list.sort` 는 안정 정렬이다). PK 만은 그
+# 안에서도 `t['pk']` 의 차례를 따른다 — 복합 PK 는 (a, b) 와 (b, a) 가 서로 다른
+# 인덱스라 그 순서 자체가 스키마의 사실이다.
+#
+# UQ 는 복합 유니크의 구성 컬럼까지 센다. 정의서의 키 칸이 이미 그렇게 표시하고
+# 있었으므로(`any(c['name'] in u for u in uniques)`), 표시와 차례가 어긋나지 않게
+# 같은 자로 잰다.
+#
+# schema.json 은 건드리지 않는다. 파일에는 DB 가 준 차례가 그대로 남고, 바뀌는 것은
+# **읽는 사람에게 보이는 차례**뿐이다.
+# **유니크는 '그 컬럼 하나로 유일한가' 로만 센다.** `UNIQUE (tenant, code)` 의 tenant
+# 는 혼자서는 유일하지 않으므로 UQ 가 아니다 — 정의서의 키 칸이 이미 그 규칙을 쓰고
+# 있었고(`docx: a column made unique says so`), 차례도 같은 자로 재야 표시와 위치가
+# 어긋나지 않는다. 처음에 복합 구성원까지 세었다가 그 케이스가 잡았다.
+def is_single_unique(t, cname):
+    """Whether ``cname`` alone, rather than only a composite tuple, is unique."""
+    return any(len(u) == 1 and u[0] == cname for u in t.get('uniques', []))
+
+
+def _col_rank(t, c):
+    name = c['name']
+    if name in t['pk']:
+        return (0, t['pk'].index(name))
+    if any(fk.get('column') == name for fk in t['fks']):
+        return (1, 0)
+    if is_single_unique(t, name):
+        return (2, 0)
+    return (3, 0)
+
+
+for _t in SCHEMA.values():
+    _t['columns'].sort(key=lambda _c, _tt=_t: _col_rank(_tt, _c))
+
 # 키도 씻는다 — 상자의 제목으로 **그대로 그려지는 것이 키** 라서, 값만 씻어서는
 # 개행 하나에 여전히 PIL 이 죽는다. 다만 씻은 뒤 두 키가 같아지면 테이블 하나가
 # 소리 없이 사라진다. 조용히 합치느니 손대지 않는 편이 낫다 — 그때는 그대로 둔다.
@@ -314,16 +357,19 @@ def badge(tname):
 
 
 def col_role(t, c):
+    """그림의 컬럼 왼쪽에 붙는 키 표시. 차례를 정하는 `_col_rank` 와 **같은 자**다.
+
+    UQ 를 넣기 전에는 유니크 컬럼이 그림에서 아무 표시 없이 위로 올라왔다 — 왜 위에
+    있는지 그림만 보고는 알 수 없었다. 정의서(HTML·docx)는 그 칸을 이미 UQ 로 적고
+    있었으므로, 그림만 그 사실을 말하지 않던 셈이다.
+    """
     if c['name'] in t['pk']:
         return 'PK'
     if any(fk['column'] == c['name'] for fk in t['fks']):
         return 'FK'
+    if is_single_unique(t, c['name']):
+        return 'UQ'
     return ''
-
-
-def is_single_unique(t, cname):
-    """Whether ``cname`` alone, rather than only a composite tuple, is unique."""
-    return any(len(u) == 1 and u[0] == cname for u in t.get('uniques', []))
 
 
 _ADDED = T('word.added')          # 붙이는 쪽과 알아보는 쪽이 같은 문자열을 봐야 한다
@@ -667,6 +713,17 @@ def draw_key_icon(d, x, y, kind, S):
                             radius=2 * S, outline=c, width=max(1, S))
         d.ellipse([(x + 10) * S, (y + 9) * S, (x + 14) * S, (y + 13) * S],
                   outline=c, width=max(1, S))
+    elif kind == 'UQ':
+        # 유니크 — 열쇠 몸통은 같고 꼬리 대신 **두 점**을 찍는다. PK 의 꼬리(가로선)·
+        # FK 의 고리(원)와 한눈에 갈리는 모양이라야 흑백으로 인쇄해도 구별된다.
+        # 색은 정의서의 UQ 와 같은 계열이되(HTML `.uq` 는 #7a4fbf) 어두운 판에서
+        # 읽히도록 밝게 올린다.
+        c = '#B78BE8'
+        d.rounded_rectangle([x * S, (y + 3) * S, (x + 9) * S, (y + 11) * S],
+                            radius=2 * S, outline=c, width=max(1, S))
+        for _dx in (10, 13):
+            d.rectangle([(x + _dx) * S, (y + 6) * S, (x + _dx + 1) * S, (y + 8) * S],
+                        fill=c)
     else:
         d.rounded_rectangle([x * S, (y + 3) * S, (x + 9) * S, (y + 11) * S],
                             radius=2 * S, outline='#6A7280', width=max(1, S))
@@ -713,7 +770,10 @@ def draw_legend(d, f, x, y, S, max_w=10 ** 6):
     cx, cy, rows = x, cy + LH, rows + 1
     d.text((cx * S, cy * S), T('word.notation'), font=f['legend'], fill='#8E96A0')
     cx += 74
-    for kind, txt in (('PK', T('word.pk')), ('FK', T('word.fk'))):
+    # 범례의 차례가 곧 컬럼이 놓이는 차례다 (`_col_rank`) — 읽는 사람이 그림에서
+    # 본 순서와 범례에서 읽는 순서가 같아야 한다.
+    for kind, txt in (('PK', T('word.pk')), ('FK', T('word.fk')),
+                      ('UQ', T('word.unique'))):
         w = 24 + tw(txt, f['legend']) / S + GAP
         nl(w)
         draw_key_icon(d, cx, cy, kind, S)

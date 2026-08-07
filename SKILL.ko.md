@@ -70,6 +70,15 @@ python3 merge_schemas.py shop mart     # 테이블 키가 'shop.orders' 처럼 �
 | `$ERD_WORK/out/erd_full.png·svg` | 전체 ERD (모든 컬럼 + 설명) |
 | `$ERD_WORK/out/erd_area_*.png·svg` | 영역별 상세도 |
 
+**키 컬럼을 위로 올린다 — PK · FK · UQ · 그다음 나머지.** 테이블을 읽는 사람이 가장
+먼저 찾는 것은 무엇으로 이 행을 집고 무엇으로 남과 이어지는가인데, DDL 차례대로 실으면
+그 컬럼들이 스무 개 사이에 흩어진다. 같은 등급 안에서는 원래 차례를 지키고, 복합 PK 는
+`pk` 자신의 차례를 따른다 — `(a, b)` 와 `(b, a)` 는 서로 다른 인덱스다. `UQ` 는 **그
+컬럼 하나로 유일하다**는 뜻이라, `UNIQUE (tenant, code)` 의 tenant 에는 안 붙는다(혼자서는
+유일하지 않다). 차례를 정하는 자리는 하나뿐이라(`erd._col_rank`) 그림·GraphML·HTML·docx
+가 서로 다른 차례를 낼 수 없다. `schema.json` 은 건드리지 않는다 — 파일에는 DB 가 준
+차례가 그대로 남고, 바뀌는 것은 사람이 읽는 차례뿐이다.
+
 **PNG 와 SVG 는 같은 배치를 두 번 그린 것이고, 재는 것은 PNG 쪽뿐이다.** 노드 자리와
 상자 크기는 한 번의 배치 계산에서 나오므로 두 그림에서 테이블은 같은 자리에 놓인다.
 다만 `draw_erd()` 는 SVG 를 배율 1 로 **한 번 더** 그리고(`svg_canvas.py`), PIL 의 글자
@@ -340,7 +349,7 @@ DB 도 docker 도 필요 없고 20초쯤 걸린다. 항목은 기능 영역별 �
 출력도 `:` 앞의 영역명으로 묶여 나온다. `install.sh --check` 가 돌리는 것도 이것이다.
 
 ```bash
-python3 selftest.py            # 전부 (259개)
+python3 selftest.py            # 전부 (260개)
 python3 selftest.py parse      # 이름에 'parse' 가 든 항목만
 python3 selftest_schema.py    # 스키마·DDL·인트로스펙션 58개
 ```

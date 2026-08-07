@@ -2604,12 +2604,12 @@ CASE_FLOOR = {'selftest_schema': 40, 'selftest_build': 26,
 # 통째로 되돌려도 228개가 전부 초록이던 자리다 — PK 조회의 조인(제약 이름이 스키마
 # 안에서 유일하다고 본 것), 인라인 PK·UNIQUE 판정에 새는 부모 이름, 두 번 적은 유니크
 # 인덱스, 그리고 `doc` 안쪽의 모양(한 줄짜리 문자열이 글자마다 문단이 됐다).
-TOTAL_FLOOR = 259
+TOTAL_FLOOR = 260
 
 # 이 파일이 올리는 케이스 수. 옆의 다섯 파일이 세 라운드째 지키고 있는 규율인데
 # **입구 파일만 면제**였다 — 그래서 여기 70개가 신고도 바닥도 없이 있었다.
 # 케이스를 더하거나 빼면 이 수와 `selftest_kit.ENTRY_FLOOR['selftest']` 를 함께 고친다.
-EXPECT_CASES = 121
+EXPECT_CASES = 122
 
 
 @case('selftest: every case file beside the kit is registered and says how many it added')
@@ -2962,6 +2962,98 @@ def _(work):
     has(css, 'break-inside:avoid', 'a diagram is not cut across pages')
     has(css, 'table-header-group',
         'a column table repeats its header row on every page it spans')
+
+
+@case('schema: key columns come first, and all four artifacts agree on the order')
+def _(work):
+    # 테이블을 읽는 사람이 가장 먼저 찾는 것은 **무엇으로 이 행을 집고 무엇으로 남과
+    # 이어지는가**다. 그 컬럼들이 스무 개 사이에 흩어져 있으면 눈으로 훑어 모아야 한다.
+    # 차례는 `erd._col_rank` 한 자리에서 정하고, 그 아래로 그림·GraphML·HTML·docx 가
+    # 같은 리스트를 읽는다 — 소비자마다 정렬하면 곧 네 규칙이 되고, 같은 스키마를 두
+    # 문서가 다른 차례로 싣는다. 그래서 이 케이스는 **넷을 함께** 잰다.
+    s = ddl(work, '''
+CREATE TABLE teams (id bigint PRIMARY KEY, name text);
+CREATE TABLE users (
+  memo       text,
+  created_at timestamptz NOT NULL,
+  email      text NOT NULL UNIQUE,
+  team_id    bigint REFERENCES teams(id),
+  id         bigint PRIMARY KEY,
+  nick       text
+);
+CREATE TABLE memberships (
+  note    text,
+  user_id bigint REFERENCES users(id),
+  team_id bigint REFERENCES teams(id),
+  PRIMARY KEY (team_id, user_id)
+);
+''')
+    eq([c['name'] for c in s['users']['columns']],
+       ['memo', 'created_at', 'email', 'team_id', 'id', 'nick'],
+       'schema.json keeps the order the DDL gave — the file is not reordered')
+
+    want_users = ['id', 'team_id', 'email', 'memo', 'created_at', 'nick']
+    #             PK    FK         UQ       ── 나머지는 원래 차례 그대로 ──
+    # 복합 PK 는 `pk` 의 차례를 따른다: (team_id, user_id) 와 (user_id, team_id) 는
+    # 서로 다른 인덱스라 그 순서 자체가 스키마의 사실이다. user_id 는 FK 이기도
+    # 하지만 PK 가 이긴다.
+    want_memberships = ['team_id', 'user_id', 'note']
+
+    run('build_erd.py', work)
+    run('build_html.py', work)
+    run('build_docx.py', work)
+
+    # ① 그림이 그리는 차례 — GraphML 의 속성 블록이 그것을 그대로 싣는다
+    import xml.etree.ElementTree as ET
+    Y = '{http://www.yworks.com/xml/graphml}'
+    for node in ET.parse(work / 'T.graphml').getroot().iter(f'{Y}GenericNode'):
+        labels = node.findall(f'{Y}NodeLabel')
+        title = (labels[0].text or '').split('·')[0].strip()
+        if title == 'users':
+            got = [ln.split(':')[0].split()[-1]
+                   for ln in (labels[1].text or '').splitlines() if ln.strip()]
+            eq(got, want_users, 'the diagram draws the key columns first')
+            break
+    else:
+        raise Fail('users never made it into the GraphML')
+
+    # ② HTML 컬럼표
+    html = (work / 'T.html').read_text(encoding='utf-8')
+    blk = html[html.index('id="tb_users"'):]
+    blk = blk[:blk.index('</table>')]
+    got = [re.sub(r'<[^>]+>', '', m) for m in
+           re.findall(r'<tr><td>\d+</td><td>(.*?)</td>', blk, re.S)]
+    eq(got, want_users, 'the html column table lists the key columns first')
+
+    # ③ docx 컬럼표
+    from docx import Document
+    doc = Document(str(work / 'T.docx'))
+    # 표는 **머리글 문구가 아니라 실린 이름**으로 찾는다 — 문구로 찾으면 이 케이스가
+    # 카탈로그의 말에 묶여, 말을 다듬는 것만으로 빨강이 된다.
+    seen = {}
+    for t_ in doc.tables:
+        if len(t_.rows[0].cells) != 4:
+            continue
+        names = [r.cells[1].text for r in t_.rows[1:]]
+        if names:
+            seen.setdefault(tuple(sorted(names)), names)
+    eq(seen.get(tuple(sorted(want_users))), want_users,
+       'the docx column table lists them in the same order')
+    eq(seen.get(tuple(sorted(want_memberships))), want_memberships,
+       'a composite primary key keeps the order the key itself has')
+
+    # ④ 유니크는 그림에서도 제 표시를 단다 — 표시가 없으면 왜 위에 있는지 알 수 없다
+    r = run('build_erd.py', work, env={'ERD_LANG': 'en'})
+    has(r.stdout, 'erd_area_', 'the area diagram was drawn')
+    import subprocess as _sp
+    probe = _sp.run([sys.executable, '-c',
+                     'import erd,json;t=erd.SCHEMA["users"];'
+                     'print(json.dumps([erd.col_role(t,c) for c in t["columns"]]))'],
+                    capture_output=True, text=True, cwd=str(HERE),
+                    env={**{k: v for k, v in os.environ.items() if not k.startswith('ERD_')},
+                         'ERD_WORK': str(work), 'ERD_PROJ': str(work), 'ERD_LANG': 'en'})
+    eq(json.loads(probe.stdout or '[]'), ['PK', 'FK', 'UQ', '', '', ''],
+       'the diagram marks PK, FK and UQ on the rows it lifted to the top')
 
 
 @case('artifacts: no unresolved message keys anywhere')
