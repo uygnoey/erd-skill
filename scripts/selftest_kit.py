@@ -101,7 +101,7 @@ _keep_console_alive(sys.stderr)
 # 아예 안 올라온다 — 그러니 `'selftest_schema'` 행은 **오늘은 안 걸린다.** 지워도
 # 오늘의 동작은 같지만, 입구가 바뀌었을 때 바닥이 조용히 1 로 떨어지는 쪽보다
 # 적혀 있는 쪽이 낫다고 보고 남겨 둔다.
-ENTRY_FLOOR = {'selftest': 121, 'selftest_schema': 40}
+ENTRY_FLOOR = {'selftest': 122, 'selftest_schema': 40}
 
 # ── 한 케이스가 그린 것과 남긴 것 ────────────────────────────────────────────
 # erd.py 는 `ERD_VERIFY_LOG` 를 **프로세스마다** 처음부터 다시 쓴다(_LOG_STARTED 가

@@ -77,6 +77,16 @@ python3 merge_schemas.py shop mart     # table keys become e.g. 'shop.orders'
 | `$ERD_WORK/out/erd_full.png·svg` | Full ERD (every column + descriptions) |
 | `$ERD_WORK/out/erd_area_*.png·svg` | Per-area detail |
 
+**Key columns are listed first — PK, then FK, then UQ, then the rest.** What a reader
+looks for first is how a row is identified and how it joins to others, so those columns are
+lifted to the top of every column list instead of being scattered through the DDL order.
+Within a rank the original order is kept, and a composite primary key follows the order the
+key itself has — `(a, b)` and `(b, a)` are different indexes. `UQ` means *this column alone
+is unique*: a member of `UNIQUE (tenant, code)` is not marked, because it is not unique on
+its own. The order is decided in one place (`erd._col_rank`), so the diagram, GraphML, HTML
+and docx cannot disagree. `schema.json` is left alone — the file keeps the order the
+database gave; only what a person reads is rearranged.
+
 **PNG and SVG are the same layout, drawn twice — and only the PNG is measured.** Node
 positions and box sizes come from one layout pass, so tables land in the same place in
 both. But `draw_erd()` runs the drawing pass a second time for the SVG at scale 1
@@ -371,7 +381,7 @@ database, no docker — about 20 seconds. Cases are split by product area and th
 groups output by the prefix before `:`. `install.sh --check` runs exactly this.
 
 ```bash
-python3 selftest.py            # everything (259 cases)
+python3 selftest.py            # everything (260 cases)
 python3 selftest.py parse      # only cases whose name contains 'parse'
 python3 selftest_schema.py    # 58 schema/DDL/introspection cases
 ```
